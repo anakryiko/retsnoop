@@ -1,0 +1,54 @@
+From 6c3ef9500c0fcd5bea0841ff483a1a822052c7ad Mon Sep 17 00:00:00 2001
+From: Andrii Nakryiko <andrii@kernel.org>
+Date: Wed, 24 Mar 2021 10:10:08 -0700
+Subject: [PATCH] examples/addr2line: flush stdout after each response
+
+Forcefully flush stdout after each address is handled. This allows to use
+addr2line in a "coprocess" mode, in which another process forks/execs
+addr2line, establishes two uni-directional pipes for passing input addresses
+and reading back responses, and uses addr2line in a client/server fashion.
+This is done for amortizing start up costs and make stack symbolization as
+cheap as possible.
+
+The problem with the above "coprocess" mode is that because addr2line is
+getting Unix pipes for stdin/stdout, std::io::stdin()/std::io::stdout() will
+switch to fully buffered mode, instead of line-buffered one that happens when
+stdin/stdout is wired to interactive shell. Because of that buffering, driving
+application will never get response (unless it's bigger than internal buffer,
+which is quite big, though I don't know exactly how big), because it will
+never be actually flushed into the pipe. This problem generically is solved
+through a complicated dance with setting up pseudo-terminal, creating new
+session, etc, etc. It's complicated enough to discourage such use completely.
+
+But if we can modify addr2line to enforce flushing data after each response,
+then all this problem goes away, because buffering doesn't matter much
+anymore. It shouldn't hurt performance noticeably at all.
+
+Signed-off-by: Andrii Nakryiko <andrii@kernel.org>
+---
+ examples/addr2line.rs | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/examples/addr2line.rs b/examples/addr2line.rs
+index 2692cfd96c53..5a76ab14d0cc 100644
+--- a/examples/addr2line.rs
++++ b/examples/addr2line.rs
+@@ -7,7 +7,7 @@ extern crate object;
+ 
+ use std::borrow::Cow;
+ use std::fs::File;
+-use std::io::{BufRead, Lines, StdinLock};
++use std::io::{BufRead, Lines, StdinLock, Write};
+ use std::path::Path;
+ 
+ use clap::{App, Arg, Values};
+@@ -255,5 +255,6 @@ fn main() {
+         if llvm {
+             println!();
+         }
++        std::io::stdout().flush().unwrap();
+     }
+ }
+-- 
+2.30.2
+
