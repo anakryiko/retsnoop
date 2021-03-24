@@ -84,9 +84,9 @@ $(OUTPUT)/addr2line.embed.o: ../tools/addr2line
 $(OUTPUT)/addr2line.o: $(OUTPUT)/addr2line.embed.o
 
 # Build application binary
-retsnoop: CFLAGS += -DSKEL_NAME=retsnoop_bpf				\
-		    -DSKEL_HEADER=retsnoop.skel.h			\
-		    -DSKEL_EXTRA_HEADER=retsnoop.h
+retsnoop: override CFLAGS += -DSKEL_NAME=retsnoop_bpf			\
+		    	     -DSKEL_HEADER=retsnoop.skel.h		\
+		    	     -DSKEL_EXTRA_HEADER=retsnoop.h
 
 retsnoop: $(addprefix $(OUTPUT)/,					\
 		      retsnoop.o					\
