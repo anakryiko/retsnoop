@@ -803,6 +803,9 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
+	if (geteuid() != 0)
+		fprintf(stderr, "You are not running as root! Expect failures. Please use sudo or run as root.\n");
+
 	if (env.symb_lines) {
 		char vmlinux_path[1024];
 
