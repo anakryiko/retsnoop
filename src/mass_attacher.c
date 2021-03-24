@@ -217,7 +217,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 {
 	struct SKEL_NAME *skel;
 	int err, i, j, n;
-	int func_skip;
+	int func_skip = 0;
 	void *tmp;
 
 	/* Load and cache /proc/kallsyms for IP <-> kfunc mapping */
