@@ -32,7 +32,6 @@
 #define ___concat(a, b) a ## b
 #define ___apply(fn, n) ___concat(fn, n)
 
-#define SKEL_OPEN(skel) ___apply(SKEL_NAME, __open)()
 #define SKEL_LOAD(skel) ___apply(SKEL_NAME, __load)(skel)
 #define SKEL_ATTACH(skel) ___apply(SKEL_NAME, __attach)(skel)
 #define SKEL_DESTROY(skel) ___apply(SKEL_NAME, __destroy)(skel)
@@ -77,13 +76,18 @@ struct mass_attacher {
 	char **deny_globs;
 };
 
-struct mass_attacher *mass_attacher__new(struct mass_attacher_opts *opts)
+struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_attacher_opts *opts)
 {
 	struct mass_attacher *att;
+
+	if (!skel)
+		return NULL;
 
 	att = calloc(1, sizeof(*att));
 	if (!att)
 		return NULL;
+
+	att->skel = skel;
 
 	if (!opts)
 		return att;
@@ -215,7 +219,6 @@ static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t);
 
 int mass_attacher__prepare(struct mass_attacher *att)
 {
-	struct SKEL_NAME *skel;
 	int err, i, j, n;
 	int func_skip = 0;
 	void *tmp;
@@ -248,38 +251,31 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		return err;
 	}
 
-	/* Open BPF application */
-	att->skel = skel = SKEL_OPEN();
-	if (!att->skel) {
-		fprintf(stderr, "Failed to open BPF skeleton\n");
-		return -EINVAL;
-	}
-
 	_Static_assert(MAX_FUNC_ARG_CNT == 11, "Unexpected maximum function arg count");
-	att->fentries[0] = skel->progs.fentry0;
-	att->fentries[1] = skel->progs.fentry1;
-	att->fentries[2] = skel->progs.fentry2;
-	att->fentries[3] = skel->progs.fentry3;
-	att->fentries[4] = skel->progs.fentry4;
-	att->fentries[5] = skel->progs.fentry5;
-	att->fentries[6] = skel->progs.fentry6;
-	att->fentries[7] = skel->progs.fentry7;
-	att->fentries[8] = skel->progs.fentry8;
-	att->fentries[9] = skel->progs.fentry9;
-	att->fentries[10] = skel->progs.fentry10;
-	att->fentries[11] = skel->progs.fentry11;
-	att->fexits[0] = skel->progs.fexit0;
-	att->fexits[1] = skel->progs.fexit1;
-	att->fexits[2] = skel->progs.fexit2;
-	att->fexits[3] = skel->progs.fexit3;
-	att->fexits[4] = skel->progs.fexit4;
-	att->fexits[5] = skel->progs.fexit5;
-	att->fexits[6] = skel->progs.fexit6;
-	att->fexits[7] = skel->progs.fexit7;
-	att->fexits[8] = skel->progs.fexit8;
-	att->fexits[9] = skel->progs.fexit9;
-	att->fexits[10] = skel->progs.fexit10;
-	att->fexits[11] = skel->progs.fexit11;
+	att->fentries[0] = att->skel->progs.fentry0;
+	att->fentries[1] = att->skel->progs.fentry1;
+	att->fentries[2] = att->skel->progs.fentry2;
+	att->fentries[3] = att->skel->progs.fentry3;
+	att->fentries[4] = att->skel->progs.fentry4;
+	att->fentries[5] = att->skel->progs.fentry5;
+	att->fentries[6] = att->skel->progs.fentry6;
+	att->fentries[7] = att->skel->progs.fentry7;
+	att->fentries[8] = att->skel->progs.fentry8;
+	att->fentries[9] = att->skel->progs.fentry9;
+	att->fentries[10] = att->skel->progs.fentry10;
+	att->fentries[11] = att->skel->progs.fentry11;
+	att->fexits[0] = att->skel->progs.fexit0;
+	att->fexits[1] = att->skel->progs.fexit1;
+	att->fexits[2] = att->skel->progs.fexit2;
+	att->fexits[3] = att->skel->progs.fexit3;
+	att->fexits[4] = att->skel->progs.fexit4;
+	att->fexits[5] = att->skel->progs.fexit5;
+	att->fexits[6] = att->skel->progs.fexit6;
+	att->fexits[7] = att->skel->progs.fexit7;
+	att->fexits[8] = att->skel->progs.fexit8;
+	att->fexits[9] = att->skel->progs.fexit9;
+	att->fexits[10] = att->skel->progs.fexit10;
+	att->fexits[11] = att->skel->progs.fexit11;
 
 	att->vmlinux_btf = libbpf_find_kernel_btf();
 	err = libbpf_get_error(att->vmlinux_btf);
@@ -413,7 +409,7 @@ proceed:
 		printf("Skipped %d functions in total.\n", func_skip);
 	}
 
-	bpf_map__set_max_entries(skel->maps.ip_to_id, att->func_cnt);
+	bpf_map__set_max_entries(att->skel->maps.ip_to_id, att->func_cnt);
 
 	return 0;
 }

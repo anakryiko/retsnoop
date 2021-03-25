@@ -823,11 +823,20 @@ int main(int argc, char **argv)
 	/* Set up libbpf errors and debug info callback */
 	libbpf_set_print(libbpf_print_fn);
 
+	/* Open BPF skeleton */
+	env.ctx.skel = skel = retsnoop_bpf__open();
+	if (!skel) {
+		fprintf(stderr, "Failed to open BPF skeleton\n");
+		return -EINVAL;
+	}
+	if (env.verbose)
+		skel->rodata->verbose = true;
+
 	att_opts.verbose = env.verbose;
 	att_opts.debug = env.debug;
 	att_opts.debug_extra = env.debug_extra;
 	att_opts.func_filter = func_filter;
-	att = mass_attacher__new(&att_opts);
+	att = mass_attacher__new(skel, &att_opts);
 	if (!att)
 		goto cleanup;
 
@@ -872,10 +881,6 @@ int main(int argc, char **argv)
 	if (err)
 		goto cleanup;
 
-	skel = mass_attacher__skeleton(att);
-	if (env.verbose)
-		skel->rodata->verbose = true;
-	
 	vmlinux_btf = mass_attacher__btf(att);
 	for (i = 0, n = mass_attacher__func_cnt(att); i < n; i++) {
 		const struct mass_attacher_func_info *finfo;
@@ -928,13 +933,11 @@ done:
 	signal(SIGINT, sig_handler);
 
 	env.ctx.att = att;
-	env.ctx.skel = mass_attacher__skeleton(att);
 	env.ctx.ksyms = ksyms__load();
 	if (!env.ctx.ksyms) {
 		fprintf(stderr, "Failed to load /proc/kallsyms for symbolization.\n");
 		goto cleanup;
 	}
-
 
 	/* Set up ring buffer polling */
 	rb = ring_buffer__new(bpf_map__fd(env.ctx.skel->maps.rb), handle_event, &env.ctx, NULL);
