@@ -44,7 +44,7 @@ static __always_inline int ringbuf_output(void *ctx, void *map, struct call_stac
 		return bpf_perf_event_output(ctx, map, BPF_F_CURRENT_CPU, stack, sizeof(*stack));
 }
 
-static void save_stitch_stack(struct call_stack *stack)
+static __noinline void save_stitch_stack(struct call_stack *stack)
 {
 	if (verbose) {
 		bpf_printk("CURRENT DEPTH %d..%d", stack->depth, stack->max_depth);
@@ -75,14 +75,15 @@ static void save_stitch_stack(struct call_stack *stack)
 	//ringbuf_output(ctx, &rb, stack);
 }
 
-static bool push_call_stack(u32 cpu, u32 id, u64 ip)
+static __noinline bool push_call_stack(u32 cpu, u32 id, u64 ip)
 {
 	struct call_stack *stack = &stacks[cpu & MAX_CPU_MASK];
-	u32 d = stack->depth;
+	u64 d = stack->depth;
 
 	if (d == 0 && !(func_flags[id & MAX_FUNC_MASK] & FUNC_IS_ENTRY))
 		return false;
 
+	barrier_var(d);
 	if (d >= MAX_FSTACK_DEPTH)
 		return false;
 
@@ -110,8 +111,9 @@ static bool push_call_stack(u32 cpu, u32 id, u64 ip)
 }
 
 
-static __always_inline bool pop_call_stack(void *ctx, u32 cpu, u32 id, u64 ip, long res, bool is_err)
+static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool is_err)
 {
+	u32 cpu = bpf_get_smp_processor_id();
 	struct call_stack *stack = &stacks[cpu & MAX_CPU_MASK];
 	u64 d = stack->depth;
 	u32 actual_id;
@@ -240,6 +242,6 @@ int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret)
 		failed = true;
 
 pop:
-	pop_call_stack(ctx, cpu, func_id, func_ip, ret, failed);
+	pop_call_stack(ctx, func_id, func_ip, ret, failed);
 	return 0;
 }

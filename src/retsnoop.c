@@ -17,7 +17,7 @@
 #include "addr2line.h"
 #include "mass_attacher.h"
 
-#define ARRAY_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
 struct ctx {
 	struct mass_attacher *att;
@@ -854,7 +854,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Failed to open BPF skeleton\n");
 		return -EINVAL;
 	}
-	if (env.verbose)
+	/* turn on extra bpf_printk()'s on BPF side only in debug extra mode */
+	if (env.debug_extra)
 		skel->rodata->verbose = true;
 
 	skel->rodata->use_ringbuf = use_ringbuf = kernel_supports_ringbuf();
