@@ -20,10 +20,10 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1 * 1024 * 1024);
 } rb SEC(".maps");
 
-const volatile bool verbose = false;;
+const volatile bool verbose = false;
+const volatile bool use_ringbuf = false;
 
 char func_names[MAX_FUNC_CNT][64] = {};
 long func_ips[MAX_FUNC_CNT] = {};
@@ -31,6 +31,18 @@ int func_flags[MAX_FUNC_CNT] = {};
 
 struct call_stack stacks[MAX_CPU_CNT] = {};
 long scratch[MAX_CPU_CNT] = {};
+
+static __always_inline int ringbuf_output(void *ctx, void *map, struct call_stack *stack)
+{
+	/* use_ringbuf is read-only variable, so verifier will detect which of
+	 * the branch is dead code and will eliminate it, so on old kernels
+	 * bpf_ringbuf_output() won't be present in the resulting code
+	 */
+	if (use_ringbuf)
+		return bpf_ringbuf_output(map, stack, sizeof(*stack), 0);
+	else
+		return bpf_perf_event_output(ctx, map, BPF_F_CURRENT_CPU, stack, sizeof(*stack));
+}
 
 static void save_stitch_stack(struct call_stack *stack)
 {
@@ -60,7 +72,7 @@ static void save_stitch_stack(struct call_stack *stack)
 	 * stack, if present
 	 */
 	//bpf_printk("CPU %d EMITTING ERROR STACK (DEPTH %d MAX DEPTH %d)!!!", cpu, stack->depth, stack->max_depth);
-	//bpf_ringbuf_output(&rb, stack, sizeof(*stack), 0);
+	//ringbuf_output(ctx, &rb, stack);
 }
 
 static bool push_call_stack(u32 cpu, u32 id, u64 ip)
@@ -160,11 +172,11 @@ static __always_inline bool pop_call_stack(void *ctx, u32 cpu, u32 id, u64 ip, l
 		if (stack->is_err) {
 			if (verbose)
 				bpf_printk("CPU %d EMITTING DEPTH 0 ERROR STACK MAX DEPTH %d\n", cpu, stack->max_depth);
-			bpf_ringbuf_output(&rb, stack, sizeof(*stack), 0);
+			ringbuf_output(ctx, &rb, stack);
 		} else {
 			if (verbose)
 				bpf_printk("CPU %d EMITTING DEPTH 0 SUCCESS STACK MAX DEPTH %d\n", cpu, stack->max_depth);
-			bpf_ringbuf_output(&rb, stack, sizeof(*stack), 0);
+			ringbuf_output(ctx, &rb, stack);
 		}
 		stack->is_err = false;
 		stack->saved_depth = 0;

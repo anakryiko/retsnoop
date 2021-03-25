@@ -44,7 +44,12 @@ static struct env {
 	int entry_glob_cnt;
 
 	struct ctx ctx;
-} env;
+	int ringbuf_sz;
+	int perfbuf_percpu_sz;
+} env = {
+	.ringbuf_sz = 4 * 1024 * 1024,
+	.perfbuf_percpu_sz = 256 * 1024,
+};
 
 const char *argp_program_version = "retsnoop (aka dude-where-is-my-error) 0.1";
 const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
@@ -696,6 +701,11 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	return 0;
 }
 
+static void handle_event_pb(void *ctx, int cpu, void *data, unsigned data_sz)
+{
+	(void)handle_event(ctx, data, data_sz);
+}
+
 static int func_flags(const char *func_name, const struct btf *btf, const struct btf_type *t)
 {
 	t = btf__type_by_id(btf, t->type);
@@ -768,6 +778,18 @@ static int find_vmlinux(char *path, size_t max_len)
 	return -ESRCH;
 }
 
+static bool kernel_supports_ringbuf(void)
+{
+	long page_size = sysconf(_SC_PAGESIZE);
+	int fd;
+
+	fd = bpf_create_map(BPF_MAP_TYPE_RINGBUF, 0, 0, page_size, 0);
+	if (fd < 0)
+		return false;
+
+	close(fd);
+	return true;
+}
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
@@ -785,12 +807,15 @@ static void sig_handler(int sig)
 
 int main(int argc, char **argv)
 {
-	struct ring_buffer *rb = NULL;
+	long page_size = sysconf(_SC_PAGESIZE);
 	struct mass_attacher_opts att_opts = {};
+	const struct btf *vmlinux_btf = NULL;
 	struct mass_attacher *att = NULL;
 	struct retsnoop_bpf *skel = NULL;
-	const struct btf *vmlinux_btf = NULL;
+	struct ring_buffer *rb = NULL;
+	struct perf_buffer *pb = NULL;
 	int err, i, j, k, n;
+	bool use_ringbuf;
 
 	/* Parse command line arguments */
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
@@ -831,6 +856,19 @@ int main(int argc, char **argv)
 	}
 	if (env.verbose)
 		skel->rodata->verbose = true;
+
+	skel->rodata->use_ringbuf = use_ringbuf = kernel_supports_ringbuf();
+	if (use_ringbuf) {
+		bpf_map__set_type(skel->maps.rb, BPF_MAP_TYPE_RINGBUF);
+		bpf_map__set_key_size(skel->maps.rb, 0);
+		bpf_map__set_value_size(skel->maps.rb, 0);
+		bpf_map__set_max_entries(skel->maps.rb, env.ringbuf_sz);
+	} else {
+		bpf_map__set_type(skel->maps.rb, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+		bpf_map__set_key_size(skel->maps.rb, 4);
+		bpf_map__set_value_size(skel->maps.rb, 4);
+		bpf_map__set_max_entries(skel->maps.rb, 0);
+	}
 
 	att_opts.verbose = env.verbose;
 	att_opts.debug = env.debug;
@@ -939,12 +977,27 @@ done:
 		goto cleanup;
 	}
 
-	/* Set up ring buffer polling */
-	rb = ring_buffer__new(bpf_map__fd(env.ctx.skel->maps.rb), handle_event, &env.ctx, NULL);
-	if (!rb) {
-		err = -1;
-		fprintf(stderr, "Failed to create ring buffer\n");
-		goto cleanup;
+	/* Set up ring/perf buffer polling */
+	if (use_ringbuf) {
+		rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, &env.ctx, NULL);
+		if (!rb) {
+			err = -1;
+			fprintf(stderr, "Failed to create ring buffer\n");
+			goto cleanup;
+		}
+	} else {
+		struct perf_buffer_opts pb_opts = {
+			.sample_cb = handle_event_pb,
+			.ctx = &env.ctx,
+		};
+
+		pb = perf_buffer__new(bpf_map__fd(skel->maps.rb),
+				      env.perfbuf_percpu_sz / page_size, &pb_opts);
+		err = libbpf_get_error(pb);
+		if (err) {
+			fprintf(stderr, "Failed to create perf buffer: %d\n", err);
+			goto cleanup;
+		}
 	}
 
 	/* Allow mass tracing */
@@ -953,7 +1006,7 @@ done:
 	/* Process events */
 	printf("Receiving data...\n");
 	while (!exiting) {
-		err = ring_buffer__poll(rb, 100 /* timeout, ms */);
+		err = rb ? ring_buffer__poll(rb, 100) : perf_buffer__poll(pb, 100);
 		/* Ctrl-C will cause -EINTR */
 		if (err == -EINTR) {
 			err = 0;
