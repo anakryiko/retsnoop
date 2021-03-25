@@ -36,6 +36,31 @@
 #define SKEL_ATTACH(skel) ___apply(SKEL_NAME, __attach)(skel)
 #define SKEL_DESTROY(skel) ___apply(SKEL_NAME, __destroy)(skel)
 
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
+
+static const char *enforced_deny_globs[] = {
+	/* we use it for recursion protection */
+	"bpf_get_smp_processor_id",
+
+	/* low-level delicate functions */
+	"migrate_enable",
+	"migrate_disable",
+	"rcu_read_lock*",
+	"rcu_read_unlock*",
+	"__bpf_prog_enter*",
+	"__bpf_prog_exit*",
+	"__bpf_prog_run_args",
+
+	/* long-sleeping syscalls, avoid attaching to them unless kernel has
+	 * e21aa341785c ("bpf: Fix fexit trampoline.")
+	 * TODO: check the presence of above commit and allow long-sleeping
+	 * functions.
+	 */
+	"*_sys_select",
+	"*_sys_epoll_wait",
+	"*_sys_ppoll",
+};
+
 #define MAX_FUNC_ARG_CNT 11
 
 struct mass_attacher;
@@ -79,6 +104,7 @@ struct mass_attacher {
 struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_attacher_opts *opts)
 {
 	struct mass_attacher *att;
+	int i, err;
 
 	if (!skel)
 		return NULL;
@@ -100,6 +126,16 @@ struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_att
 	if (att->debug)
 		att->verbose = true;
 	att->func_filter = opts->func_filter;
+
+	for (i = 0; i < ARRAY_SIZE(enforced_deny_globs); i++) {
+		err = mass_attacher__deny_glob(att, enforced_deny_globs[i]);
+		if (err) {
+			fprintf(stderr, "Failed to add enforced deny glob '%s': %d\n",
+				enforced_deny_globs[i], err);
+			mass_attacher__free(att);
+			return NULL;
+		}
+	}
 
 	return att;
 }
