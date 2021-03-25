@@ -24,6 +24,7 @@ struct {
 
 const volatile bool verbose = false;
 const volatile bool use_ringbuf = false;
+const volatile int targ_tgid = 0;
 
 char func_names[MAX_FUNC_CNT][64] = {};
 long func_ips[MAX_FUNC_CNT] = {};
@@ -193,6 +194,9 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool 
 
 int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip)
 {
+	if (targ_tgid && targ_tgid != (bpf_get_current_pid_tgid() >> 32))
+		return false;
+
 	push_call_stack(cpu, func_id, func_ip);
 	return 0;
 }
@@ -227,6 +231,9 @@ int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret)
 {
 	int flags;
 	bool failed = false;
+
+	if (targ_tgid && targ_tgid != (bpf_get_current_pid_tgid() >> 32))
+		return false;
 
 	flags = func_flags[func_id & MAX_FUNC_MASK];
 	if (flags & FUNC_CANT_FAIL)

@@ -33,6 +33,7 @@ static struct env {
 	bool symb_lines;
 	bool symb_inlines;
 	const char *vmlinux_path;
+	int pid;
 
 	const struct preset **presets;
 	char **allow_globs;
@@ -56,21 +57,23 @@ const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
 "retsnoop tool shows error call stacks based on specified function filters.\n"
 "\n"
-"USAGE: retsnoop [-v|-vv|-vvv] [-s|-ss] [-k VMLINUX_PATH] [-p PRESET]* [-a GLOB]* [-d GLOB]* [-e GLOB]*\n";
+"USAGE: retsnoop [-v|-vv|-vvv] [-s|-ss] [-k VMLINUX_PATH] [-p PID] [-c CASE]* [-a GLOB]* [-d GLOB]* [-e GLOB]*\n";
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
 	  "Verbose output (use -vv for debug-level verbosity, -vvv for libbpf debug log)" },
-	{ "preset", 'p', "PRESET", 0,
-	  "Use a pre-defined set of entry/allow/deny globs for a given use case (supported presets: bpf, perf)" },
+	{ "case", 'c', "CASE", 0,
+	  "Use a pre-defined set of entry/allow/deny globs for a given use case (supported cases: bpf, perf)" },
 	{ "entry", 'e', "GLOB", 0,
 	  "Glob for entry functions that trigger error stack trace collection" },
 	{ "allow", 'a', "GLOB", 0,
 	  "Glob for allowed functions captured in error stack trace collection" },
 	{ "deny", 'd', "GLOB", 0,
 	  "Glob for denied functions ignored during error stack trace collection" },
-	{ "kernel", 'k', "PATH", 0,
-	  "Path to vmlinux image with DWARF information embedded" },
+	{ "pid", 'p', "PID", 0,
+	  "Only trace given PID" },
+	{ "kernel", 'k',
+	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
 	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
 	  "Perform extra symbolization (-s gives line numbers, -ss gives also inline symbols). Relies on having vmlinux with DWARF available." },
 	{},
@@ -118,7 +121,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			}
 		}
 		break;
-	case 'p':
+	case 'c':
 		for (i = 0; i < ARRAY_SIZE(presets); i++) {
 			const struct preset *p = &presets[i];
 
@@ -165,6 +168,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return -ENOMEM;
 		env.entry_globs = tmp;
 		env.entry_globs[env.entry_glob_cnt++] = s;
+		break;
+	case 'p':
+		errno = 0;
+		env.pid = strtol(arg, NULL, 10);
+		if (errno || env.pid < 0) {
+			fprintf(stderr, "Invalid PID: %d\n", env.pid);
+			return -EINVAL;
+		}
 		break;
 	case 's':
 		env.symb_lines = true;
@@ -857,6 +868,7 @@ int main(int argc, char **argv)
 	/* turn on extra bpf_printk()'s on BPF side only in debug extra mode */
 	if (env.debug_extra)
 		skel->rodata->verbose = true;
+	skel->rodata->targ_tgid = env.pid;
 
 	skel->rodata->use_ringbuf = use_ringbuf = kernel_supports_ringbuf();
 	if (use_ringbuf) {

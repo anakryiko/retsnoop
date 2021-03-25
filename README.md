@@ -138,21 +138,37 @@ To specify entry/allow/deny globs, use `-e`/`-a`/`-d` options, like so:
 $ sudo retsnoop -e '*_sys_bpf' -a '*bpf*' -d 'migrate*' -d 'rcu*'
 ```
 
-## Presets
+## Use cases
 
-Additionally, retsnoop comes with so-called "presets", which are predefined
-sets of entry, allow, and deny globs. One or more of those presets can be
+Additionally, retsnoop comes with so-called use cases, which are predefined
+sets of entry, allow, and deny globs. One or more of those use cases can be
 specified:
 
 ```shell
-$ sudo retsnoop -p bpf
+$ sudo retsnoop -c bpf
 ```
 
-Either preset or at least one entry glob that matches at least one function
+Either use case or at least one entry glob that matches at least one function
 has to be specified. Entry functions (those that match entry globs) are
 automatically enlisted as allowed functions.
 
-Currently only `bpf` preset is defined.
+Currently only `bpf` use case is defined.
+
+## Filtering by process ID (PID)
+
+It is possible to only trace kernel stacks within the context of specified
+PID:
+
+```shell
+$ sudo retsnoop -c bpf -p 123
+```
+
+In the future, retsnoop might support auto-spawning of the process in perf
+fashion like this:
+
+```shell
+$ sudo retsnoop -c bpf -- ./my_app arg1 arg2
+```
 
 ## Call stack symbolization
 Retsnoop is "hosting" fast Rust-based
