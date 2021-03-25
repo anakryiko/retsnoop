@@ -226,7 +226,7 @@ dependencies are already included:
 
 Once dependencies are satisfied, the rest is simple:
 ```shell
-$ make -C src -j
+$ make -C src
 ```
 
 You'll get `retsnoop` binary under `src/` folder. You can copy it to
