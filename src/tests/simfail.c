@@ -9,6 +9,8 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
+#include "tests/kprobe_bad_kfunc.skel.h"
+
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
 static struct env {
@@ -36,6 +38,9 @@ static const struct argp_option opts[] = {
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
 	switch (key) {
+	case 'v':
+		env.verbose = true;
+		break;
 	case 'a':
 		env.all = true;
 		break;
@@ -158,6 +163,19 @@ static void fail_bpf_bad_map(long arg)
 	close(fd);
 }
 
+void fail_bpf_kprobe_bad_kfunc(long arg)
+{
+	struct kprobe_bad_kfunc_bpf *skel;
+
+	skel = kprobe_bad_kfunc_bpf__open_and_load();
+	if (!skel) {
+		fprintf(stderr, "Failed to open/load kprobe_bad_kfunc_bpf skeleton!\n");
+		return;
+	}
+	kprobe_bad_kfunc_bpf__attach(skel); /* should fail */
+	kprobe_bad_kfunc_bpf__destroy(skel);
+}
+
 struct case_desc {
 	const char *subsys;
 	const char *name;
@@ -185,6 +203,9 @@ struct case_desc {
 	  "Pass bad BPF map key pointer on lookup" },
 	{ "bpf","bpf-bad-map-lookup-value", fail_bpf_bad_map, BAD_MAP_LOOKUP_VALUE,
 	  "Pass bad BPF map value pointer on lookup" },
+
+	{ "bpf","bpf-kprobe-bad-kfunc", fail_bpf_kprobe_bad_kfunc, 0,
+	  "Attempt to attach kprobe BPF program to not existing kfunc" },
 };
 
 int main(int argc, char **argv)

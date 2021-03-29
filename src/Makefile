@@ -70,7 +70,7 @@ $(OUTPUT)/%.skel.h: $(OUTPUT)/%.bpf.o
 	$(Q)$(BPFTOOL) gen skeleton $< > $@
 
 # Build application object files
-$(OUTPUT)/%.o: %.c $(wildcard %.h) | $(OUTPUT)
+$(OUTPUT)/%.o: %.c $(wildcard %.h) | $(OUTPUT) $(OUTPUT)/tests
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
@@ -97,6 +97,9 @@ retsnoop: $(addprefix $(OUTPUT)/,					\
 	  $(LIBBPF_OBJ)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -o $@
+
+$(OUTPUT)/tests/simfail.o: $(OUTPUT)/tests/kprobe_bad_kfunc.skel.h	\
+			   | $(OUTPUT)/tests
 
 simfail: $(addprefix $(OUTPUT)/tests/,					\
 		     simfail.o)						\

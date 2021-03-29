@@ -261,17 +261,17 @@ static const char *bpf_deny_globs[] = {
 };
 
 static const char *perf_entry_globs[] = {
-	"*_sys_perf_event_open",
+	"*_sys__perf_event_open",
+	"perf_ioctl",
 	NULL,
 };
 
 static const char *perf_allow_globs[] = {
-	"perf_*",
+	"*perf_*",
 	NULL,
 };
 
 static const char *perf_deny_globs[] = {
-	"bla",
 	NULL,
 };
 
