@@ -192,7 +192,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool 
 	return true;
 }
 
-int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip)
+static int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip)
 {
 	if (targ_tgid && targ_tgid != (bpf_get_current_pid_tgid() >> 32))
 		return false;
@@ -227,7 +227,7 @@ static __always_inline bool IS_ERR_VALUE32(u64 x)
 	return true;
 }
 
-int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret)
+static int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret)
 {
 	int flags;
 	bool failed = false;
