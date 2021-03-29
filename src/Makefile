@@ -37,14 +37,14 @@ else
 endif
 
 .PHONY: all
-all: retsnoop
+all: retsnoop simfail
 
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
 	$(Q)rm -rf $(OUTPUT) retsnoop
 
-$(OUTPUT) $(OUTPUT)/libbpf:
+$(OUTPUT) $(OUTPUT)/libbpf $(OUTPUT)/tests:
 	$(call msg,MKDIR,$@)
 	$(Q)mkdir -p $@
 
@@ -59,13 +59,13 @@ $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPU
 		    install
 
 # Build BPF code
-$(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) vmlinux.h | $(OUTPUT)
+$(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) vmlinux.h | $(OUTPUT) $(OUTPUT)/tests
 	$(call msg,BPF,$@)
 	$(Q)$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -c $(filter %.c,$^) -o $@
 	$(Q)$(LLVM_STRIP) -g $@ # strip useless DWARF info
 
 # Generate BPF skeletons
-$(OUTPUT)/retsnoop.skel.h: $(OUTPUT)/retsnoop.bpf.o
+$(OUTPUT)/%.skel.h: $(OUTPUT)/%.bpf.o
 	$(call msg,GEN-SKEL,$@)
 	$(Q)$(BPFTOOL) gen skeleton $< > $@
 
@@ -94,6 +94,12 @@ retsnoop: $(addprefix $(OUTPUT)/,					\
 		      addr2line.o					\
 		      addr2line.embed.o					\
 		      mass_attacher.o)					\
+	  $(LIBBPF_OBJ)
+	$(call msg,BINARY,$@)
+	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -o $@
+
+simfail: $(addprefix $(OUTPUT)/tests/,					\
+		     simfail.o)						\
 	  $(LIBBPF_OBJ)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -o $@
