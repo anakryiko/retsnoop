@@ -537,7 +537,12 @@ static void print_item(struct ctx *ctx, const struct fstack_item *fitem, const s
 	int src_print_off = 70, func_print_off;
 
 	if (ctx->a2l && kitem && !kitem->filtered) {
-		symb_cnt = addr2line__symbolize(ctx->a2l, kitem->addr, resps);
+		long addr = kitem->addr;
+
+		if (kitem->ksym && kitem->ksym && kitem->ksym->addr - kitem->addr == FTRACE_OFFSET)
+			addr -= FTRACE_OFFSET;
+
+		symb_cnt = addr2line__symbolize(ctx->a2l, addr, resps);
 		if (symb_cnt < 0)
 			symb_cnt = 0;
 		if (symb_cnt > 0)
