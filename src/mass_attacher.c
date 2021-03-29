@@ -49,7 +49,6 @@ static const char *enforced_deny_globs[] = {
 	"rcu_read_unlock*",
 	"__bpf_prog_enter*",
 	"__bpf_prog_exit*",
-	"__bpf_prog_run_args",
 
 	/* long-sleeping syscalls, avoid attaching to them unless kernel has
 	 * e21aa341785c ("bpf: Fix fexit trampoline.")
@@ -97,8 +96,10 @@ struct mass_attacher {
 
 	int allow_glob_cnt;
 	int deny_glob_cnt;
-	char **allow_globs;
-	char **deny_globs;
+	struct {
+		char *glob;
+		int matches;
+	} *allow_globs, *deny_globs;
 };
 
 struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_attacher_opts *opts)
@@ -216,9 +217,12 @@ int mass_attacher__allow_glob(struct mass_attacher *att, const char *glob)
 	att->allow_globs = tmp;
 
 	s = strdup(glob);
-	att->allow_globs[att->allow_glob_cnt++] = s;
 	if (!s)
 		return -ENOMEM;
+
+	att->allow_globs[att->allow_glob_cnt].glob = s;
+	att->allow_globs[att->allow_glob_cnt].matches = 0;
+	att->allow_glob_cnt++;
 
 	return 0;
 }
@@ -236,9 +240,13 @@ int mass_attacher__deny_glob(struct mass_attacher *att, const char *glob)
 	att->deny_globs = tmp;
 
 	s = strdup(glob);
-	att->deny_globs[att->deny_glob_cnt++] = s;
 	if (!s)
 		return -ENOMEM;
+
+	att->deny_globs[att->deny_glob_cnt].glob = s;
+	att->deny_globs[att->deny_glob_cnt].matches = 0;
+	att->deny_glob_cnt++;
+
 
 	return 0;
 }
@@ -342,20 +350,23 @@ int mass_attacher__prepare(struct mass_attacher *att)
 
 		/* any deny glob forces skipping a function */
 		for (j = 0; j < att->deny_glob_cnt; j++) {
-			if (!glob_matches(att->deny_globs[j], func_name))
+			if (!glob_matches(att->deny_globs[j].glob, func_name))
 				continue;
+			att->deny_globs[j].matches++;
 			if (att->debug_extra)
 				printf("Function '%s' is denied by '%s' glob.\n",
-				       func_name, att->deny_globs[j]);
+				       func_name, att->deny_globs[j].glob);
 			goto skip;
 		}
 		/* if any allow glob is specified, function has to match one of them */
 		if (att->allow_glob_cnt) {
 			for (j = 0; j < att->allow_glob_cnt; j++) {
-				if (!glob_matches(att->allow_globs[j], func_name))
+				if (!glob_matches(att->allow_globs[j].glob, func_name))
 					continue;
+				att->allow_globs[j].matches++;
 				if (att->debug_extra)
-					printf("Function '%s' is allowed by '%s' glob.\n", func_name, att->allow_globs[j]);
+					printf("Function '%s' is allowed by '%s' glob.\n",
+					       func_name, att->allow_globs[j].glob);
 				goto proceed;
 			}
 			if (att->debug_extra)
@@ -443,6 +454,17 @@ proceed:
 	if (att->verbose) {
 		printf("Found %d attachable functions in total.\n", att->func_cnt);
 		printf("Skipped %d functions in total.\n", func_skip);
+
+		if (att->debug) {
+			for (i = 0; i < att->deny_glob_cnt; i++) {
+				printf("Deny glob '%s' matched %d functions.\n",
+				       att->deny_globs[i].glob, att->deny_globs[i].matches);
+			}
+			for (i = 0; i < att->allow_glob_cnt; i++) {
+				printf("Allow glob '%s' matched %d functions.\n",
+				       att->allow_globs[i].glob, att->allow_globs[i].matches);
+			}
+		}
 	}
 
 	bpf_map__set_max_entries(att->skel->maps.ip_to_id, att->func_cnt);
