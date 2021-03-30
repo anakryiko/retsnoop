@@ -10,6 +10,7 @@
 #include <bpf/libbpf.h>
 
 #include "tests/kprobe_bad_kfunc.skel.h"
+#include "tests/fentry_unsupp_func.skel.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
@@ -176,6 +177,19 @@ void fail_bpf_kprobe_bad_kfunc(long arg)
 	kprobe_bad_kfunc_bpf__destroy(skel);
 }
 
+void fail_bpf_fentry_unsupp_func(long arg)
+{
+	struct fentry_unsupp_func_bpf *skel;
+
+	skel = fentry_unsupp_func_bpf__open_and_load();
+	if (!skel) {
+		fprintf(stderr, "Failed to open/load kprobe_bad_kfunc_bpf skeleton!\n");
+		return;
+	}
+	fentry_unsupp_func_bpf__attach(skel); /* should fail */
+	fentry_unsupp_func_bpf__destroy(skel);
+}
+
 struct case_desc {
 	const char *subsys;
 	const char *name;
@@ -206,6 +220,8 @@ struct case_desc {
 
 	{ "bpf","bpf-kprobe-bad-kfunc", fail_bpf_kprobe_bad_kfunc, 0,
 	  "Attempt to attach kprobe BPF program to not existing kfunc" },
+	{ "bpf","bpf-fentry-unsupp-func", fail_bpf_fentry_unsupp_func, 0,
+	  "Attempt to attach fentry BPF program to unsupported function" },
 };
 
 int main(int argc, char **argv)

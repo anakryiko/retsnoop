@@ -99,6 +99,7 @@ retsnoop: $(addprefix $(OUTPUT)/,					\
 	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -o $@
 
 $(OUTPUT)/tests/simfail.o: $(OUTPUT)/tests/kprobe_bad_kfunc.skel.h	\
+			   $(OUTPUT)/tests/fentry_unsupp_func.skel.h	\
 			   | $(OUTPUT)/tests
 
 simfail: $(addprefix $(OUTPUT)/tests/,					\
