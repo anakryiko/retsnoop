@@ -239,7 +239,7 @@ int main(int argc, char **argv)
 	/* Set up libbpf errors and debug info callback */
 	libbpf_set_print(libbpf_print_fn);
 
-	n = env.all ? ARRAY_SIZE(cases) : env.case_cnt;
+	n = env.all || (env.case_cnt == 0 && env.list) ? ARRAY_SIZE(cases) : env.case_cnt;
 	if (n == 0) {
 		fprintf(stderr, "No cases specified, please use -a or list case names.\n");
 		return 1;
@@ -247,7 +247,7 @@ int main(int argc, char **argv)
 	for (i = 0; i < n; i++) {
 		struct case_desc *c = NULL;
 
-		if (env.all) {
+		if (env.all || env.case_cnt == 0) {
 			c = &cases[i];
 		} else {
 			for (j = 0; j < ARRAY_SIZE(cases); j++) {
