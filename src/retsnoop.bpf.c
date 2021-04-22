@@ -5,7 +5,6 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include "retsnoop.h"
-#include "mass_attach.bpf.c"
 
 #undef bpf_printk
 #define bpf_printk(fmt, ...)						\
@@ -192,7 +191,8 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool 
 	return true;
 }
 
-static int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip)
+/* mass-attacher BPF library is calling this function, so it should be global */
+__hidden int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip)
 {
 	if (targ_tgid && targ_tgid != (bpf_get_current_pid_tgid() >> 32))
 		return false;
@@ -227,7 +227,8 @@ static __always_inline bool IS_ERR_VALUE32(u64 x)
 	return true;
 }
 
-static int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret)
+/* mass-attacher BPF library is calling this function, so it should be global */
+__hidden int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret)
 {
 	int flags;
 	bool failed = false;

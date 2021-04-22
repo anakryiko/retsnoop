@@ -149,7 +149,7 @@ void mass_attacher__free(struct mass_attacher *att)
 		return;
 
 	if (att->skel)
-		att->skel->bss->ready = false;
+		att->skel->bss->mass_attach__ready = false;
 
 	ksyms__free(att->ksyms);
 	btf__free(att->vmlinux_btf);
@@ -467,7 +467,7 @@ proceed:
 		}
 	}
 
-	bpf_map__set_max_entries(att->skel->maps.ip_to_id, att->func_cnt);
+	bpf_map__set_max_entries(att->skel->maps.mass_attach__ip_to_id, att->func_cnt);
 
 	return 0;
 }
@@ -583,7 +583,7 @@ static int clone_prog(const struct bpf_program *prog,
 
 int mass_attacher__load(struct mass_attacher *att)
 {
-	int err, i;
+	int err, i, map_fd;
 
 	/* we can't pass extra context to hijack_progs, so we set thread-local
 	 * cur_attacher variable temporarily for the duration of skeleton's
@@ -607,7 +607,8 @@ int mass_attacher__load(struct mass_attacher *att)
 		const char *func_name = att->func_infos[i].name;
 		long func_addr = att->func_infos[i].addr;
 
-		err = bpf_map_update_elem(bpf_map__fd(att->skel->maps.ip_to_id), &func_addr, &i, 0);
+		map_fd = bpf_map__fd(att->skel->maps.mass_attach__ip_to_id);
+		err = bpf_map_update_elem(map_fd, &func_addr, &i, 0);
 		if (err) {
 			err = -errno;
 			fprintf(stderr, "Failed to add 0x%lx -> '%s' lookup entry to BPF map: %d\n",
@@ -693,7 +694,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 
 void mass_attacher__activate(struct mass_attacher *att)
 {
-	att->skel->bss->ready = true;
+	att->skel->bss->mass_attach__ready = true;
 }
 
 struct SKEL_NAME *mass_attacher__skeleton(const struct mass_attacher *att)

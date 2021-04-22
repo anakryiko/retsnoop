@@ -13,17 +13,20 @@
 })
 
 /* these two are defined by custom BPF code outside of mass_attacher */
-static int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip);
-static int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret);
+extern int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip);
+extern int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret);
 
-struct {
+static struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, long);
 	__type(value, unsigned);
 } ip_to_id SEC(".maps");
 
-bool ready = false;
-int running[MAX_CPU_CNT] = {};
+#define MAX_CPU_CNT 256
+#define MAX_CPU_MASK (MAX_CPU_CNT - 1)
+
+static int running[MAX_CPU_CNT] = {};
+static volatile bool ready = false;
 
 static __always_inline bool recur_enter(u32 cpu)
 {
