@@ -216,7 +216,7 @@ static const char *bpf_entry_globs[] = {
 };
 
 static const char *bpf_allow_globs[] = {
-	"*bpf_*",
+	"*bpf*",
 	"*btf*",
 	"do_check*",
 	"reg_*",
