@@ -136,9 +136,34 @@ static int append_glob(char ***globs, int *cnt, const char *glob)
 	return 0;
 }
 
+static int append_glob_file(char ***globs, int *cnt, const char *file)
+{
+	char buf[256];
+	FILE *f;
+	int err = 0;
+
+	f = fopen(file, "r");
+	if (!f) {
+		err = -errno;
+		fprintf(stderr, "Failed to open '%s': %d\n", file, err);
+		return err;
+	}
+
+	while (fscanf(f, "%s", buf) == 1) {
+		if (append_glob(globs, cnt, buf)) {
+			err = -ENOMEM;
+			goto cleanup;
+		}
+	}
+
+cleanup:
+	fclose(f);
+	return err;
+}
+
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
-	int i, j;
+	int i, j, err;
 
 	switch (key) {
 	case 'v':
@@ -189,16 +214,31 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		fprintf(stderr, "Unknown preset '%s' specified.\n", arg);
 		break;
 	case 'a':
-		if (append_glob(&env.allow_globs, &env.allow_glob_cnt, arg))
+		if (arg[0] == '@') {
+			err = append_glob_file(&env.allow_globs, &env.allow_glob_cnt, arg + 1);
+			if (err)
+				return err;
+		} else if (append_glob(&env.allow_globs, &env.allow_glob_cnt, arg)) {
 			return -ENOMEM;
+		}
 		break;
 	case 'd':
-		if (append_glob(&env.deny_globs, &env.deny_glob_cnt, arg))
+		if (arg[0] == '@') {
+			err = append_glob_file(&env.deny_globs, &env.deny_glob_cnt, arg + 1);
+			if (err)
+				return err;
+		} else if (append_glob(&env.deny_globs, &env.deny_glob_cnt, arg)) {
 			return -ENOMEM;
+		}
 		break;
 	case 'e':
-		if (append_glob(&env.entry_globs, &env.entry_glob_cnt, arg))
+		if (arg[0] == '@') {
+			err = append_glob_file(&env.entry_globs, &env.entry_glob_cnt, arg + 1);
+			if (err)
+				return err;
+		} else if (append_glob(&env.entry_globs, &env.entry_glob_cnt, arg)) {
 			return -ENOMEM;
+		}
 		break;
 	case 'p':
 		errno = 0;
