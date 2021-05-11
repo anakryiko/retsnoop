@@ -42,7 +42,7 @@ all: retsnoop simfail
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT) retsnoop
+	$(Q)rm -rf $(OUTPUT) retsnoop simfail
 
 $(OUTPUT) $(OUTPUT)/libbpf $(OUTPUT)/tests:
 	$(call msg,MKDIR,$@)
