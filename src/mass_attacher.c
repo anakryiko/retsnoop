@@ -149,7 +149,7 @@ void mass_attacher__free(struct mass_attacher *att)
 		return;
 
 	if (att->skel)
-		att->skel->bss->mass_attach__ready = false;
+		att->skel->bss->ready = false;
 
 	ksyms__free(att->ksyms);
 	btf__free(att->vmlinux_btf);
@@ -467,7 +467,7 @@ proceed:
 		}
 	}
 
-	bpf_map__set_max_entries(att->skel->maps.mass_attach__ip_to_id, att->func_cnt);
+	bpf_map__set_max_entries(att->skel->maps.ip_to_id, att->func_cnt);
 
 	return 0;
 }
@@ -607,7 +607,7 @@ int mass_attacher__load(struct mass_attacher *att)
 		const char *func_name = att->func_infos[i].name;
 		long func_addr = att->func_infos[i].addr;
 
-		map_fd = bpf_map__fd(att->skel->maps.mass_attach__ip_to_id);
+		map_fd = bpf_map__fd(att->skel->maps.ip_to_id);
 		err = bpf_map_update_elem(map_fd, &func_addr, &i, 0);
 		if (err) {
 			err = -errno;
@@ -694,7 +694,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 
 void mass_attacher__activate(struct mass_attacher *att)
 {
-	att->skel->bss->mass_attach__ready = true;
+	att->skel->bss->ready = true;
 }
 
 struct SKEL_NAME *mass_attacher__skeleton(const struct mass_attacher *att)

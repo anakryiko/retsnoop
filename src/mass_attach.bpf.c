@@ -16,7 +16,7 @@
 extern int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip);
 extern int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret);
 
-static struct {
+struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, long);
 	__type(value, unsigned);
@@ -25,8 +25,8 @@ static struct {
 #define MAX_CPU_CNT 256
 #define MAX_CPU_MASK (MAX_CPU_CNT - 1)
 
-static int running[MAX_CPU_CNT] = {};
-static volatile bool ready = false;
+int running[MAX_CPU_CNT] = {};
+bool ready = false;
 
 static __always_inline bool recur_enter(u32 cpu)
 {
