@@ -21,16 +21,20 @@ struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 } rb SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u32);
+	__type(value, struct call_stack);
+} stacks SEC(".maps");
+
 const volatile bool verbose = false;
 const volatile bool use_ringbuf = false;
 const volatile int targ_tgid = 0;
+const volatile bool emit_success_stacks = false;
 
 char func_names[MAX_FUNC_CNT][MAX_FUNC_NAME_LEN] = {};
 long func_ips[MAX_FUNC_CNT] = {};
 int func_flags[MAX_FUNC_CNT] = {};
-
-struct call_stack stacks[MAX_CPU_CNT] = {};
-long scratch[MAX_CPU_CNT] = {};
 
 static __always_inline int ringbuf_output(void *ctx, void *map, struct call_stack *stack)
 {
@@ -75,14 +79,25 @@ static __noinline void save_stitch_stack(struct call_stack *stack)
 	//ringbuf_output(ctx, &rb, stack);
 }
 
-static __noinline bool push_call_stack(u32 cpu, u32 id, u64 ip)
+static struct call_stack empty_stack;
+
+static __noinline bool push_call_stack(u32 pid, u32 id, u64 ip)
 {
-	struct call_stack *stack = &stacks[cpu & MAX_CPU_MASK];
-	u64 d = stack->depth;
+	struct call_stack *stack;
+	u64 d;
 
-	if (d == 0 && !(func_flags[id & MAX_FUNC_MASK] & FUNC_IS_ENTRY))
-		return false;
+	stack = bpf_map_lookup_elem(&stacks, &pid);
+	if (!stack) {
+		if (!(func_flags[id & MAX_FUNC_MASK] & FUNC_IS_ENTRY))
+			return false;
 
+		bpf_map_update_elem(&stacks, &pid, &empty_stack, BPF_ANY);
+		stack = bpf_map_lookup_elem(&stacks, &pid);
+		if (!stack)
+			return false;
+	}
+
+	d = stack->depth;
 	barrier_var(d);
 	if (d >= MAX_FSTACK_DEPTH)
 		return false;
@@ -103,7 +118,7 @@ static __noinline bool push_call_stack(u32 cpu, u32 id, u64 ip)
 	stack->func_lat[d] = bpf_ktime_get_ns();
 
 	if (verbose) {
-		bpf_printk("PUSH(1) CPU %d DEPTH %d NAME %s", cpu, d + 1, func_names[id & MAX_FUNC_MASK]);
+		bpf_printk("PUSH(1) PID %d DEPTH %d NAME %s", pid, d + 1, func_names[id & MAX_FUNC_MASK]);
 		bpf_printk("PUSH(2) ID %d ADDR %lx NAME %s", id, ip, func_names[id & MAX_FUNC_MASK]);
 	}
 
@@ -114,11 +129,16 @@ static __noinline bool push_call_stack(u32 cpu, u32 id, u64 ip)
 static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool is_err)
 {
 	u32 cpu = bpf_get_smp_processor_id();
-	struct call_stack *stack = &stacks[cpu & MAX_CPU_MASK];
-	u64 d = stack->depth;
+	u32 pid = (u32)bpf_get_current_pid_tgid();
+	struct call_stack *stack;
+	u64 d, actual_ip;
 	u32 actual_id;
-	u64 actual_ip;
 
+	stack = bpf_map_lookup_elem(&stacks, &pid);
+	if (!stack)
+		return false;
+
+	d = stack->depth;
 	if (d == 0)
 		return false;
  
@@ -129,10 +149,10 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool 
 		return false;
 
 	if (verbose) {
-		bpf_printk("POP(0) CPU %d DEPTH %d MAX DEPTH %d", cpu, stack->depth, stack->max_depth);
+		bpf_printk("POP(0) PID %d DEPTH %d MAX DEPTH %d", pid, stack->depth, stack->max_depth);
 		bpf_printk("POP(1) ID %d ADDR %lx NAME %s", id, ip, func_names[id & MAX_FUNC_MASK]);
 		if (is_err)
-			bpf_printk("POP(2) ERROR RESULT %ld (%dt)", res, res);
+			bpf_printk("POP(2) ERROR RESULT %ld (%d)", res, res);
 		else
 			bpf_printk("POP(2) SUCCESS RESULT %ld (%d)", res, res);
 	}
@@ -145,7 +165,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool 
 			actual_ip = 0;
 
 		if (verbose) {
-			bpf_printk("POP(0) UNEXPECTED CPU %d DEPTH %d MAX DEPTH %d", cpu, stack->depth, stack->max_depth);
+			bpf_printk("POP(0) UNEXPECTED PID %d DEPTH %d MAX DEPTH %d", pid, stack->depth, stack->max_depth);
 			bpf_printk("POP(1) UNEXPECTEC GOT ID %d ADDR %lx NAME %s", id, ip, func_names[id & MAX_FUNC_MASK]);
 			bpf_printk("POP(2) UNEXPECTED. WANTED ID %u ADDR %lx NAME %s",
 				   actual_id, actual_ip, func_names[actual_id & MAX_FUNC_MASK]);
@@ -155,6 +175,9 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool 
 		stack->max_depth = 0;
 		stack->is_err = false;
 		stack->kstack_sz = 0;
+
+		bpf_map_delete_elem(&stacks, &pid);
+
 		return false;
 	}
 
@@ -173,11 +196,11 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool 
 	if (d == 0) {
 		if (stack->is_err) {
 			if (verbose)
-				bpf_printk("CPU %d EMITTING DEPTH 0 ERROR STACK MAX DEPTH %d\n", cpu, stack->max_depth);
+				bpf_printk("PID %d EMITTING DEPTH 0 ERROR STACK MAX DEPTH %d\n", pid, stack->max_depth);
 			ringbuf_output(ctx, &rb, stack);
-		} else {
+		} else if (emit_success_stacks) {
 			if (verbose)
-				bpf_printk("CPU %d EMITTING DEPTH 0 SUCCESS STACK MAX DEPTH %d\n", cpu, stack->max_depth);
+				bpf_printk("PID %d EMITTING DEPTH 0 SUCCESS STACK MAX DEPTH %d\n", pid, stack->max_depth);
 			ringbuf_output(ctx, &rb, stack);
 		}
 		stack->is_err = false;
@@ -186,6 +209,8 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool 
 		stack->depth = 0;
 		stack->max_depth = 0;
 		stack->kstack_sz = 0;
+
+		bpf_map_delete_elem(&stacks, &pid);
 	}
 
 	return true;
@@ -194,10 +219,14 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool 
 /* mass-attacher BPF library is calling this function, so it should be global */
 __hidden int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip)
 {
-	if (targ_tgid && targ_tgid != (bpf_get_current_pid_tgid() >> 32))
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	u32 pid = (u32)pid_tgid;
+	u32 tgid = pid_tgid >> 32;
+
+	if (targ_tgid && targ_tgid != tgid)
 		return false;
 
-	push_call_stack(cpu, func_id, func_ip);
+	push_call_stack(pid, func_id, func_ip);
 	return 0;
 }
 

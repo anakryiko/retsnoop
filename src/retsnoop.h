@@ -8,10 +8,6 @@
 #define MAX_FUNC_MASK (MAX_FUNC_CNT - 1)
 #define MAX_FUNC_NAME_LEN 40
 
-/* MAX_CPU_CNT needs to be power-of-2 */
-#define MAX_CPU_CNT 64
-#define MAX_CPU_MASK (MAX_CPU_CNT - 1)
-
 #define MAX_FSTACK_DEPTH 64
 #define MAX_KSTACK_DEPTH 128
 

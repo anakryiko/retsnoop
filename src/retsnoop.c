@@ -50,9 +50,11 @@ static struct env {
 	struct ctx ctx;
 	int ringbuf_sz;
 	int perfbuf_percpu_sz;
+	int stacks_map_sz;
 } env = {
 	.ringbuf_sz = 4 * 1024 * 1024,
 	.perfbuf_percpu_sz = 256 * 1024,
+	.stacks_map_sz = 1024,
 };
 
 const char *argp_program_version = "retsnoop (aka dude-where-is-my-error) 0.1";
@@ -64,6 +66,7 @@ const char argp_program_doc[] =
 
 #define OPT_SUCCESS_STACKS 1000
 #define OPT_FULL_STACKS 1001
+#define OPT_STACKS_MAP_SIZE 1002
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
@@ -88,6 +91,8 @@ static const struct argp_option opts[] = {
 	  "Emit matched successful stacks" },
 	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
 	  "Emit non-filtered full stack traces" },
+	{ "stacks-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
+	  "Stacks map size (default 1024)" },
 	{},
 };
 
@@ -213,6 +218,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case OPT_FULL_STACKS:
 		env.emit_full_stacks = true;
+		break;
+	case OPT_STACKS_MAP_SIZE:
+		errno = 0;
+		env.stacks_map_sz = strtol(arg, NULL, 10);
+		if (errno || env.pid < 0) {
+			fprintf(stderr, "Invalid stacks map size: %d\n", env.stacks_map_sz);
+			return -EINVAL;
+		}
 		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
@@ -874,9 +887,13 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Failed to open BPF skeleton\n");
 		return -EINVAL;
 	}
+
+	bpf_map__set_max_entries(skel->maps.stacks, env.stacks_map_sz);
+
 	/* turn on extra bpf_printk()'s on BPF side */
 	skel->rodata->verbose = env.bpf_logs;
 	skel->rodata->targ_tgid = env.pid;
+	skel->rodata->emit_success_stacks = env.emit_success_stacks;
 
 	skel->rodata->use_ringbuf = use_ringbuf = kernel_supports_ringbuf();
 	if (use_ringbuf) {
