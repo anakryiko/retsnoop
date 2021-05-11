@@ -60,7 +60,7 @@ static const char *enforced_deny_globs[] = {
 	"*_sys_ppoll",
 };
 
-#define MAX_FUNC_ARG_CNT 11
+#define MAX_FUNC_ARG_CNT 6
 
 struct mass_attacher;
 
@@ -295,7 +295,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		return err;
 	}
 
-	_Static_assert(MAX_FUNC_ARG_CNT == 11, "Unexpected maximum function arg count");
+	_Static_assert(MAX_FUNC_ARG_CNT == 6, "Unexpected maximum function arg count");
 	att->fentries[0] = att->skel->progs.fentry0;
 	att->fentries[1] = att->skel->progs.fentry1;
 	att->fentries[2] = att->skel->progs.fentry2;
@@ -303,11 +303,6 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	att->fentries[4] = att->skel->progs.fentry4;
 	att->fentries[5] = att->skel->progs.fentry5;
 	att->fentries[6] = att->skel->progs.fentry6;
-	att->fentries[7] = att->skel->progs.fentry7;
-	att->fentries[8] = att->skel->progs.fentry8;
-	att->fentries[9] = att->skel->progs.fentry9;
-	att->fentries[10] = att->skel->progs.fentry10;
-	att->fentries[11] = att->skel->progs.fentry11;
 	att->fexits[0] = att->skel->progs.fexit0;
 	att->fexits[1] = att->skel->progs.fexit1;
 	att->fexits[2] = att->skel->progs.fexit2;
@@ -315,11 +310,6 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	att->fexits[4] = att->skel->progs.fexit4;
 	att->fexits[5] = att->skel->progs.fexit5;
 	att->fexits[6] = att->skel->progs.fexit6;
-	att->fexits[7] = att->skel->progs.fexit7;
-	att->fexits[8] = att->skel->progs.fexit8;
-	att->fexits[9] = att->skel->progs.fexit9;
-	att->fexits[10] = att->skel->progs.fexit10;
-	att->fexits[11] = att->skel->progs.fexit11;
 
 	att->vmlinux_btf = libbpf_find_kernel_btf();
 	err = libbpf_get_error(att->vmlinux_btf);
@@ -670,24 +660,27 @@ int mass_attacher__attach(struct mass_attacher *att)
 		const char *func_name = att->func_infos[i].name;
 		long func_addr = att->func_infos[i].addr;
 
-		if (att->verbose)
-			printf("Attaching to function #%d '%s'...\n", i + 1, func_name);
-		else if (att->debug)
-			printf("Attaching to function #%d '%s' (addr %lx)...\n", i + 1, func_name, func_addr);
 
 		prog_fd = att->func_infos[i].fentry_prog_fd;
 		err = bpf_raw_tracepoint_open(NULL, prog_fd);
 		if (err < 0) {
-			fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s) at addr %lx, skipping: %d\n",
+			fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
 				prog_fd, i + 1, func_name, func_addr, -errno);
+			return err;
 		}
 
 		prog_fd = att->func_infos[i].fexit_prog_fd;
 		err = bpf_raw_tracepoint_open(NULL, prog_fd);
 		if (err < 0) {
-			fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s) at addr %lx, skipping: %d\n",
+			fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
 				prog_fd, i + 1, func_name, func_addr, -errno);
+			return err;
 		}
+
+		if (att->verbose)
+			printf("Attached to function #%d '%s'.\n", i + 1, func_name);
+		else if (att->debug)
+			printf("Attached to function #%d '%s' (addr %lx).\n", i + 1, func_name, func_addr);
 	}
 
 	if (att->verbose)
