@@ -667,27 +667,31 @@ int mass_attacher__attach(struct mass_attacher *att)
 	int i, err, prog_fd;
 
 	for (i = 0; i < att->func_cnt; i++) {
-		if (att->debug)
-			printf("Attaching function '%s' (#%d at addr %lx)...\n",
-			       att->func_infos[i].name, i + 1, att->func_infos[i].addr);
+		const char *func_name = att->func_infos[i].name;
+		long func_addr = att->func_infos[i].addr;
+
+		if (att->verbose)
+			printf("Attaching to function #%d '%s'...\n", i + 1, func_name);
+		else if (att->debug)
+			printf("Attaching to function #%d '%s' (addr %lx)...\n", i + 1, func_name, func_addr);
 
 		prog_fd = att->func_infos[i].fentry_prog_fd;
 		err = bpf_raw_tracepoint_open(NULL, prog_fd);
 		if (err < 0) {
-			fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s), skipping: %d\n",
-				prog_fd, i + 1, att->func_infos[i].name, -errno);
+			fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s) at addr %lx, skipping: %d\n",
+				prog_fd, i + 1, func_name, func_addr, -errno);
 		}
 
 		prog_fd = att->func_infos[i].fexit_prog_fd;
 		err = bpf_raw_tracepoint_open(NULL, prog_fd);
 		if (err < 0) {
-			fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s), skipping: %d\n",
-				prog_fd, i + 1, att->func_infos[i].name, -errno);
+			fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s) at addr %lx, skipping: %d\n",
+				prog_fd, i + 1, func_name, func_addr, -errno);
 		}
 	}
 
 	if (att->verbose)
-		printf("Total %d BPF programs attached successfully!\n", 2 * att->func_cnt);
+		printf("Total %d kernel functions attached successfully!\n", att->func_cnt);
 
 	return 0;
 }

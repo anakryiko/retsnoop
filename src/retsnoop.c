@@ -32,6 +32,9 @@ static struct env {
 	bool debug_extra;
 	bool symb_lines;
 	bool symb_inlines;
+	bool bpf_logs;
+	bool emit_success_stacks;
+	bool emit_full_stacks;
 	const char *vmlinux_path;
 	int pid;
 
@@ -59,9 +62,14 @@ const char argp_program_doc[] =
 "\n"
 "USAGE: retsnoop [-v|-vv|-vvv] [-s|-ss] [-k VMLINUX_PATH] [-p PID] [-c CASE]* [-a GLOB]* [-d GLOB]* [-e GLOB]*\n";
 
+#define OPT_SUCCESS_STACKS 1000
+#define OPT_FULL_STACKS 1001
+
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
 	  "Verbose output (use -vv for debug-level verbosity, -vvv for libbpf debug log)" },
+	{ "bpf-logs", 'l', NULL, 0,
+	  "Emit BPF-side logs (use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to read)" },
 	{ "case", 'c', "CASE", 0,
 	  "Use a pre-defined set of entry/allow/deny globs for a given use case (supported cases: bpf, perf)" },
 	{ "entry", 'e', "GLOB", 0,
@@ -76,6 +84,10 @@ static const struct argp_option opts[] = {
 	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
 	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
 	  "Perform extra symbolization (-s gives line numbers, -ss gives also inline symbols). Relies on having vmlinux with DWARF available." },
+	{ "success-stacks", OPT_SUCCESS_STACKS, NULL, 0,
+	  "Emit matched successful stacks" },
+	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
+	  "Emit non-filtered full stack traces" },
 	{},
 };
 
@@ -120,6 +132,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				return -EINVAL;
 			}
 		}
+		break;
+	case 'l':
+		env.bpf_logs = true;
 		break;
 	case 'c':
 		for (i = 0; i < ARRAY_SIZE(presets); i++) {
@@ -192,6 +207,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'k':
 		env.vmlinux_path = arg;
+		break;
+	case OPT_SUCCESS_STACKS:
+		env.emit_success_stacks = true;
+		break;
+	case OPT_FULL_STACKS:
+		env.emit_full_stacks = true;
 		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
@@ -413,14 +434,14 @@ static int filter_kstack(struct ctx *ctx, struct kstack_item *r, const struct ca
 		 * (bpf_map_alloc_percpu+0x3f). So the last item is what
 		 * really matters, everything else is just a distraction, so
 		 * try to detect this and filter it out. Unless we are in
-		 * verbose mode, of course, in which case we live a hint
+		 * full-stacks mode, of course, in which case we live a hint
 		 * that this would be filtered out (helps with debugging
 		 * overall), but otherwise is preserved.
 		 */
 		if (i + 2 < n && is_bpf_tramp(&r[i + 1])
 		    && r[i].ksym == r[i + 2].ksym
 		    && r[i].addr - r[i].ksym->addr == FTRACE_OFFSET) {
-			if (env.verbose) {
+			if (env.emit_full_stacks) {
 				item->filtered = true;
 				p++;
 				continue;
@@ -431,16 +452,16 @@ static int filter_kstack(struct ctx *ctx, struct kstack_item *r, const struct ca
 			continue;
 		}
 
-		/* Iignore bpf_trampoline and bpf_prog in stack trace, those
+		/* Ignore bpf_trampoline and bpf_prog in stack trace, those
 		 * are most probably part of our own instrumentation, but if
-		 * not, you can still see them in verbose mode.
+		 * not, you can still see them in full-stacks mode.
 		 * Similarly, remove bpf_get_stack_raw_tp, which seems to be
 		 * always there due to call to bpf_get_stack() from BPF
 		 * program.
 		 */
 		if (is_bpf_tramp(&r[i]) || is_bpf_prog(&r[i])
 		    || strcmp(r[i].ksym->name, "bpf_get_stack_raw_tp") == 0) {
-			if (env.verbose) {
+			if (env.emit_full_stacks) {
 				item->filtered = true;
 				p++;
 				continue;
@@ -581,7 +602,7 @@ static void print_item(struct ctx *ctx, const struct fstack_item *fitem, const s
 		p += printf("%*s ", lat_width + 1 + err_width, "");
 	}
 
-	if (env.verbose) {
+	if (env.emit_full_stacks) {
 		if (kitem && kitem->filtered) 
 			p += printf("~%016lx ", kitem->addr);
 		else if (kitem)
@@ -602,7 +623,7 @@ static void print_item(struct ctx *ctx, const struct fstack_item *fitem, const s
 	if (kitem && kitem->ksym)
 		p += printf("+0x%lx", kitem->addr - kitem->ksym->addr);
 	if (symb_cnt) {
-		if (env.verbose)
+		if (env.emit_full_stacks)
 			src_print_off += 18; /* for extra " %16lx " */
 		p += printf(" %*s(", p < src_print_off ? src_print_off - p : 0, "");
 
@@ -634,7 +655,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	const struct call_stack *s = data;
 	int i, j, fstack_n, kstack_n;
 
-	if (!s->is_err)
+	if (!s->is_err && !env.emit_success_stacks)
 		return 0;
 
 	if (env.debug) {
@@ -792,7 +813,7 @@ static bool kernel_supports_ringbuf(void)
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
-	if (level == LIBBPF_DEBUG && !env.debug)
+	if (level == LIBBPF_DEBUG && !env.debug_extra)
 		return 0;
 	return vfprintf(stderr, format, args);
 }
@@ -853,9 +874,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Failed to open BPF skeleton\n");
 		return -EINVAL;
 	}
-	/* turn on extra bpf_printk()'s on BPF side only in debug extra mode */
-	if (env.debug_extra)
-		skel->rodata->verbose = true;
+	/* turn on extra bpf_printk()'s on BPF side */
+	skel->rodata->verbose = env.bpf_logs;
 	skel->rodata->targ_tgid = env.pid;
 
 	skel->rodata->use_ringbuf = use_ringbuf = kernel_supports_ringbuf();

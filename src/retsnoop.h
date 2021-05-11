@@ -4,7 +4,7 @@
 #define __RETSNOOP_H
 
 /* MAX_FUNC_CNT needs to be power-of-2 */
-#define MAX_FUNC_CNT (8 * 1024)
+#define MAX_FUNC_CNT (4 * 1024)
 #define MAX_FUNC_MASK (MAX_FUNC_CNT - 1)
 #define MAX_FUNC_NAME_LEN 40
 
