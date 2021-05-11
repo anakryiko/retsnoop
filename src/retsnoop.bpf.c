@@ -25,7 +25,7 @@ const volatile bool verbose = false;
 const volatile bool use_ringbuf = false;
 const volatile int targ_tgid = 0;
 
-char func_names[MAX_FUNC_CNT][64] = {};
+char func_names[MAX_FUNC_CNT][MAX_FUNC_NAME_LEN] = {};
 long func_ips[MAX_FUNC_CNT] = {};
 int func_flags[MAX_FUNC_CNT] = {};
 
@@ -103,8 +103,8 @@ static __noinline bool push_call_stack(u32 cpu, u32 id, u64 ip)
 	stack->func_lat[d] = bpf_ktime_get_ns();
 
 	if (verbose) {
-		bpf_printk("PUSH(1) cpu %d depth %d name %s", cpu, d + 1, func_names[id & MAX_FUNC_MASK]);
-		bpf_printk("PUSH(2) id %d addr %lx name %s", id, ip, func_names[id & MAX_FUNC_MASK]);
+		bpf_printk("PUSH(1) CPU %d DEPTH %d NAME %s", cpu, d + 1, func_names[id & MAX_FUNC_MASK]);
+		bpf_printk("PUSH(2) ID %d ADDR %lx NAME %s", id, ip, func_names[id & MAX_FUNC_MASK]);
 	}
 
 	return true;
@@ -130,11 +130,11 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res, bool 
 
 	if (verbose) {
 		bpf_printk("POP(0) CPU %d DEPTH %d MAX DEPTH %d", cpu, stack->depth, stack->max_depth);
-		bpf_printk("POP(1) GOT ID %d ADDR %lx NAME %s", id, ip, func_names[id & MAX_FUNC_MASK]);
+		bpf_printk("POP(1) ID %d ADDR %lx NAME %s", id, ip, func_names[id & MAX_FUNC_MASK]);
 		if (is_err)
-			bpf_printk("POP(2) GOT ERROR RESULT %ld", res);
+			bpf_printk("POP(2) ERROR RESULT %ld (%dt)", res, res);
 		else
-			bpf_printk("POP(2) GOT SUCCESS RESULT %ld", res);
+			bpf_printk("POP(2) SUCCESS RESULT %ld (%d)", res, res);
 	}
 
 	actual_id = stack->func_ids[d];

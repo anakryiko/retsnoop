@@ -956,7 +956,8 @@ int main(int argc, char **argv)
 			}
 		}
 done:
-		strcpy(skel->bss->func_names[i], finfo->name);
+		strncpy(skel->bss->func_names[i], finfo->name, MAX_FUNC_NAME_LEN - 1);
+		skel->bss->func_names[i][MAX_FUNC_NAME_LEN - 1] = '\0';
 		skel->bss->func_ips[i] = finfo->addr;
 		skel->bss->func_flags[i] = flags;
 	}
