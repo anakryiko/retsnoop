@@ -39,11 +39,9 @@ static struct env {
 	const char *vmlinux_path;
 	int pid;
 
-	const struct preset **presets;
 	char **allow_globs;
 	char **deny_globs;
 	char **entry_globs;
-	int preset_cnt;
 	int allow_glob_cnt;
 	int deny_glob_cnt;
 	int entry_glob_cnt;
@@ -120,10 +118,27 @@ static const struct preset presets[] = {
 	{"perf", perf_entry_globs, perf_allow_globs, perf_deny_globs},
 };
 
+static int append_glob(char ***globs, int *cnt, const char *glob)
+{
+	void *tmp;
+	char *s;
+
+	tmp = realloc(*globs, (*cnt + 1) * sizeof(**globs));
+	if (!tmp)
+		return -ENOMEM;
+	*globs = tmp;
+
+	(*globs)[*cnt] = s = strdup(glob);
+	if (!s)
+		return -ENOMEM;
+
+	*cnt = *cnt + 1;
+	return 0;
+}
+
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
-	void *tmp, *s;
-	int i;
+	int i, j;
 
 	switch (key) {
 	case 'v':
@@ -148,50 +163,42 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'c':
 		for (i = 0; i < ARRAY_SIZE(presets); i++) {
 			const struct preset *p = &presets[i];
+			const char *glob;
 
 			if (strcmp(p->name, arg) != 0)
 				continue;
 
-			tmp = realloc(env.presets, (env.preset_cnt + 1) * sizeof(*env.presets));
-			if (!tmp)
-				return -ENOMEM;
-
-			env.presets = tmp;
-			env.presets[env.preset_cnt++] = p;
+			for (j = 0; p->entry_globs[j]; j++) {
+				glob = p->entry_globs[j];
+				if (append_glob(&env.entry_globs, &env.entry_glob_cnt, glob))
+					return -ENOMEM;
+			}
+			for (j = 0; p->allow_globs[j]; j++) {
+				glob = p->allow_globs[j];
+				if (append_glob(&env.allow_globs, &env.allow_glob_cnt, glob))
+					return -ENOMEM;
+			}
+			for (j = 0; p->deny_globs[j]; j++) {
+				glob = p->deny_globs[j];
+				if (append_glob(&env.deny_globs, &env.deny_glob_cnt, glob))
+					return -ENOMEM;
+			}
 
 			return 0;
 		}
 		fprintf(stderr, "Unknown preset '%s' specified.\n", arg);
 		break;
 	case 'a':
-		tmp = realloc(env.allow_globs, (env.allow_glob_cnt + 1) * sizeof(*env.allow_globs));
-		if (!tmp)
+		if (append_glob(&env.allow_globs, &env.allow_glob_cnt, arg))
 			return -ENOMEM;
-		s = strdup(arg);
-		if (!s)
-			return -ENOMEM;
-		env.allow_globs = tmp;
-		env.allow_globs[env.allow_glob_cnt++] = s;
 		break;
 	case 'd':
-		tmp = realloc(env.deny_globs, (env.deny_glob_cnt + 1) * sizeof(*env.deny_globs));
-		if (!tmp)
+		if (append_glob(&env.deny_globs, &env.deny_glob_cnt, arg))
 			return -ENOMEM;
-		s = strdup(arg);
-		if (!s)
-			return -ENOMEM;
-		env.deny_globs = tmp;
-		env.deny_globs[env.deny_glob_cnt++] = s;
 		break;
 	case 'e':
-		tmp = realloc(env.entry_globs, (env.entry_glob_cnt + 1) * sizeof(*env.entry_globs));
-		if (!tmp)
+		if (append_glob(&env.entry_globs, &env.entry_glob_cnt, arg))
 			return -ENOMEM;
-		s = strdup(arg);
-		if (!s)
-			return -ENOMEM;
-		env.entry_globs = tmp;
-		env.entry_globs[env.entry_glob_cnt++] = s;
 		break;
 	case 'p':
 		errno = 0;
@@ -857,7 +864,7 @@ int main(int argc, char **argv)
 	struct retsnoop_bpf *skel = NULL;
 	struct ring_buffer *rb = NULL;
 	struct perf_buffer *pb = NULL;
-	int err, i, j, k, n;
+	int err, i, j, n;
 	bool use_ringbuf;
 
 	/* Parse command line arguments */
@@ -865,7 +872,7 @@ int main(int argc, char **argv)
 	if (err)
 		return -1;
 
-	if (env.entry_glob_cnt + env.preset_cnt == 0) {
+	if (env.entry_glob_cnt == 0) {
 		fprintf(stderr, "No entry point globs specified. "
 				"Please provide entry glob(s) ('-e GLOB') and/or any preset ('-p PRESET').\n");
 		return -1;
@@ -927,26 +934,6 @@ int main(int argc, char **argv)
 	if (!att)
 		goto cleanup;
 
-	for (i = 0; i < env.preset_cnt; i++) {
-		const struct preset *p = env.presets[i];
-
-		/* entry globs are also allow globs */
-		for (j = 0; p->entry_globs[j]; j++) {
-			err = mass_attacher__allow_glob(att, p->entry_globs[j]);
-			if (err)
-				goto cleanup;
-		}
-		for (j = 0; p->allow_globs[j]; j++) {
-			err = mass_attacher__allow_glob(att, p->allow_globs[j]);
-			if (err)
-				goto cleanup;
-		}
-		for (j = 0; p->deny_globs[j]; j++) {
-			err = mass_attacher__deny_glob(att, p->deny_globs[j]);
-			if (err)
-				goto cleanup;
-		}
-	}
 	/* entry globs are allow globs as well */
 	for (i = 0; i < env.entry_glob_cnt; i++) {
 		err = mass_attacher__allow_glob(att, env.entry_globs[i]);
@@ -988,26 +975,34 @@ int main(int argc, char **argv)
 
 			if (env.verbose)
 				printf("Function '%s' is marked as an entry point.\n", finfo->name);
-			goto done;
-		}
-		for (j = 0; j < env.preset_cnt; j++) {
-			for (k = 0; env.presets[j]->entry_globs[k]; k++) {
-				glob = env.presets[j]->entry_globs[k];
-				if (!glob_matches(glob, finfo->name))
-					continue;
 
-				flags |= FUNC_IS_ENTRY;
-
-				if (env.verbose)
-					printf("Function '%s' is marked as an entry point.\n", finfo->name);
-				goto done;
-			}
+			break;
 		}
-done:
+
 		strncpy(skel->bss->func_names[i], finfo->name, MAX_FUNC_NAME_LEN - 1);
 		skel->bss->func_names[i][MAX_FUNC_NAME_LEN - 1] = '\0';
 		skel->bss->func_ips[i] = finfo->addr;
 		skel->bss->func_flags[i] = flags;
+	}
+
+	for (i = 0; i < env.entry_glob_cnt; i++) {
+		const char *glob = env.entry_globs[i];
+		bool matched = false;
+
+		for (j = 0, n = mass_attacher__func_cnt(att); j < n; j++) {
+			const struct mass_attacher_func_info *finfo = mass_attacher__func(att, j);
+
+			if (glob_matches(glob, finfo->name)) {
+				matched = true;
+				break;
+			}
+		}
+
+		if (!matched) {
+			err = -ENOENT;
+			fprintf(stderr, "Entry glob '%s' doesn't match any kernel function!\n", glob);
+			goto cleanup;
+		}
 	}
 
 	err = mass_attacher__load(att);
@@ -1084,7 +1079,6 @@ cleanup:
 	for (i = 0; i < env.entry_glob_cnt; i++)
 		free(env.entry_globs[i]);
 	free(env.entry_globs);
-	free(env.presets);
 
 	return -err;
 }
