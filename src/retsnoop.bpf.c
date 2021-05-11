@@ -31,6 +31,7 @@ const volatile bool verbose = false;
 const volatile bool use_ringbuf = false;
 const volatile int targ_tgid = 0;
 const volatile bool emit_success_stacks = false;
+const volatile bool emit_intermediate_stacks = false;
 
 char func_names[MAX_FUNC_CNT][MAX_FUNC_NAME_LEN] = {};
 long func_ips[MAX_FUNC_CNT] = {};
@@ -81,7 +82,7 @@ static __noinline void save_stitch_stack(struct call_stack *stack)
 
 static struct call_stack empty_stack;
 
-static __noinline bool push_call_stack(u32 pid, u32 id, u64 ip)
+static __noinline bool push_call_stack(void *ctx, u32 pid, u32 id, u64 ip)
 {
 	struct call_stack *stack;
 	u64 d;
@@ -95,6 +96,9 @@ static __noinline bool push_call_stack(u32 pid, u32 id, u64 ip)
 		stack = bpf_map_lookup_elem(&stacks, &pid);
 		if (!stack)
 			return false;
+
+		stack->pid = pid;
+		bpf_get_current_comm(&stack->comm, sizeof(stack->comm));
 	}
 
 	d = stack->depth;
@@ -102,8 +106,11 @@ static __noinline bool push_call_stack(u32 pid, u32 id, u64 ip)
 	if (d >= MAX_FSTACK_DEPTH)
 		return false;
 
-	if (stack->depth != stack->max_depth && stack->is_err)
+	if (stack->depth != stack->max_depth && stack->is_err) {
+		if (emit_intermediate_stacks)
+			ringbuf_output(ctx, &rb, stack);
 		save_stitch_stack(stack);
+	}
 
 	/*
 	barrier_var(d);
@@ -226,7 +233,7 @@ __hidden int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip)
 	if (targ_tgid && targ_tgid != tgid)
 		return false;
 
-	push_call_stack(pid, func_id, func_ip);
+	push_call_stack(ctx, pid, func_id, func_ip);
 	return 0;
 }
 

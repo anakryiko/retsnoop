@@ -35,6 +35,7 @@ static struct env {
 	bool bpf_logs;
 	bool emit_success_stacks;
 	bool emit_full_stacks;
+	bool emit_intermediate_stacks;
 	const char *vmlinux_path;
 	int pid;
 
@@ -67,6 +68,7 @@ const char argp_program_doc[] =
 #define OPT_SUCCESS_STACKS 1000
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
+#define OPT_INTERMEDIATE_STACKS 'A'
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
@@ -91,6 +93,8 @@ static const struct argp_option opts[] = {
 	  "Emit matched successful stacks" },
 	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
 	  "Emit non-filtered full stack traces" },
+	{ "intermediate-stacks", OPT_INTERMEDIATE_STACKS, NULL, 0,
+	  "Emit all partial (intermediate) stack traces" },
 	{ "stacks-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
 	  "Stacks map size (default 1024)" },
 	{},
@@ -219,6 +223,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case OPT_FULL_STACKS:
 		env.emit_full_stacks = true;
 		break;
+	case OPT_INTERMEDIATE_STACKS:
+		env.emit_intermediate_stacks = true;
+		break;
 	case OPT_STACKS_MAP_SIZE:
 		errno = 0;
 		env.stacks_map_sz = strtol(arg, NULL, 10);
@@ -340,6 +347,7 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 			fitem->finished = true;
 			fitem->lat = s->func_lat[i];
 		} else {
+			fitem->finished = false;
 			fitem->lat = 0;
 		}
 		if (flags & FUNC_NEEDS_SIGN_EXT)
@@ -692,6 +700,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		printf("KSTACK (%d items out of original %ld):\n", kstack_n, s->kstack_sz / 8);
 	}
 
+	printf("PID %d (%s):\n", s->pid, s->comm);
+
 	i = 0;
 	j = 0;
 	while (i < fstack_n) {
@@ -894,6 +904,7 @@ int main(int argc, char **argv)
 	skel->rodata->verbose = env.bpf_logs;
 	skel->rodata->targ_tgid = env.pid;
 	skel->rodata->emit_success_stacks = env.emit_success_stacks;
+	skel->rodata->emit_intermediate_stacks = env.emit_intermediate_stacks;
 
 	skel->rodata->use_ringbuf = use_ringbuf = kernel_supports_ringbuf();
 	if (use_ringbuf) {

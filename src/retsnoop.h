@@ -17,6 +17,8 @@ struct call_stack {
 	long func_lat[MAX_FSTACK_DEPTH];
 	unsigned depth;
 	unsigned max_depth;
+	int pid;
+	char comm[16];
 	bool is_err;
 
 	unsigned short saved_ids[MAX_FSTACK_DEPTH];
