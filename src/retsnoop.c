@@ -36,6 +36,7 @@ static struct env {
 	bool emit_success_stacks;
 	bool emit_full_stacks;
 	bool emit_intermediate_stacks;
+	bool use_kprobes;
 	const char *vmlinux_path;
 	int pid;
 
@@ -66,6 +67,7 @@ const char argp_program_doc[] =
 #define OPT_SUCCESS_STACKS 1000
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
+#define OPT_USE_KPROBES 1003
 #define OPT_INTERMEDIATE_STACKS 'A'
 
 static const struct argp_option opts[] = {
@@ -93,6 +95,8 @@ static const struct argp_option opts[] = {
 	  "Emit non-filtered full stack traces" },
 	{ "intermediate-stacks", OPT_INTERMEDIATE_STACKS, NULL, 0,
 	  "Emit all partial (intermediate) stack traces" },
+	{ "kprobes", OPT_USE_KPROBES, NULL, 0,
+	  "Use kprobes/kretprobes instead of fentries/fexits" },
 	{ "stacks-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
 	  "Stacks map size (default 1024)" },
 	{},
@@ -269,6 +273,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case OPT_FULL_STACKS:
 		env.emit_full_stacks = true;
+		break;
+	case OPT_USE_KPROBES:
+		env.use_kprobes = true;
 		break;
 	case OPT_INTERMEDIATE_STACKS:
 		env.emit_intermediate_stacks = true;
@@ -969,6 +976,7 @@ int main(int argc, char **argv)
 	att_opts.verbose = env.verbose;
 	att_opts.debug = env.debug;
 	att_opts.debug_extra = env.debug_extra;
+	att_opts.use_kprobes = env.use_kprobes;
 	att_opts.func_filter = func_filter;
 	att = mass_attacher__new(skel, &att_opts);
 	if (!att)

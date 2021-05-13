@@ -7,6 +7,7 @@
 #include <stddef.h>
 
 struct btf;
+struct bpf_link;
 struct mass_attacher;
 struct SKEL_NAME;
 
@@ -22,6 +23,9 @@ struct mass_attacher_func_info {
 
 	int fentry_prog_fd;
 	int fexit_prog_fd;
+
+	struct bpf_link *kentry_link;
+	struct bpf_link *kexit_link;
 };
 
 struct mass_attacher_opts {
@@ -30,6 +34,7 @@ struct mass_attacher_opts {
 	bool verbose;
 	bool debug;
 	bool debug_extra;
+	bool use_kprobes;
 	func_filter_fn func_filter;
 };
 

@@ -25,8 +25,70 @@ struct {
 #define MAX_CPU_CNT 256
 #define MAX_CPU_MASK (MAX_CPU_CNT - 1)
 
-int running[MAX_CPU_CNT] = {};
+int kret_ip_off = 0;
 bool ready = false;
+
+/* has to be called from entry-point BPF program */
+static __always_inline u64 get_kret_caller_ip(void *ctx)
+{
+	struct trace_kprobe *tk = NULL;
+	u64 fp, ip;
+
+	/* get frame pointer */
+	asm volatile ("%[fp] = r10" : [fp] "+r"(fp) :);
+
+	if (kret_ip_off > 0)
+		bpf_probe_read(&tk, sizeof(tk), (void *)(fp + kret_ip_off * sizeof(__u64)));
+
+	ip = (__u64)BPF_CORE_READ(tk, rp.kp.addr);
+
+	return ip;
+}
+
+SEC("kprobe/xxx")
+int kentry(struct pt_regs *ctx)
+{
+	u32 *id_ptr, cpu = bpf_get_smp_processor_id();
+	const char *name;
+	long ip;
+
+	if (!ready)
+		return 0;
+
+	ip = ctx->ip - 1;
+	id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);
+	if (!id_ptr) {
+		bpf_printk("KENTRY UNRECOGNIZED IP %lx", ip);
+		return 0;
+	}
+
+	handle_func_entry(ctx, cpu, *id_ptr, ip);
+	return 0;
+}
+
+SEC("kretprobe/xxx")
+int kexit(struct pt_regs *ctx)
+{
+	const char *name;
+	u32 *id_ptr;
+	long ip;
+
+	if (!ready)
+		return 0;
+
+	ip = get_kret_caller_ip(ctx);
+	id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);
+	if (!id_ptr) {
+		bpf_printk("KEXIT UNRECOGNIZED IP %lx", ip);
+		return 0;
+	}
+
+	handle_func_exit(ctx, -1, *id_ptr, ip, PT_REGS_RC(ctx));
+
+	return 0;
+}
+
+int running[MAX_CPU_CNT] = {};
 
 static __always_inline bool recur_enter(u32 cpu)
 {
@@ -62,7 +124,7 @@ static __always_inline u64 get_ftrace_caller_ip(void *ctx, int arg_cnt)
 }
 
 /* we need arg_cnt * sizeof(__u64) to be a constant, so need to inline */
-static __always_inline int handle(void *ctx, int arg_cnt, bool entry)
+static __always_inline int handle_fentry(void *ctx, int arg_cnt, bool entry)
 {
 	u32 *id_ptr, cpu = bpf_get_smp_processor_id();
 	const char *name;
@@ -96,12 +158,12 @@ out:
 SEC("fentry/__x64_sys_read") \
 int fentry ## arg_cnt(void *ctx) \
 { \
-	return handle(ctx, arg_cnt, true); \
+	return handle_fentry(ctx, arg_cnt, true); \
 } \
 SEC("fexit/__x64_sys_read") \
 int fexit ## arg_cnt(void *ctx) \
 { \
-	return handle(ctx, arg_cnt, false); \
+	return handle_fentry(ctx, arg_cnt, false); \
 }
 
 DEF_PROGS(0)

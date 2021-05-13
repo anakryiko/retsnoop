@@ -6,8 +6,11 @@
 #include <bpf/bpf.h>
 #include <stdlib.h>
 #include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include "mass_attacher.h"
 #include "ksyms.h"
+#include "calib_kret_ip.skel.h"
 
 #ifndef SKEL_NAME
 #error "Please define -DSKEL_NAME=<BPF skeleton name> for mass_attacher"
@@ -78,6 +81,7 @@ struct mass_attacher {
 	size_t fentries_insn_cnts[MAX_FUNC_ARG_CNT + 1];
 	size_t fexits_insn_cnts[MAX_FUNC_ARG_CNT + 1];
 
+	bool use_fentries;
 	bool verbose;
 	bool debug;
 	bool debug_extra;
@@ -93,6 +97,8 @@ struct mass_attacher {
 
 	char **kprobes;
 	int kprobe_cnt;
+
+	int func_skip_cnt;
 
 	int allow_glob_cnt;
 	int deny_glob_cnt;
@@ -126,6 +132,7 @@ struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_att
 	att->debug_extra = opts->debug_extra;
 	if (att->debug)
 		att->verbose = true;
+	att->use_fentries = !opts->use_kprobes;
 	att->func_filter = opts->func_filter;
 
 	for (i = 0; i < ARRAY_SIZE(enforced_deny_globs); i++) {
@@ -260,12 +267,12 @@ static int hijack_prog(struct bpf_program *prog, int n,
 static int func_arg_cnt(const struct btf *btf, int id);
 static bool is_kprobe_ok(const struct mass_attacher *att, const char *name);
 static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t);
+static int prepare_func(struct mass_attacher *att, const char *func_name,
+			const struct btf_type *t, int btf_id);
 
 int mass_attacher__prepare(struct mass_attacher *att)
 {
-	int err, i, j, n;
-	int func_skip = 0;
-	void *tmp;
+	int err, i, n;
 
 	/* Load and cache /proc/kallsyms for IP <-> kfunc mapping */
 	att->ksyms = ksyms__load();
@@ -295,6 +302,38 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		return err;
 	}
 
+	if (!att->use_fentries) {
+		struct calib_kret_ip_bpf *calib_skel;
+
+		calib_skel = calib_kret_ip_bpf__open_and_load();
+		if (!calib_skel) {
+			fprintf(stderr, "Failed to load kretprobe calibration skeleton\n");
+			return -EFAULT;
+		}
+
+		calib_skel->bss->my_tid = syscall(SYS_gettid);
+
+		err = calib_kret_ip_bpf__attach(calib_skel);
+		if (err) {
+			fprintf(stderr, "Failed to attach kretprobe calibration skeleton\n");
+			calib_kret_ip_bpf__destroy(calib_skel);
+			return -EFAULT;
+		}
+
+		usleep(1);
+
+		if (!calib_skel->bss->found_off) {
+			fprintf(stderr, "Failed to calibrate kretprobe entry IP extraction.\n");
+			return -EFAULT;
+		}
+
+		att->skel->bss->kret_ip_off = calib_skel->bss->found_off;
+		if (att->debug)
+			printf("Entry IP calibration offset is %d\n", att->skel->bss->kret_ip_off);
+
+		calib_kret_ip_bpf__destroy(calib_skel);
+	}
+
 	_Static_assert(MAX_FUNC_ARG_CNT == 6, "Unexpected maximum function arg count");
 	att->fentries[0] = att->skel->progs.fentry0;
 	att->fentries[1] = att->skel->progs.fentry1;
@@ -322,100 +361,15 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	for (i = 1; i <= n; i++) {
 		const struct btf_type *t = btf__type_by_id(att->vmlinux_btf, i);
 		const char *func_name;
-		const struct ksym *ksym;
-		struct mass_attacher_func_info *finfo;
-		int arg_cnt;
 
 		if (!btf_is_func(t))
 			continue;
 
 		func_name = btf__str_by_offset(att->vmlinux_btf, t->name_off);
-		ksym = ksyms__get_symbol(att->ksyms, func_name);
-		if (!ksym) {
-			if (att->verbose)
-				printf("Function '%s' not found in /proc/kallsyms! Skipping.\n", func_name);
-			func_skip++;
-			continue;
-		}
 
-		/* any deny glob forces skipping a function */
-		for (j = 0; j < att->deny_glob_cnt; j++) {
-			if (!glob_matches(att->deny_globs[j].glob, func_name))
-				continue;
-			att->deny_globs[j].matches++;
-			if (att->debug_extra)
-				printf("Function '%s' is denied by '%s' glob.\n",
-				       func_name, att->deny_globs[j].glob);
-			goto skip;
-		}
-		/* if any allow glob is specified, function has to match one of them */
-		if (att->allow_glob_cnt) {
-			for (j = 0; j < att->allow_glob_cnt; j++) {
-				if (!glob_matches(att->allow_globs[j].glob, func_name))
-					continue;
-				att->allow_globs[j].matches++;
-				if (att->debug_extra)
-					printf("Function '%s' is allowed by '%s' glob.\n",
-					       func_name, att->allow_globs[j].glob);
-				goto proceed;
-			}
-			if (att->debug_extra)
-				printf("Function '%s' doesn't match any allow glob, skipping.\n", func_name);
-skip:
-			func_skip++;
-			continue;
-		}
-
-proceed:
-		if (!is_kprobe_ok(att, func_name)) {
-			if (att->debug_extra)
-				printf("Function '%s' is not attachable kprobe, skipping.\n", func_name);
-			func_skip++;
-			continue;
-		}
-		if (!is_func_type_ok(att->vmlinux_btf, t)) {
-			if (att->debug)
-				printf("Function '%s' has prototype incompatible with fentry/fexit, skipping.\n", func_name);
-			func_skip++;
-			continue;
-		}
-		if (att->max_func_cnt && att->func_cnt >= att->max_func_cnt) {
-			if (att->verbose)
-				printf("Maximum allowed number of functions (%d) reached, skipping the rest.\n",
-				       att->max_func_cnt);
-			break;
-		}
-
-		if (att->func_filter && !att->func_filter(att, att->vmlinux_btf, i, func_name, att->func_cnt)) {
-			if (att->debug)
-				printf("Function '%s' skipped due to custom filter function.\n", func_name);
-			func_skip++;
-			continue;
-		}
-
-		arg_cnt = func_arg_cnt(att->vmlinux_btf, i);
-
-		tmp = realloc(att->func_infos, (att->func_cnt + 1) * sizeof(*att->func_infos));
-		if (!tmp)
-			return -ENOMEM;
-		att->func_infos = tmp;
-
-		finfo = &att->func_infos[att->func_cnt];
-		memset(finfo, 0, sizeof(*finfo));
-
-		finfo->addr = ksym->addr;
-		finfo->name = ksym->name;
-		finfo->arg_cnt = arg_cnt;
-		finfo->btf_id = i;
-
-		att->func_info_cnts[arg_cnt]++;
-		if (!att->func_info_id_for_arg_cnt[arg_cnt])
-			att->func_info_id_for_arg_cnt[arg_cnt] = att->func_cnt;
-
-		att->func_cnt++;
-
-		if (att->debug_extra)
-			printf("Found function '%s' at address 0x%lx...\n", func_name, ksym->addr);
+		err = prepare_func(att, func_name, t, i);
+		if (err)
+			return err;
 	}
 
 	if (att->func_cnt == 0) {
@@ -423,19 +377,29 @@ proceed:
 		return -ENOENT;
 	}
 
-	for (i = 0; i <= MAX_FUNC_ARG_CNT; i++) {
-		struct mass_attacher_func_info *finfo;
+	if (att->use_fentries) {
+		bpf_program__set_autoload(att->skel->progs.kentry, false);
+		bpf_program__set_autoload(att->skel->progs.kexit, false);
 
-		if (att->func_info_cnts[i]) {
-			finfo = &att->func_infos[att->func_info_id_for_arg_cnt[i]];
-			bpf_program__set_attach_target(att->fentries[i], 0, finfo->name);
-			bpf_program__set_attach_target(att->fexits[i], 0, finfo->name);
-			bpf_program__set_prep(att->fentries[i], 1, hijack_prog);
-			bpf_program__set_prep(att->fexits[i], 1, hijack_prog);
-			
-			if (att->debug)
-				printf("Found total %d functions with %d arguments.\n", att->func_info_cnts[i], i);
-		} else {
+		for (i = 0; i <= MAX_FUNC_ARG_CNT; i++) {
+			struct mass_attacher_func_info *finfo;
+
+			if (att->func_info_cnts[i]) {
+				finfo = &att->func_infos[att->func_info_id_for_arg_cnt[i]];
+				bpf_program__set_attach_target(att->fentries[i], 0, finfo->name);
+				bpf_program__set_attach_target(att->fexits[i], 0, finfo->name);
+				bpf_program__set_prep(att->fentries[i], 1, hijack_prog);
+				bpf_program__set_prep(att->fexits[i], 1, hijack_prog);
+
+				if (att->debug)
+					printf("Found total %d functions with %d arguments.\n", att->func_info_cnts[i], i);
+			} else {
+				bpf_program__set_autoload(att->fentries[i], false);
+				bpf_program__set_autoload(att->fexits[i], false);
+			}
+		}
+	} else {
+		for (i = 0; i <= MAX_FUNC_ARG_CNT; i++) {
 			bpf_program__set_autoload(att->fentries[i], false);
 			bpf_program__set_autoload(att->fexits[i], false);
 		}
@@ -443,7 +407,7 @@ proceed:
 
 	if (att->verbose) {
 		printf("Found %d attachable functions in total.\n", att->func_cnt);
-		printf("Skipped %d functions in total.\n", func_skip);
+		printf("Skipped %d functions in total.\n", att->func_skip_cnt);
 
 		if (att->debug) {
 			for (i = 0; i < att->deny_glob_cnt; i++) {
@@ -458,6 +422,118 @@ proceed:
 	}
 
 	bpf_map__set_max_entries(att->skel->maps.ip_to_id, att->func_cnt);
+
+	return 0;
+}
+
+static int prepare_func(struct mass_attacher *att, const char *func_name,
+			const struct btf_type *t, int btf_id)
+{
+	const struct ksym *ksym;
+	struct mass_attacher_func_info *finfo;
+	int i, arg_cnt;
+	void *tmp;
+
+	ksym = ksyms__get_symbol(att->ksyms, func_name);
+	if (!ksym) {
+		if (att->verbose)
+			printf("Function '%s' not found in /proc/kallsyms! Skipping.\n", func_name);
+		att->func_skip_cnt++;
+		return 0;
+	}
+
+	/* any deny glob forces skipping a function */
+	for (i = 0; i < att->deny_glob_cnt; i++) {
+		if (!glob_matches(att->deny_globs[i].glob, func_name))
+			continue;
+
+		att->deny_globs[i].matches++;
+
+		if (att->debug_extra)
+			printf("Function '%s' is denied by '%s' glob.\n",
+			       func_name, att->deny_globs[i].glob);
+		att->func_skip_cnt++;
+		return 0;
+	}
+
+	/* if any allow glob is specified, function has to match one of them */
+	if (att->allow_glob_cnt) {
+		bool found = false;
+
+		for (i = 0; i < att->allow_glob_cnt; i++) {
+			if (!glob_matches(att->allow_globs[i].glob, func_name))
+				continue;
+
+			att->allow_globs[i].matches++;
+			if (att->debug_extra)
+				printf("Function '%s' is allowed by '%s' glob.\n",
+				       func_name, att->allow_globs[i].glob);
+
+			found = true;
+			break;
+		}
+
+		if (!found) {
+			if (att->debug_extra)
+				printf("Function '%s' doesn't match any allow glob, skipping.\n", func_name);
+			att->func_skip_cnt++;
+			return 0;
+		}
+	}
+
+	if (!is_kprobe_ok(att, func_name)) {
+		if (att->debug_extra)
+			printf("Function '%s' is not attachable kprobe, skipping.\n", func_name);
+		att->func_skip_cnt++;
+		return 0;
+	}
+
+	if (att->use_fentries && !is_func_type_ok(att->vmlinux_btf, t)) {
+		if (att->debug)
+			printf("Function '%s' has prototype incompatible with fentry/fexit, skipping.\n", func_name);
+		att->func_skip_cnt++;
+		return 0;
+	}
+
+	if (att->func_filter && !att->func_filter(att, att->vmlinux_btf, i, func_name, att->func_cnt)) {
+		if (att->debug)
+			printf("Function '%s' skipped due to custom filter function.\n", func_name);
+		att->func_skip_cnt++;
+		return 0;
+	}
+
+	if (att->max_func_cnt && att->func_cnt >= att->max_func_cnt) {
+		if (att->verbose)
+			fprintf(stderr, "Maximum allowed number of functions (%d) reached, skipping the rest.\n",
+			        att->max_func_cnt);
+		return -E2BIG;
+	}
+
+	tmp = realloc(att->func_infos, (att->func_cnt + 1) * sizeof(*att->func_infos));
+	if (!tmp)
+		return -ENOMEM;
+	att->func_infos = tmp;
+
+	finfo = &att->func_infos[att->func_cnt];
+	memset(finfo, 0, sizeof(*finfo));
+
+	arg_cnt = func_arg_cnt(att->vmlinux_btf, btf_id);
+
+	finfo->addr = ksym->addr;
+	finfo->name = ksym->name;
+	finfo->arg_cnt = arg_cnt;
+	finfo->btf_id = btf_id;
+
+	if (att->use_fentries) {
+		att->func_info_cnts[arg_cnt]++;
+		if (!att->func_info_id_for_arg_cnt[arg_cnt])
+			att->func_info_id_for_arg_cnt[arg_cnt] = att->func_cnt;
+	}
+
+	att->func_cnt++;
+
+	if (att->debug_extra)
+		printf("Found function '%s' at address 0x%lx...\n", func_name, ksym->addr);
 
 	return 0;
 }
@@ -589,7 +665,7 @@ int mass_attacher__load(struct mass_attacher *att)
 		return err;
 	}
 
-	if (att->debug)
+	if (att->use_fentries && att->debug)
 		printf("Preparing %d BPF program copies...\n", att->func_cnt * 2);
 
 	for (i = 0; i < att->func_cnt; i++) {
@@ -606,25 +682,27 @@ int mass_attacher__load(struct mass_attacher *att)
 			return err;
 		}
 
-		err = clone_prog(att->fentries[finfo->arg_cnt],
-				 att->fentries_insns[finfo->arg_cnt],
-				 att->fentries_insn_cnts[finfo->arg_cnt],
-				 finfo->btf_id);
-		if (err < 0) {
-			fprintf(stderr, "Failed to clone FENTRY BPF program for function '%s': %d\n", func_name, err);
-			return err;
-		}
-		finfo->fentry_prog_fd = err;
+		if (att->use_fentries) {
+			err = clone_prog(att->fentries[finfo->arg_cnt],
+					 att->fentries_insns[finfo->arg_cnt],
+					 att->fentries_insn_cnts[finfo->arg_cnt],
+					 finfo->btf_id);
+			if (err < 0) {
+				fprintf(stderr, "Failed to clone FENTRY BPF program for function '%s': %d\n", func_name, err);
+				return err;
+			}
+			finfo->fentry_prog_fd = err;
 
-		err = clone_prog(att->fexits[finfo->arg_cnt],
-				 att->fexits_insns[finfo->arg_cnt],
-				 att->fexits_insn_cnts[finfo->arg_cnt],
-				 finfo->btf_id);
-		if (err < 0) {
-			fprintf(stderr, "Failed to clone FEXIT BPF program for function '%s': %d\n", func_name, err);
-			return err;
+			err = clone_prog(att->fexits[finfo->arg_cnt],
+					 att->fexits_insns[finfo->arg_cnt],
+					 att->fexits_insn_cnts[finfo->arg_cnt],
+					 finfo->btf_id);
+			if (err < 0) {
+				fprintf(stderr, "Failed to clone FEXIT BPF program for function '%s': %d\n", func_name, err);
+				return err;
+			}
+			finfo->fexit_prog_fd = err;
 		}
-		finfo->fexit_prog_fd = err;
 	}
 	return 0;
 }
@@ -654,27 +732,47 @@ static int clone_prog(const struct bpf_program *prog,
 
 int mass_attacher__attach(struct mass_attacher *att)
 {
-	int i, err, prog_fd;
+	int i, err;
 
 	for (i = 0; i < att->func_cnt; i++) {
-		const char *func_name = att->func_infos[i].name;
-		long func_addr = att->func_infos[i].addr;
+		struct mass_attacher_func_info *finfo = &att->func_infos[i];
+		const char *func_name = finfo->name;
+		long func_addr = finfo->addr;
 
+		if (att->use_fentries) {
+			int prog_fd;
 
-		prog_fd = att->func_infos[i].fentry_prog_fd;
-		err = bpf_raw_tracepoint_open(NULL, prog_fd);
-		if (err < 0) {
-			fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
-				prog_fd, i + 1, func_name, func_addr, -errno);
-			return err;
-		}
+			prog_fd = att->func_infos[i].fentry_prog_fd;
+			err = bpf_raw_tracepoint_open(NULL, prog_fd);
+			if (err < 0) {
+				fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
+					prog_fd, i + 1, func_name, func_addr, -errno);
+				return err;
+			}
 
-		prog_fd = att->func_infos[i].fexit_prog_fd;
-		err = bpf_raw_tracepoint_open(NULL, prog_fd);
-		if (err < 0) {
-			fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
-				prog_fd, i + 1, func_name, func_addr, -errno);
-			return err;
+			prog_fd = att->func_infos[i].fexit_prog_fd;
+			err = bpf_raw_tracepoint_open(NULL, prog_fd);
+			if (err < 0) {
+				fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
+					prog_fd, i + 1, func_name, func_addr, -errno);
+				return err;
+			}
+		} else {
+			finfo->kentry_link = bpf_program__attach_kprobe(att->skel->progs.kentry, false, func_name);
+			err = libbpf_get_error(finfo->kentry_link);
+			if (err) {
+				fprintf(stderr, "Failed to attach KPROBE prog for func #%d (%s) at addr %lx: %d\n",
+					i + 1, func_name, func_addr, err);
+				return err;
+			}
+
+			finfo->kexit_link = bpf_program__attach_kprobe(att->skel->progs.kexit, true, func_name);
+			err = libbpf_get_error(finfo->kexit_link);
+			if (err) {
+				fprintf(stderr, "Failed to attach KRETPROBE prog for func #%d (%s) at addr %lx: %d\n",
+					i + 1, func_name, func_addr, err);
+				return err;
+			}
 		}
 
 		if (att->verbose)
@@ -720,10 +818,6 @@ static bool is_kprobe_ok(const struct mass_attacher *att, const char *name)
 {
 	void *r;
 
-	/*
-	if (strcmp(name, "__x64_sys_getpgid") == 0) 
-		r = NULL;
-	*/
 	r = bsearch(&name, att->kprobes, att->kprobe_cnt, sizeof(void *), str_cmp);
 
 	return r != NULL;

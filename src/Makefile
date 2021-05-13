@@ -10,7 +10,7 @@ LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
 INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi
-CFLAGS := -g -Wall
+CFLAGS := -g -Wall -O0
 ARCH := $(shell uname -m | sed 's/x86_64/x86/')
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
@@ -77,7 +77,7 @@ $(OUTPUT)/%.o: %.c $(wildcard %.h) | $(OUTPUT) $(OUTPUT)/tests
 
 $(OUTPUT)/retsnoop.skel.h: $(OUTPUT)/mass_attach.bpf.o
 $(OUTPUT)/retsnoop.o: $(OUTPUT)/retsnoop.skel.h
-$(OUTPUT)/mass_attacher.o: $(OUTPUT)/retsnoop.skel.h
+$(OUTPUT)/mass_attacher.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_kret_ip.skel.h
 
 $(OUTPUT)/addr2line.embed.o: ../tools/addr2line
 	$(call msg,LD,$@)
