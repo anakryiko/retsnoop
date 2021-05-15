@@ -69,6 +69,11 @@ struct mass_attacher;
 
 static _Thread_local struct mass_attacher *cur_attacher;
 
+struct kprobe_info {
+	char *name;
+	bool used;
+};
+
 struct mass_attacher {
 	struct ksyms *ksyms;
 	struct btf *vmlinux_btf;
@@ -95,7 +100,7 @@ struct mass_attacher {
 	int func_info_cnts[MAX_FUNC_ARG_CNT + 1];
 	int func_info_id_for_arg_cnt[MAX_FUNC_ARG_CNT + 1];
 
-	char **kprobes;
+	struct kprobe_info *kprobes;
 	int kprobe_cnt;
 
 	int func_skip_cnt;
@@ -165,7 +170,7 @@ void mass_attacher__free(struct mass_attacher *att)
 
 	if (att->kprobes) {
 		for (i = 0; i < att->kprobe_cnt; i++)
-			free(att->kprobes[i]);
+			free(att->kprobes[i].name);
 		free(att->kprobes);
 	}
 
@@ -265,7 +270,7 @@ static int hijack_prog(struct bpf_program *prog, int n,
 		       struct bpf_prog_prep_result *res);
 
 static int func_arg_cnt(const struct btf *btf, int id);
-static bool is_kprobe_ok(const struct mass_attacher *att, const char *name);
+static int find_kprobe(const struct mass_attacher *att, const char *name);
 static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t);
 static int prepare_func(struct mass_attacher *att, const char *func_name,
 			const struct btf_type *t, int btf_id);
@@ -371,6 +376,16 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		if (err)
 			return err;
 	}
+	if (!att->use_fentries) {
+		for (i = 0; i < att->kprobe_cnt; i++) {
+			if (att->kprobes[i].used)
+				continue;
+
+			err = prepare_func(att, att->kprobes[i].name, NULL, 0);
+			if (err)
+				return err;
+		}
+	}
 
 	if (att->func_cnt == 0) {
 		fprintf(stderr, "No matching functions found.\n");
@@ -431,7 +446,7 @@ static int prepare_func(struct mass_attacher *att, const char *func_name,
 {
 	const struct ksym *ksym;
 	struct mass_attacher_func_info *finfo;
-	int i, arg_cnt;
+	int i, arg_cnt, kprobe_idx;
 	void *tmp;
 
 	ksym = ksyms__get_symbol(att->ksyms, func_name);
@@ -481,12 +496,14 @@ static int prepare_func(struct mass_attacher *att, const char *func_name,
 		}
 	}
 
-	if (!is_kprobe_ok(att, func_name)) {
+	kprobe_idx = find_kprobe(att, func_name);
+	if (kprobe_idx < 0) {
 		if (att->debug_extra)
 			printf("Function '%s' is not attachable kprobe, skipping.\n", func_name);
 		att->func_skip_cnt++;
 		return 0;
 	}
+	att->kprobes[kprobe_idx].used = true;
 
 	if (att->use_fentries && !is_func_type_ok(att->vmlinux_btf, t)) {
 		if (att->debug)
@@ -551,11 +568,19 @@ static int bump_rlimit(int resource, rlim_t max)
 	return 0;
 }
 
-static int str_cmp(const void *a, const void *b)
+static int kprobe_order(const void *a, const void *b)
 {
-	const char * const *s1 = a, * const *s2 = b;
+	const struct kprobe_info *k1 = a, *k2 = b;
 
-	return strcmp(*s1, *s2);
+	return strcmp(k1->name, k2->name);
+}
+
+static int kprobe_by_name(const void *a, const void *b)
+{
+	const char *name = a;
+	const struct kprobe_info *k = b;
+
+	return strcmp(name, k->name);
 }
 
 static int load_available_kprobes(struct mass_attacher *att)
@@ -581,12 +606,15 @@ static int load_available_kprobes(struct mass_attacher *att)
 		att->kprobes = tmp;
 
 		s = strdup(buf);
-		att->kprobes[att->kprobe_cnt++] = s;
+		att->kprobes[att->kprobe_cnt].name = s;
+		att->kprobes[att->kprobe_cnt].used = false;
+		att->kprobe_cnt++;
+
 		if (!s)
 			return -ENOMEM;
 	}
 
-	qsort(att->kprobes, att->kprobe_cnt, sizeof(char *), str_cmp);
+	qsort(att->kprobes, att->kprobe_cnt, sizeof(*att->kprobes), kprobe_order);
 
 	if (att->verbose)
 		printf("Discovered %d available kprobes!\n", att->kprobe_cnt);
@@ -775,10 +803,11 @@ int mass_attacher__attach(struct mass_attacher *att)
 			}
 		}
 
-		if (att->verbose)
+		if (att->debug)
+			printf("Attached to function #%d '%s' (addr %lx, btf id %d).\n", i + 1,
+			       func_name, func_addr, finfo->btf_id);
+		else if (att->verbose)
 			printf("Attached to function #%d '%s'.\n", i + 1, func_name);
-		else if (att->debug)
-			printf("Attached to function #%d '%s' (addr %lx).\n", i + 1, func_name, func_addr);
 	}
 
 	if (att->verbose)
@@ -814,18 +843,22 @@ const struct mass_attacher_func_info *mass_attacher__func(const struct mass_atta
 	return &att->func_infos[id];
 }
 
-static bool is_kprobe_ok(const struct mass_attacher *att, const char *name)
+static int find_kprobe(const struct mass_attacher *att, const char *name)
 {
-	void *r;
+	struct kprobe_info *k;
 
-	r = bsearch(&name, att->kprobes, att->kprobe_cnt, sizeof(void *), str_cmp);
+	k = bsearch(name, att->kprobes, att->kprobe_cnt, sizeof(*att->kprobes), kprobe_by_name);
 
-	return r != NULL;
+	return k == NULL ? -1 : k - att->kprobes;
 }
 
 static int func_arg_cnt(const struct btf *btf, int id)
 {
 	const struct btf_type *t;
+
+	/* no BTF type info is available */
+	if (id == 0)
+		return 0;
 
 	t = btf__type_by_id(btf, id);
 	t = btf__type_by_id(btf, t->type);

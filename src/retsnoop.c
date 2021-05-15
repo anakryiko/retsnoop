@@ -807,9 +807,25 @@ static void handle_event_pb(void *ctx, int cpu, void *data, unsigned data_sz)
 	(void)handle_event(ctx, data, data_sz);
 }
 
-static int func_flags(const char *func_name, const struct btf *btf, const struct btf_type *t)
+static int func_flags(const char *func_name, const struct btf *btf, int btf_id)
 {
+	const struct btf_type *t;
+
+	if (!btf_id) {
+		/* for kprobes-only functions we might not have BTF info,
+		 * so assume int-returning failing function as the most common
+		 * case
+		 */
+		return FUNC_NEEDS_SIGN_EXT;
+	}
+
+	/* get FUNC */
+	t = btf__type_by_id(btf, btf_id);
+
+	/* get FUNC's FUNC_PROTO */
 	t = btf__type_by_id(btf, t->type);
+
+	/* check FUNC_PROTO's return type for VOID */
 	if (!t->type)
 		return FUNC_CANT_FAIL;
 
@@ -1013,13 +1029,11 @@ int main(int argc, char **argv)
 	vmlinux_btf = mass_attacher__btf(att);
 	for (i = 0, n = mass_attacher__func_cnt(att); i < n; i++) {
 		const struct mass_attacher_func_info *finfo;
-		const struct btf_type *t;
 		const char *glob;
 		__u32 flags;
 
 		finfo = mass_attacher__func(att, i);
-		t = btf__type_by_id(vmlinux_btf, finfo->btf_id);
-		flags = func_flags(finfo->name, vmlinux_btf, t);
+		flags = func_flags(finfo->name, vmlinux_btf, finfo->btf_id);
 
 		for (j = 0; j < env.entry_glob_cnt; j++) {
 			glob = env.entry_globs[j];
