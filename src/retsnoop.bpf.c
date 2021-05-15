@@ -50,6 +50,26 @@ const volatile int targ_tgid = 0;
 const volatile bool emit_success_stacks = false;
 const volatile bool emit_intermediate_stacks = false;
 
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, int);
+	__type(value, bool);
+	__uint(max_entries, 1); /* could be overriden from user-space */
+} tgids_filter SEC(".maps");
+
+const volatile __u32 tgid_allow_cnt = 0;
+const volatile __u32 tgid_deny_cnt = 0;
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, int);
+	__type(value, char[TASK_COMM_LEN]);
+	__uint(max_entries, 1); /* could be overriden from user-space */
+} comms_filter SEC(".maps");
+
+const volatile __u32 comm_allow_cnt = 0;
+const volatile __u32 comm_deny_cnt = 0;
+
 char func_names[MAX_FUNC_CNT][MAX_FUNC_NAME_LEN] = {};
 long func_ips[MAX_FUNC_CNT] = {};
 int func_flags[MAX_FUNC_CNT] = {};
@@ -114,8 +134,9 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 
 static struct call_stack empty_stack;
 
-static __noinline bool push_call_stack(void *ctx, u32 pid, u32 tgid, u32 id, u64 ip)
+static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 {
+	u32 pid = (u32)bpf_get_current_pid_tgid();
 	struct call_stack *stack;
 	u64 d;
 
@@ -156,8 +177,10 @@ static __noinline bool push_call_stack(void *ctx, u32 pid, u32 tgid, u32 id, u64
 					   func_name, stack->comm, pid);
 			bpf_printk("    ENTER %s%s [...]", spaces + 2 *((255 - d) & 0xFF), func_name);
 		} else {
-			if (d == 0)
+			if (d == 0) {
 				bpf_printk("=== STARTING TRACING %s [PID %d] ===", func_name, pid);
+				bpf_printk("=== ...      TRACING [PID %d COMM %s] ===", pid, stack->comm);
+			}
 			bpf_printk("    ENTER [%d] %s [...]", d + 1, func_name);
 		}
 		//bpf_printk("PUSH(2) ID %d ADDR %lx NAME %s", id, ip, func_name);
@@ -373,25 +396,59 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	return true;
 }
 
+static __always_inline bool tgid_allowed(void)
+{
+	bool *verdict_ptr;
+	u32 tgid;
+
+	/* if no PID filters -- allow everything */
+	if (tgid_allow_cnt + tgid_deny_cnt == 0)
+		return true;
+
+	tgid = bpf_get_current_pid_tgid() >> 32;
+
+	verdict_ptr = bpf_map_lookup_elem(&tgids_filter, &tgid);
+	if (!verdict_ptr)
+		/* if allowlist is non-empty, then PID didn't pass the check */
+		return tgid_allow_cnt == 0;
+
+	return *verdict_ptr;
+}
+
+static __always_inline bool comm_allowed(void)
+{
+	char comm[TASK_COMM_LEN] = {};
+	bool *verdict_ptr;
+
+	/* if no COMM filters -- allow everything */
+	if (comm_allow_cnt + comm_deny_cnt == 0)
+		return true;
+
+	bpf_get_current_comm(comm, TASK_COMM_LEN);
+
+	verdict_ptr = bpf_map_lookup_elem(&comms_filter, comm);
+	if (!verdict_ptr)
+		/* if allowlist is non-empty, then COMM didn't pass the check */
+		return comm_allow_cnt == 0;
+
+	return *verdict_ptr;
+}
+
 /* mass-attacher BPF library is calling this function, so it should be global */
 __hidden int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip)
 {
-	u64 pid_tgid = bpf_get_current_pid_tgid();
-	u32 pid = (u32)pid_tgid;
-	u32 tgid = pid_tgid >> 32;
+	if (!tgid_allowed() || !comm_allowed())
+		return 0;
 
-	if (targ_tgid && targ_tgid != tgid)
-		return false;
-
-	push_call_stack(ctx, pid, tgid, func_id, func_ip);
+	push_call_stack(ctx, func_id, func_ip);
 	return 0;
 }
 
 /* mass-attacher BPF library is calling this function, so it should be global */
 __hidden int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret)
 {
-	if (targ_tgid && targ_tgid != (bpf_get_current_pid_tgid() >> 32))
-		return false;
+	if (!tgid_allowed() || !comm_allowed())
+		return 0;
 
 	pop_call_stack(ctx, func_id, func_ip, ret);
 	return 0;

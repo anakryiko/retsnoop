@@ -36,4 +36,6 @@ struct call_stack {
 #define FUNC_NEEDS_SIGN_EXT 0x4
 #define FUNC_RET_PTR 0x8
 
+#define TASK_COMM_LEN 16
+
 #endif /* __RETSNOOP_H */

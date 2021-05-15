@@ -47,6 +47,15 @@ static struct env {
 	int deny_glob_cnt;
 	int entry_glob_cnt;
 
+	int *allow_pids;
+	int *deny_pids;
+	char **allow_comms;
+	char **deny_comms;
+	int allow_pid_cnt;
+	int deny_pid_cnt;
+	int allow_comm_cnt;
+	int deny_comm_cnt;
+
 	struct ctx ctx;
 	int ringbuf_sz;
 	int perfbuf_percpu_sz;
@@ -83,12 +92,18 @@ static const struct argp_option opts[] = {
 	  "Glob for allowed functions captured in error stack trace collection" },
 	{ "deny", 'd', "GLOB", 0,
 	  "Glob for denied functions ignored during error stack trace collection" },
-	{ "pid", 'p', "PID", 0,
-	  "Only trace given PID" },
 	{ "kernel", 'k',
 	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
 	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
-	  "Perform extra symbolization (-s gives line numbers, -ss gives also inline symbols). Relies on having vmlinux with DWARF available." },
+	  "Perform extra symbolization (-s for line numbers, -ss for also inlines) also also inline symbols. Relies on having vmlinux with DWARF available." },
+	{ "pid", 'p', "PID", 0,
+	  "Only trace given PID. Can be specified multiple times" },
+	{ "no-pid", 'P', "PID", 0,
+	  "Skip tracing given PID. Can be specified multiple times" },
+	{ "comm", 'n', "COMM", 0,
+	  "Only trace processes with given name (COMM). Can be specified multiple times" },
+	{ "no-comm", 'N', "COMM", 0,
+	  "Skip tracing processes with given name (COMM). Can be specified multiple times" },
 	{ "success-stacks", OPT_SUCCESS_STACKS, NULL, 0,
 	  "Emit matched successful stacks" },
 	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
@@ -122,17 +137,17 @@ static const struct preset presets[] = {
 	{"perf", perf_entry_globs, perf_allow_globs, perf_deny_globs},
 };
 
-static int append_glob(char ***globs, int *cnt, const char *glob)
+static int append_str(char ***strs, int *cnt, const char *str)
 {
 	void *tmp;
 	char *s;
 
-	tmp = realloc(*globs, (*cnt + 1) * sizeof(**globs));
+	tmp = realloc(*strs, (*cnt + 1) * sizeof(**strs));
 	if (!tmp)
 		return -ENOMEM;
-	*globs = tmp;
+	*strs = tmp;
 
-	(*globs)[*cnt] = s = strdup(glob);
+	(*strs)[*cnt] = s = strdup(str);
 	if (!s)
 		return -ENOMEM;
 
@@ -140,7 +155,7 @@ static int append_glob(char ***globs, int *cnt, const char *glob)
 	return 0;
 }
 
-static int append_glob_file(char ***globs, int *cnt, const char *file)
+static int append_str_file(char ***strs, int *cnt, const char *file)
 {
 	char buf[256];
 	FILE *f;
@@ -154,7 +169,7 @@ static int append_glob_file(char ***globs, int *cnt, const char *file)
 	}
 
 	while (fscanf(f, "%s", buf) == 1) {
-		if (append_glob(globs, cnt, buf)) {
+		if (append_str(strs, cnt, buf)) {
 			err = -ENOMEM;
 			goto cleanup;
 		}
@@ -163,6 +178,29 @@ static int append_glob_file(char ***globs, int *cnt, const char *file)
 cleanup:
 	fclose(f);
 	return err;
+}
+
+static int append_pid(int **pids, int *cnt, const char *arg)
+{
+	void *tmp;
+	int pid;
+
+	errno = 0;
+	pid = strtol(arg, NULL, 10);
+	if (errno || pid < 0) {
+		fprintf(stderr, "Invalid PID: %d\n", pid);
+		return -EINVAL;
+	}
+
+	tmp = realloc(*pids, (*cnt + 1) * sizeof(**pids));
+	if (!tmp)
+		return -ENOMEM;
+	*pids = tmp;
+
+	(*pids)[*cnt] = pid;
+	*cnt = *cnt + 1;
+
+	return 0;
 }
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
@@ -199,17 +237,17 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 
 			for (j = 0; p->entry_globs[j]; j++) {
 				glob = p->entry_globs[j];
-				if (append_glob(&env.entry_globs, &env.entry_glob_cnt, glob))
+				if (append_str(&env.entry_globs, &env.entry_glob_cnt, glob))
 					return -ENOMEM;
 			}
 			for (j = 0; p->allow_globs[j]; j++) {
 				glob = p->allow_globs[j];
-				if (append_glob(&env.allow_globs, &env.allow_glob_cnt, glob))
+				if (append_str(&env.allow_globs, &env.allow_glob_cnt, glob))
 					return -ENOMEM;
 			}
 			for (j = 0; p->deny_globs[j]; j++) {
 				glob = p->deny_globs[j];
-				if (append_glob(&env.deny_globs, &env.deny_glob_cnt, glob))
+				if (append_str(&env.deny_globs, &env.deny_glob_cnt, glob))
 					return -ENOMEM;
 			}
 
@@ -219,37 +257,29 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'a':
 		if (arg[0] == '@') {
-			err = append_glob_file(&env.allow_globs, &env.allow_glob_cnt, arg + 1);
+			err = append_str_file(&env.allow_globs, &env.allow_glob_cnt, arg + 1);
 			if (err)
 				return err;
-		} else if (append_glob(&env.allow_globs, &env.allow_glob_cnt, arg)) {
+		} else if (append_str(&env.allow_globs, &env.allow_glob_cnt, arg)) {
 			return -ENOMEM;
 		}
 		break;
 	case 'd':
 		if (arg[0] == '@') {
-			err = append_glob_file(&env.deny_globs, &env.deny_glob_cnt, arg + 1);
+			err = append_str_file(&env.deny_globs, &env.deny_glob_cnt, arg + 1);
 			if (err)
 				return err;
-		} else if (append_glob(&env.deny_globs, &env.deny_glob_cnt, arg)) {
+		} else if (append_str(&env.deny_globs, &env.deny_glob_cnt, arg)) {
 			return -ENOMEM;
 		}
 		break;
 	case 'e':
 		if (arg[0] == '@') {
-			err = append_glob_file(&env.entry_globs, &env.entry_glob_cnt, arg + 1);
+			err = append_str_file(&env.entry_globs, &env.entry_glob_cnt, arg + 1);
 			if (err)
 				return err;
-		} else if (append_glob(&env.entry_globs, &env.entry_glob_cnt, arg)) {
+		} else if (append_str(&env.entry_globs, &env.entry_glob_cnt, arg)) {
 			return -ENOMEM;
-		}
-		break;
-	case 'p':
-		errno = 0;
-		env.pid = strtol(arg, NULL, 10);
-		if (errno || env.pid < 0) {
-			fprintf(stderr, "Invalid PID: %d\n", env.pid);
-			return -EINVAL;
 		}
 		break;
 	case 's':
@@ -267,6 +297,34 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'k':
 		env.vmlinux_path = arg;
+		break;
+	case 'n':
+		if (arg[0] == '@') {
+			err = append_str_file(&env.allow_comms, &env.allow_comm_cnt, arg + 1);
+			if (err)
+				return err;
+		} else if (append_str(&env.allow_comms, &env.allow_comm_cnt, arg)) {
+			return -ENOMEM;
+		}
+		break;
+	case 'N':
+		if (arg[0] == '@') {
+			err = append_str_file(&env.deny_comms, &env.deny_comm_cnt, arg + 1);
+			if (err)
+				return err;
+		} else if (append_str(&env.deny_comms, &env.deny_comm_cnt, arg)) {
+			return -ENOMEM;
+		}
+		break;
+	case 'p':
+		err = append_pid(&env.allow_pids, &env.allow_pid_cnt, arg);
+		if (err)
+			return err;
+		break;
+	case 'P':
+		err = append_pid(&env.deny_pids, &env.deny_pid_cnt, arg);
+		if (err)
+			return err;
 		break;
 	case OPT_SUCCESS_STACKS:
 		env.emit_success_stacks = true;
@@ -819,10 +877,10 @@ static int func_flags(const char *func_name, const struct btf *btf, int btf_id)
 		return FUNC_NEEDS_SIGN_EXT;
 	}
 
-	/* get FUNC */
+	/* FUNC */
 	t = btf__type_by_id(btf, btf_id);
 
-	/* get FUNC's FUNC_PROTO */
+	/* FUNC_PROTO */
 	t = btf__type_by_id(btf, t->type);
 
 	/* check FUNC_PROTO's return type for VOID */
@@ -974,6 +1032,20 @@ int main(int argc, char **argv)
 
 	bpf_map__set_max_entries(skel->maps.stacks, env.stacks_map_sz);
 
+	skel->rodata->tgid_allow_cnt = env.allow_pid_cnt;
+	skel->rodata->tgid_deny_cnt = env.deny_pid_cnt;
+	if (env.allow_pid_cnt + env.deny_pid_cnt > 0) {
+		bpf_map__set_max_entries(skel->maps.tgids_filter,
+					 env.allow_pid_cnt + env.deny_pid_cnt);
+	}
+
+	skel->rodata->comm_allow_cnt = env.allow_comm_cnt;
+	skel->rodata->comm_deny_cnt = env.deny_comm_cnt;
+	if (env.allow_comm_cnt + env.deny_comm_cnt > 0) {
+		bpf_map__set_max_entries(skel->maps.comms_filter,
+					 env.allow_comm_cnt + env.deny_comm_cnt);
+	}
+
 	/* turn on extra bpf_printk()'s on BPF side */
 	skel->rodata->verbose = env.bpf_logs;
 	skel->rodata->extra_verbose = env.debug_extra;
@@ -1078,6 +1150,63 @@ int main(int argc, char **argv)
 	if (err)
 		goto cleanup;
 
+	for (i = 0; i < env.allow_pid_cnt; i++) {
+		int tgid = env.allow_pids[i];
+		bool verdict = true; /* allowed */
+
+		err = bpf_map_update_elem(bpf_map__fd(skel->maps.tgids_filter),
+					  &tgid, &verdict, BPF_ANY);
+		if (err) {
+			err = -errno;
+			fprintf(stderr, "Failed to setup PID allowlist: %d\n", err);
+			goto cleanup;
+		}
+	}
+	/* denylist overrides allowlist, if overlaps */
+	for (i = 0; i < env.deny_pid_cnt; i++) {
+		int tgid = env.deny_pids[i];
+		bool verdict = false; /* denied */
+
+		err = bpf_map_update_elem(bpf_map__fd(skel->maps.tgids_filter),
+					  &tgid, &verdict, BPF_ANY);
+		if (err) {
+			err = -errno;
+			fprintf(stderr, "Failed to setup PID denylist: %d\n", err);
+			goto cleanup;
+		}
+	}
+	for (i = 0; i < env.allow_comm_cnt; i++) {
+		const char *comm = env.allow_comms[i];
+		char buf[TASK_COMM_LEN] = {};
+		bool verdict = true; /* allowed */
+
+		strncat(buf, comm, TASK_COMM_LEN - 1);
+
+		err = bpf_map_update_elem(bpf_map__fd(skel->maps.comms_filter),
+					  &buf, &verdict, BPF_ANY);
+		if (err) {
+			err = -errno;
+			fprintf(stderr, "Failed to setup COMM allowlist: %d\n", err);
+			goto cleanup;
+		}
+	}
+	/* denylist overrides allowlist, if overlaps */
+	for (i = 0; i < env.deny_comm_cnt; i++) {
+		const char *comm = env.deny_comms[i];
+		char buf[TASK_COMM_LEN] = {};
+		bool verdict = false; /* denied */
+
+		strncat(buf, comm, TASK_COMM_LEN - 1);
+
+		err = bpf_map_update_elem(bpf_map__fd(skel->maps.comms_filter),
+					  &buf, &verdict, BPF_ANY);
+		if (err) {
+			err = -errno;
+			fprintf(stderr, "Failed to setup COMM denylist: %d\n", err);
+			goto cleanup;
+		}
+	}
+
 	err = mass_attacher__attach(att);
 	if (err)
 		goto cleanup;
@@ -1148,6 +1277,16 @@ cleanup:
 	for (i = 0; i < env.entry_glob_cnt; i++)
 		free(env.entry_globs[i]);
 	free(env.entry_globs);
+
+	for (i = 0; i < env.allow_comm_cnt; i++)
+		free(env.allow_comms[i]);
+	free(env.allow_comms);
+	for (i = 0; i < env.deny_comm_cnt; i++)
+		free(env.deny_comms[i]);
+	free(env.deny_comms);
+
+	free(env.allow_pids);
+	free(env.deny_pids);
 
 	return -err;
 }
