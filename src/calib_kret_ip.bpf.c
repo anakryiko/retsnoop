@@ -23,7 +23,7 @@ int calib_entry(struct pt_regs *ctx)
 		return 0;
 
 	entry_ip = ctx->ip - 1;
-	bpf_printk("ENTRY IP %lx\n", entry_ip);
+
 	return 0;
 }
 
@@ -47,7 +47,6 @@ int calib_exit(struct pt_regs *ctx)
 
 		if (ip == entry_ip) {
 			found_off = i;
-			bpf_printk("FOUND OFFSET %d TK %lx IP %lx", i, (long)tk, ip);
 			return 0;
 		}
 	}
