@@ -76,7 +76,7 @@ const char argp_program_doc[] =
 #define OPT_SUCCESS_STACKS 1000
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
-#define OPT_USE_KPROBES 1003
+#define OPT_USE_KPROBES 'K'
 #define OPT_INTERMEDIATE_STACKS 'A'
 
 static const struct argp_option opts[] = {
