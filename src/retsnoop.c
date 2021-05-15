@@ -352,6 +352,9 @@ static const char *bpf_deny_globs[] = {
 	"find_busiest_group",
 	"find_vma*",
 
+	/* non-failing */
+	"btf_sec_info_cmp",
+
 	NULL,
 };
 
@@ -377,6 +380,7 @@ struct fstack_item {
 	long lat;
 	bool finished;
 	bool stitched;
+	bool err_start;
 };
 
 static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct call_stack *s)
@@ -956,9 +960,12 @@ int main(int argc, char **argv)
 
 	/* turn on extra bpf_printk()'s on BPF side */
 	skel->rodata->verbose = env.bpf_logs;
+	skel->rodata->extra_verbose = env.debug_extra;
 	skel->rodata->targ_tgid = env.pid;
 	skel->rodata->emit_success_stacks = env.emit_success_stacks;
 	skel->rodata->emit_intermediate_stacks = env.emit_intermediate_stacks;
+
+	memset(skel->rodata->spaces, ' ', 511);
 
 	skel->rodata->use_ringbuf = use_ringbuf = kernel_supports_ringbuf();
 	if (use_ringbuf) {
