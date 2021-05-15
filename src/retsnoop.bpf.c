@@ -6,14 +6,7 @@
 #include <bpf/bpf_core_read.h>
 #include "retsnoop.h"
 
-#undef bpf_printk
-#define bpf_printk(fmt, ...)						\
-({									\
-	static const char ___fmt[] = fmt;				\
-	bpf_trace_printk(___fmt, sizeof(___fmt), ##__VA_ARGS__);	\
-})
-
-#define barrier_var(var) asm volatile("" : "=r"(var) : "0"(var))
+char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 enum bpf_func_id___custom
 {
@@ -22,7 +15,23 @@ enum bpf_func_id___custom
 
 #define printk_is_sane (bpf_core_enum_value_exists(enum bpf_func_id___custom, BPF_FUNC_snprintf))
 
-char LICENSE[] SEC("license") = "Dual BSD/GPL";
+/* our vmlinux.h is outdated, stub out expected struct */
+struct trace_event_raw_bpf_trace_printk {};
+
+#define printk_needs_endline (!bpf_core_type_exists(struct trace_event_raw_bpf_trace_printk))
+
+#define APPEND_ENDLINE(fmt) fmt[sizeof(fmt) - 2] = '\n'
+
+#undef bpf_printk
+#define bpf_printk(fmt, ...)						\
+({									\
+	static char ___fmt[] = fmt " ";					\
+	if (printk_needs_endline)					\
+		APPEND_ENDLINE(___fmt);					\
+	bpf_trace_printk(___fmt, sizeof(___fmt), ##__VA_ARGS__);	\
+})
+
+#define barrier_var(var) asm volatile("" : "=r"(var) : "0"(var))
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -183,48 +192,56 @@ static __always_inline bool IS_ERR_VALUE32(u64 x)
 	return true;
 }
 
-static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
+/* all length should be the same */
+char FMT_CANT_FAIL[]        = "    EXIT  %s%s [VOID]     ";
+char FMT_FAIL_NULL[]        = "[!] EXIT  %s%s [NULL]     ";
+char FMT_SUCC_PTR[]         = "    EXIT  %s%s [0x%lx]    ";
+char FMT_FAIL_LONG[]        = "[!] EXIT  %s%s [%ld]      ";
+char FMT_SUCC_LONG[]        = "    EXIT  %s%s [%ld]      ";
+char FMT_FAIL_INT[]         = "[!] EXIT  %s%s [%d]       ";
+char FMT_SUCC_INT[]         = "    EXIT  %s%s [%d]       ";
+char FMT_CANT_FAIL_COMPAT[] = "    EXIT  [%d] %s [VOID]  ";
+char FMT_FAIL_NULL_COMPAT[] = "[!] EXIT  [%d] %s [NULL]  ";
+char FMT_SUCC_PTR_COMPAT[]  = "    EXIT  [%d] %s [0x%lx] ";
+char FMT_FAIL_LONG_COMPAT[] = "[!] EXIT  [%d] %s [%ld]   ";
+char FMT_SUCC_LONG_COMPAT[] = "    EXIT  [%d] %s [%ld]   ";
+char FMT_FAIL_INT_COMPAT[]  = "[!] EXIT  [%d] %s [%d]    ";
+char FMT_SUCC_INT_COMPAT[]  = "    EXIT  [%d] %s [%d]    ";
+
+static __noinline void print_exit(__u32 d, __u32 id, long res)
 {
-	static const char FMT_CANT_FAIL[]        = "    EXIT  %s%s [VOID]";
-	static const char FMT_FAIL_NULL[]        = "[!] EXIT  %s%s [NULL]";
-	static const char FMT_SUCC_PTR[]         = "    EXIT  %s%s [0x%lx]";
-	static const char FMT_FAIL_LONG[]        = "[!] EXIT  %s%s [%ld]";
-	static const char FMT_SUCC_LONG[]        = "    EXIT  %s%s [%ld]";
-	static const char FMT_FAIL_INT[]         = "[!] EXIT  %s%s [%d]";
-	static const char FMT_SUCC_INT[]         = "    EXIT  %s%s [%d]";
-	static const char FMT_CANT_FAIL_COMPAT[] = "    EXIT  [%d] %s [VOID]";
-	static const char FMT_FAIL_NULL_COMPAT[] = "[!] EXIT  [%d] %s [NULL]";
-	static const char FMT_SUCC_PTR_COMPAT[]  = "    EXIT  [%d] %s [0x%lx]";
-	static const char FMT_FAIL_LONG_COMPAT[] = "[!] EXIT  [%d] %s [%ld]";
-	static const char FMT_SUCC_LONG_COMPAT[] = "    EXIT  [%d] %s [%ld]";
-	static const char FMT_FAIL_INT_COMPAT[]  = "[!] EXIT  [%d] %s [%d]";
-	static const char FMT_SUCC_INT_COMPAT[]  = "    EXIT  [%d] %s [%d]";
-	static const char JUST_FILLER[] = "-------------------------------";
+	const char *func_name = func_names[id & MAX_FUNC_MASK];
 	const size_t FMT_MAX_SZ = sizeof(FMT_SUCC_PTR_COMPAT); /* UPDATE IF NECESSARY */
-	u32 pid = (u32)bpf_get_current_pid_tgid();
-	struct call_stack *stack;
-	u64 d, actual_ip;
-	u32 actual_id, flags, fmt_sz;
+	u32 flags, fmt_sz;
 	const char *fmt;
 	bool failed;
 
-	stack = bpf_map_lookup_elem(&stacks, &pid);
-	if (!stack)
-		return false;
-
-	d = stack->depth;
-	if (d == 0)
-		return false;
- 
-	d -= 1;
-	barrier_var(d);
-	if (d >= MAX_FSTACK_DEPTH)
-		return false;
+	if (printk_needs_endline) {
+		/* before bpf_trace_printk() started using underlying
+		 * tracepoint mechanism for logging to trace_pipe it didn't
+		 * automatically append endline, so we need to adjust our
+		 * format strings to have \n, otherwise we'll have a dump of
+		 * unseparate log lines
+		 */
+		APPEND_ENDLINE(FMT_CANT_FAIL);
+		APPEND_ENDLINE(FMT_FAIL_NULL);
+		APPEND_ENDLINE(FMT_SUCC_PTR);
+		APPEND_ENDLINE(FMT_FAIL_LONG);
+		APPEND_ENDLINE(FMT_SUCC_LONG);
+		APPEND_ENDLINE(FMT_FAIL_INT);
+		APPEND_ENDLINE(FMT_SUCC_INT);
+		APPEND_ENDLINE(FMT_CANT_FAIL_COMPAT);
+		APPEND_ENDLINE(FMT_FAIL_NULL_COMPAT);
+		APPEND_ENDLINE(FMT_SUCC_PTR_COMPAT);
+		APPEND_ENDLINE(FMT_FAIL_LONG_COMPAT);
+		APPEND_ENDLINE(FMT_SUCC_LONG_COMPAT);
+		APPEND_ENDLINE(FMT_FAIL_INT_COMPAT);
+		APPEND_ENDLINE(FMT_SUCC_INT_COMPAT);
+	}
 
 	flags = func_flags[id & MAX_FUNC_MASK];
 	if (flags & FUNC_CANT_FAIL) {
-		fmt = FMT_CANT_FAIL;
-		fmt_sz = sizeof(FMT_CANT_FAIL);
+		fmt = printk_is_sane ? FMT_CANT_FAIL : FMT_FAIL_NULL_COMPAT;
 		failed = false;
 	} else if ((flags & FUNC_RET_PTR) && res == 0) {
 		/* consider NULL pointer an error */
@@ -246,16 +263,53 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 		else
 			fmt = printk_is_sane ? FMT_SUCC_LONG : FMT_SUCC_LONG_COMPAT;
 	}
-	if (verbose) {
-		if (printk_is_sane) {
-			bpf_trace_printk(fmt, FMT_MAX_SZ, spaces + 2 * ((255 - d) & 0xff),
-					 func_names[id & MAX_FUNC_MASK], res);
-		} else {
-			bpf_trace_printk(fmt, FMT_MAX_SZ, d + 1,
-					 func_names[id & MAX_FUNC_MASK], res);
-		}
-		//bpf_printk("POP(1) ID %d ADDR %lx NAME %s", id, ip, func_names[id & MAX_FUNC_MASK]);
+
+	if (printk_is_sane) {
+		bpf_trace_printk(fmt, FMT_MAX_SZ, spaces + 2 * ((255 - d) & 0xff), func_name, res);
+	} else {
+		bpf_trace_printk(fmt, FMT_MAX_SZ, d + 1, func_name, res);
 	}
+	//bpf_printk("POP(1) ID %d ADDR %lx NAME %s", id, ip, func_name);
+}
+
+static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
+{
+	const char *func_name = func_names[id & MAX_FUNC_MASK];
+	u32 pid = (u32)bpf_get_current_pid_tgid();
+	struct call_stack *stack;
+	u64 d, actual_ip;
+	u32 actual_id, flags, fmt_sz;
+	const char *fmt;
+	bool failed;
+
+	stack = bpf_map_lookup_elem(&stacks, &pid);
+	if (!stack)
+		return false;
+
+	d = stack->depth;
+	if (d == 0)
+		return false;
+ 
+	d -= 1;
+	barrier_var(d);
+	if (d >= MAX_FSTACK_DEPTH)
+		return false;
+
+	flags = func_flags[id & MAX_FUNC_MASK];
+	if (flags & FUNC_CANT_FAIL)
+		failed = false;
+	else if ((flags & FUNC_RET_PTR) && res == 0)
+		/* consider NULL pointer an error */
+		failed = true;
+	else if ((flags & FUNC_RET_PTR) && !IS_ERR_VALUE(res))
+		failed = false;
+	else if (flags & FUNC_NEEDS_SIGN_EXT)
+		failed = IS_ERR_VALUE32(res);
+	else
+		failed = IS_ERR_VALUE(res);
+
+	if (verbose)
+		print_exit(d, id, res);
 
 	actual_id = stack->func_ids[d];
 	if (actual_id != id) {
@@ -266,9 +320,9 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 
 		if (verbose) {
 			bpf_printk("POP(0) UNEXPECTED PID %d DEPTH %d MAX DEPTH %d", pid, stack->depth, stack->max_depth);
-			bpf_printk("POP(1) UNEXPECTEC GOT ID %d ADDR %lx NAME %s", id, ip, func_names[id & MAX_FUNC_MASK]);
+			bpf_printk("POP(1) UNEXPECTEC GOT ID %d ADDR %lx NAME %s", id, ip, func_name);
 			bpf_printk("POP(2) UNEXPECTED. WANTED ID %u ADDR %lx NAME %s",
-				   actual_id, actual_ip, func_names[actual_id & MAX_FUNC_MASK]);
+				   actual_id, actual_ip, func_name);
 		}
 
 		stack->depth = 0;
