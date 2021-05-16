@@ -1247,6 +1247,8 @@ int main(int argc, char **argv)
 	mass_attacher__activate(att);
 
 	/* Process events */
+	if (env.bpf_logs)
+		printf("BPF-side logging is enabled. Use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to see logs.\n");
 	printf("Receiving data...\n");
 	while (!exiting) {
 		err = rb ? ring_buffer__poll(rb, 100) : perf_buffer__poll(pb, 100);
