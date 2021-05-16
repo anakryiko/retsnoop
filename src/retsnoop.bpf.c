@@ -438,7 +438,7 @@ static __always_inline bool comm_allowed(void)
 }
 
 /* mass-attacher BPF library is calling this function, so it should be global */
-__hidden int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip)
+__hidden int handle_func_entry(void *ctx, u32 func_id, u64 func_ip)
 {
 	if (!tgid_allowed() || !comm_allowed())
 		return 0;
@@ -448,7 +448,7 @@ __hidden int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip)
 }
 
 /* mass-attacher BPF library is calling this function, so it should be global */
-__hidden int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret)
+__hidden int handle_func_exit(void *ctx, u32 func_id, u64 func_ip, u64 ret)
 {
 	if (!tgid_allowed() || !comm_allowed())
 		return 0;

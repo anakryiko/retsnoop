@@ -13,8 +13,8 @@
 })
 
 /* these two are defined by custom BPF code outside of mass_attacher */
-extern int handle_func_entry(void *ctx, u32 cpu, u32 func_id, u64 func_ip);
-extern int handle_func_exit(void *ctx, u32 cpu, u32 func_id, u64 func_ip, u64 ret);
+extern int handle_func_entry(void *ctx, u32 func_id, u64 func_ip);
+extern int handle_func_exit(void *ctx, u32 func_id, u64 func_ip, u64 ret);
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -48,8 +48,8 @@ static __always_inline u64 get_kret_caller_ip(void *ctx)
 SEC("kprobe/xxx")
 int kentry(struct pt_regs *ctx)
 {
-	u32 *id_ptr, cpu = bpf_get_smp_processor_id();
 	const char *name;
+	u32 *id_ptr;
 	long ip;
 
 	if (!ready)
@@ -62,7 +62,7 @@ int kentry(struct pt_regs *ctx)
 		return 0;
 	}
 
-	handle_func_entry(ctx, cpu, *id_ptr, ip);
+	handle_func_entry(ctx, *id_ptr, ip);
 	return 0;
 }
 
@@ -83,7 +83,7 @@ int kexit(struct pt_regs *ctx)
 		return 0;
 	}
 
-	handle_func_exit(ctx, -1, *id_ptr, ip, PT_REGS_RC(ctx));
+	handle_func_exit(ctx, *id_ptr, ip, PT_REGS_RC(ctx));
 
 	return 0;
 }
@@ -126,12 +126,14 @@ static __always_inline u64 get_ftrace_caller_ip(void *ctx, int arg_cnt)
 /* we need arg_cnt * sizeof(__u64) to be a constant, so need to inline */
 static __always_inline int handle_fentry(void *ctx, int arg_cnt, bool entry)
 {
-	u32 *id_ptr, cpu = bpf_get_smp_processor_id();
+	u32 *id_ptr, cpu;
 	const char *name;
 	long ip;
 
 	if (!ready)
 		return 0;
+
+	cpu = bpf_get_smp_processor_id();
 	if (!recur_enter(cpu))
 		return 0;
 
@@ -143,11 +145,11 @@ static __always_inline int handle_fentry(void *ctx, int arg_cnt, bool entry)
 	}
 
 	if (entry) {
-		handle_func_entry(ctx, cpu, *id_ptr, ip);
+		handle_func_entry(ctx, *id_ptr, ip);
 	} else {
 		u64 res = *(u64 *)(ctx + sizeof(u64) * arg_cnt);
 
-		handle_func_exit(ctx, cpu, *id_ptr, ip, res);
+		handle_func_exit(ctx, *id_ptr, ip, res);
 	}
 out:
 	recur_exit(cpu);

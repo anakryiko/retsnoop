@@ -1144,8 +1144,17 @@ int main(int argc, char **argv)
 	if (err)
 		goto cleanup;
 
+	n = mass_attacher__func_cnt(att);
+	if (n > MAX_FUNC_CNT) {
+		fprintf(stderr,
+			"Number of requested functions %d is too big, only up to %d functions are supported\n",
+			n, MAX_FUNC_CNT);
+		err = -E2BIG;
+		goto cleanup;
+	}
+
 	vmlinux_btf = mass_attacher__btf(att);
-	for (i = 0, n = mass_attacher__func_cnt(att); i < n; i++) {
+	for (i = 0; i < n; i++) {
 		const struct mass_attacher_func_info *finfo;
 		const char *glob;
 		__u32 flags;
