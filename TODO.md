@@ -6,7 +6,7 @@
 4. Validate if recursive protection is still needed (at least on latest kernels).
 5. Minimize/prune BPF preset, it takes multiple minutes on a slightly older kernel.
 6. Add per-stack metadata:
-    - timestamp;
+    - [DONE] timestamp;
     - [DONE] PID/TID/UID.
 7. Capture input arguments for each function. Pretty-print them (e.g., const char * and struct bpf_attr *).
 8. [DONE] Add ability to provide lists of globs from file.

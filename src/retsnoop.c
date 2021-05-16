@@ -11,6 +11,7 @@
 #include <bpf/libbpf.h>
 #include <bpf/btf.h>
 #include <sys/utsname.h>
+#include <time.h>
 #include "retsnoop.h"
 #include "retsnoop.skel.h"
 #include "ksyms.h"
@@ -360,6 +361,46 @@ static const struct argp argp = {
 	.parser = parse_arg,
 	.doc = argp_program_doc,
 };
+
+static __u64 ktime_off;
+
+static __u64 timespec_to_ns(struct timespec *ts)
+{
+	return ts->tv_sec * 1000000000ULL + ts->tv_nsec;
+}
+
+static void calibrate_ktime(void)
+{
+	int i;
+	struct timespec t1, t2, t3;
+	__u64 best_delta = 0, delta, ts;
+
+	for (i = 0; i < 10; i++) {
+		clock_gettime(CLOCK_REALTIME, &t1);
+		clock_gettime(CLOCK_MONOTONIC, &t2);
+		clock_gettime(CLOCK_REALTIME, &t3);
+
+		delta = timespec_to_ns(&t3) - timespec_to_ns(&t1);
+		ts = (timespec_to_ns(&t3) + timespec_to_ns(&t1)) / 2;
+
+		if (i == 0 || delta < best_delta) {
+			best_delta = delta;
+			ktime_off = ts - timespec_to_ns(&t2);
+		}
+	}
+}
+
+static void ts_to_str(__u64 ts, char buf[], size_t buf_sz)
+{
+	char tmp[32];
+	time_t t = ts / 1000000000;
+	struct tm tm;
+
+	localtime_r(&t, &tm);
+	strftime(tmp, sizeof(tmp), "%H:%M:%S", &tm);
+
+	snprintf(buf, buf_sz, "%s.%03lld", tmp, ts / 1000000 % 1000);
+}
 
 /* PRESETS */
 
@@ -791,6 +832,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	struct ctx *dctx = ctx;
 	const struct call_stack *s = data;
 	int i, j, fstack_n, kstack_n;
+	char timestamp[64];
 
 	if (!s->is_err && !env.emit_success_stacks)
 		return 0;
@@ -816,7 +858,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		printf("KSTACK (%d items out of original %ld):\n", kstack_n, s->kstack_sz / 8);
 	}
 
-	printf("PID %d (%s):\n", s->pid, s->comm);
+	ts_to_str(s->ts + ktime_off, timestamp, sizeof(timestamp));
+	printf("%s PID %d (%s):\n", timestamp, s->pid, s->comm);
 
 	i = 0;
 	j = 0;
@@ -1019,6 +1062,9 @@ int main(int argc, char **argv)
 			return -1;
 		}
 	}
+
+	/* determine mapping from bpf_ktime_get_ns() to real clock */
+	calibrate_ktime();
 
 	/* Set up libbpf errors and debug info callback */
 	libbpf_set_print(libbpf_print_fn);

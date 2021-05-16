@@ -118,6 +118,7 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 		/* we are partially overriding previous stack, so emit error stack, if present */
 		if (extra_verbose)
 			bpf_printk("EMIT PARTIAL STACK DEPTH %d..%d\n", stack->depth + 1, stack->max_depth);
+		stack->ts = bpf_ktime_get_ns();
 		ringbuf_output(ctx, &rb, stack);
 	} else if (extra_verbose) {
 		bpf_printk("RESETTING SAVED ERR STACK %d..%d to %d..\n",
@@ -375,12 +376,14 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 				bpf_printk("EMIT ERROR STACK DEPTH %d (SAVED ..%d)\n",
 					   stack->max_depth, stack->saved_max_depth);
 			}
+			stack->ts = bpf_ktime_get_ns();
 			ringbuf_output(ctx, &rb, stack);
 		} else if (emit_success_stacks) {
 			if (extra_verbose) {
 				bpf_printk("EMIT SUCCESS STACK DEPTH %d (SAVED ..%d)\n",
 					   stack->max_depth, stack->saved_max_depth);
 			}
+			stack->ts = bpf_ktime_get_ns();
 			ringbuf_output(ctx, &rb, stack);
 		}
 		stack->is_err = false;
