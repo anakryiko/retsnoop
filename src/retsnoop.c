@@ -928,7 +928,7 @@ static int func_flags(const char *func_name, const struct btf *btf, int btf_id)
 
 	/* check FUNC_PROTO's return type for VOID */
 	if (!t->type)
-		return FUNC_CANT_FAIL;
+		return FUNC_CANT_FAIL | FUNC_RET_VOID;
 
 	t = btf__type_by_id(btf, t->type);
 	while (btf_is_mod(t) || btf_is_typedef(t))
@@ -938,8 +938,12 @@ static int func_flags(const char *func_name, const struct btf *btf, int btf_id)
 		return FUNC_RET_PTR; /* can fail, no sign extension */
 
 	/* unsigned is treated as non-failing */
-	if (btf_is_int(t) && !(btf_int_encoding(t) & BTF_INT_SIGNED))
-		return FUNC_CANT_FAIL;
+	if (btf_is_int(t)) {
+		if (btf_int_encoding(t) & BTF_INT_BOOL)
+			return FUNC_CANT_FAIL | FUNC_RET_BOOL;
+		if (!(btf_int_encoding(t) & BTF_INT_SIGNED))
+			return FUNC_CANT_FAIL;
+	}
 
 	/* byte and word are treated as non-failing */
 	if (t->size < 4)

@@ -36,6 +36,8 @@ struct call_stack {
 #define FUNC_CANT_FAIL 0x2
 #define FUNC_NEEDS_SIGN_EXT 0x4
 #define FUNC_RET_PTR 0x8
+#define FUNC_RET_BOOL 0x10
+#define FUNC_RET_VOID 0x20
 
 #define TASK_COMM_LEN 16
 

@@ -211,28 +211,35 @@ static __always_inline bool IS_ERR_VALUE32(u64 x)
 		return false;
 	/* prevent clever Clang optimizaations involving math */
 	barrier_var(x);
-	if ( x > 0xffffffff)
+	if (x > 0xffffffff)
 		return false;
 	return true;
 }
 
 /* all length should be the same */
-char FMT_CANT_FAIL[]        = "    EXIT  %s%s [VOID]     ";
-char FMT_FAIL_NULL[]        = "[!] EXIT  %s%s [NULL]     ";
-char FMT_SUCC_PTR[]         = "    EXIT  %s%s [0x%lx]    ";
-char FMT_FAIL_LONG[]        = "[!] EXIT  %s%s [%ld]      ";
-char FMT_SUCC_LONG[]        = "    EXIT  %s%s [%ld]      ";
-char FMT_FAIL_INT[]         = "[!] EXIT  %s%s [%d]       ";
-char FMT_SUCC_INT[]         = "    EXIT  %s%s [%d]       ";
-char FMT_CANT_FAIL_COMPAT[] = "    EXIT  [%d] %s [VOID]  ";
-char FMT_FAIL_NULL_COMPAT[] = "[!] EXIT  [%d] %s [NULL]  ";
-char FMT_SUCC_PTR_COMPAT[]  = "    EXIT  [%d] %s [0x%lx] ";
-char FMT_FAIL_LONG_COMPAT[] = "[!] EXIT  [%d] %s [%ld]   ";
-char FMT_SUCC_LONG_COMPAT[] = "    EXIT  [%d] %s [%ld]   ";
-char FMT_FAIL_INT_COMPAT[]  = "[!] EXIT  [%d] %s [%d]    ";
-char FMT_SUCC_INT_COMPAT[]  = "    EXIT  [%d] %s [%d]    ";
+char FMT_SUCC_VOID[]         = "    EXIT  %s%s [VOID]     ";
+char FMT_SUCC_TRUE[]         = "    EXIT  %s%s [true]     ";
+char FMT_SUCC_FALSE[]        = "    EXIT  %s%s [false]    ";
+char FMT_FAIL_NULL[]         = "[!] EXIT  %s%s [NULL]     ";
+char FMT_FAIL_PTR[]          = "[!] EXIT  %s%s [%d]       ";
+char FMT_SUCC_PTR[]          = "    EXIT  %s%s [0x%lx]    ";
+char FMT_FAIL_LONG[]         = "[!] EXIT  %s%s [%ld]      ";
+char FMT_SUCC_LONG[]         = "    EXIT  %s%s [%ld]      ";
+char FMT_FAIL_INT[]          = "[!] EXIT  %s%s [%d]       ";
+char FMT_SUCC_INT[]          = "    EXIT  %s%s [%d]       ";
 
-static __noinline void print_exit(__u32 d, __u32 id, long res)
+char FMT_SUCC_VOID_COMPAT[]  = "    EXIT  [%d] %s [VOID]  ";
+char FMT_SUCC_TRUE_COMPAT[]  = "    EXIT  [%d] %s [true]  ";
+char FMT_SUCC_FALSE_COMPAT[] = "    EXIT  [%d] %s [false] ";
+char FMT_FAIL_NULL_COMPAT[]  = "[!] EXIT  [%d] %s [NULL]  ";
+char FMT_FAIL_PTR_COMPAT[]   = "[!] EXIT  [%d] %s [%d]    ";
+char FMT_SUCC_PTR_COMPAT[]   = "    EXIT  [%d] %s [0x%lx] ";
+char FMT_FAIL_LONG_COMPAT[]  = "[!] EXIT  [%d] %s [%ld]   ";
+char FMT_SUCC_LONG_COMPAT[]  = "    EXIT  [%d] %s [%ld]   ";
+char FMT_FAIL_INT_COMPAT[]   = "[!] EXIT  [%d] %s [%d]    ";
+char FMT_SUCC_INT_COMPAT[]   = "    EXIT  [%d] %s [%d]    ";
+
+static __noinline void print_exit(void *ctx, __u32 d, __u32 id, long res)
 {
 	const char *func_name = func_names[id & MAX_FUNC_MASK];
 	const size_t FMT_MAX_SZ = sizeof(FMT_SUCC_PTR_COMPAT); /* UPDATE IF NECESSARY */
@@ -247,15 +254,20 @@ static __noinline void print_exit(__u32 d, __u32 id, long res)
 		 * format strings to have \n, otherwise we'll have a dump of
 		 * unseparate log lines
 		 */
-		APPEND_ENDLINE(FMT_CANT_FAIL);
-		APPEND_ENDLINE(FMT_FAIL_NULL);
+		APPEND_ENDLINE(FMT_SUCC_VOID);
+		APPEND_ENDLINE(FMT_SUCC_TRUE);
+		APPEND_ENDLINE(FMT_SUCC_FALSE);
+		APPEND_ENDLINE(FMT_FAIL_PTR);
 		APPEND_ENDLINE(FMT_SUCC_PTR);
 		APPEND_ENDLINE(FMT_FAIL_LONG);
 		APPEND_ENDLINE(FMT_SUCC_LONG);
 		APPEND_ENDLINE(FMT_FAIL_INT);
 		APPEND_ENDLINE(FMT_SUCC_INT);
-		APPEND_ENDLINE(FMT_CANT_FAIL_COMPAT);
-		APPEND_ENDLINE(FMT_FAIL_NULL_COMPAT);
+
+		APPEND_ENDLINE(FMT_SUCC_VOID_COMPAT);
+		APPEND_ENDLINE(FMT_SUCC_TRUE_COMPAT);
+		APPEND_ENDLINE(FMT_SUCC_FALSE_COMPAT);
+		APPEND_ENDLINE(FMT_FAIL_PTR_COMPAT);
 		APPEND_ENDLINE(FMT_SUCC_PTR_COMPAT);
 		APPEND_ENDLINE(FMT_FAIL_LONG_COMPAT);
 		APPEND_ENDLINE(FMT_SUCC_LONG_COMPAT);
@@ -264,15 +276,21 @@ static __noinline void print_exit(__u32 d, __u32 id, long res)
 	}
 
 	flags = func_flags[id & MAX_FUNC_MASK];
-	if (flags & FUNC_CANT_FAIL) {
-		fmt = printk_is_sane ? FMT_CANT_FAIL : FMT_FAIL_NULL_COMPAT;
+	if (flags & FUNC_RET_VOID) {
+		fmt = printk_is_sane ? FMT_SUCC_VOID : FMT_SUCC_VOID_COMPAT;
 		failed = false;
-	} else if ((flags & FUNC_RET_PTR) && res == 0) {
+	} else if (flags & FUNC_RET_PTR) {
 		/* consider NULL pointer an error */
-		fmt = printk_is_sane ? FMT_FAIL_NULL : FMT_FAIL_NULL_COMPAT;
-		failed = true;
-	} else if ((flags & FUNC_RET_PTR) && !IS_ERR_VALUE(res)) {
-		fmt = printk_is_sane ? FMT_SUCC_PTR : FMT_SUCC_PTR_COMPAT;
+		failed = (res == 0) || IS_ERR_VALUE(res);
+		if (printk_is_sane)
+			fmt = failed ? (res ? FMT_FAIL_PTR : FMT_FAIL_NULL) : FMT_SUCC_PTR;
+		else
+			fmt = failed ? (res ? FMT_FAIL_PTR_COMPAT : FMT_FAIL_NULL_COMPAT) : FMT_SUCC_PTR_COMPAT;
+	} else if (flags & FUNC_RET_BOOL) {
+		if (printk_is_sane)
+			fmt = res ? FMT_SUCC_TRUE : FMT_SUCC_FALSE;
+		else
+			fmt = res ? FMT_SUCC_TRUE_COMPAT : FMT_SUCC_FALSE_COMPAT;
 		failed = false;
 	} else if (flags & FUNC_NEEDS_SIGN_EXT) {
 		failed = IS_ERR_VALUE32(res);
@@ -323,17 +341,15 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	if (flags & FUNC_CANT_FAIL)
 		failed = false;
 	else if ((flags & FUNC_RET_PTR) && res == 0)
-		/* consider NULL pointer an error */
+		/* consider NULL pointer an error as well */
 		failed = true;
-	else if ((flags & FUNC_RET_PTR) && !IS_ERR_VALUE(res))
-		failed = false;
 	else if (flags & FUNC_NEEDS_SIGN_EXT)
 		failed = IS_ERR_VALUE32(res);
 	else
 		failed = IS_ERR_VALUE(res);
 
 	if (verbose)
-		print_exit(d, id, res);
+		print_exit(ctx, d, id, res);
 
 	actual_id = stack->func_ids[d];
 	if (actual_id != id) {
