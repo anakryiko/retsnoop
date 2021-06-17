@@ -107,13 +107,16 @@ static __always_inline void recur_exit(u32 cpu)
 
 static __always_inline u64 get_ftrace_caller_ip(void *ctx, int arg_cnt)
 {
-	u64 off = 1 /* skip orig rbp */ + 1 /* skip reserved space for ret value */;
+	//u64 off = 1 /* skip orig rbp */ + 1 /* skip reserved space for ret value */;
+	u64 off = 9;
 	u64 ip;
 
+	/*
 	if (arg_cnt <= 6)
 		off += arg_cnt;
 	else
 		off += 6;
+		*/
 	off = (u64)ctx + off * 8;
 
 	if (bpf_probe_read_kernel(&ip, sizeof(ip), (void *)off))
@@ -147,7 +150,7 @@ static __always_inline int handle_fentry(void *ctx, int arg_cnt, bool entry)
 	if (entry) {
 		handle_func_entry(ctx, *id_ptr, ip);
 	} else {
-		u64 res = *(u64 *)(ctx + sizeof(u64) * arg_cnt);
+		u64 res = *(u64 *)(ctx + sizeof(u64) * 6);
 
 		handle_func_exit(ctx, *id_ptr, ip, res);
 	}

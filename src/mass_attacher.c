@@ -397,12 +397,12 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		bpf_program__set_autoload(att->skel->progs.kexit, false);
 
 		for (i = 0; i <= MAX_FUNC_ARG_CNT; i++) {
-			struct mass_attacher_func_info *finfo;
+			//struct mass_attacher_func_info *finfo;
 
 			if (att->func_info_cnts[i]) {
-				finfo = &att->func_infos[att->func_info_id_for_arg_cnt[i]];
-				bpf_program__set_attach_target(att->fentries[i], 0, finfo->name);
-				bpf_program__set_attach_target(att->fexits[i], 0, finfo->name);
+				//finfo = &att->func_infos[att->func_info_id_for_arg_cnt[i]];
+				bpf_program__set_attach_target(att->fentries[i], 0, "arch_prepare_bpf_trampoline");
+				bpf_program__set_attach_target(att->fexits[i], 0, "arch_prepare_bpf_trampoline");
 				bpf_program__set_prep(att->fentries[i], 1, hijack_prog);
 				bpf_program__set_prep(att->fexits[i], 1, hijack_prog);
 
@@ -675,6 +675,8 @@ static int hijack_prog(struct bpf_program *prog, int n,
 static int clone_prog(const struct bpf_program *prog,
 		      struct bpf_insn *insns, size_t insn_cnt, int attach_btf_id);
 
+static int *btf_ids;
+
 int mass_attacher__load(struct mass_attacher *att)
 {
 	int err, i, map_fd;
@@ -696,6 +698,12 @@ int mass_attacher__load(struct mass_attacher *att)
 	if (att->use_fentries && att->debug)
 		printf("Preparing %d BPF program copies...\n", att->func_cnt * 2);
 
+	if (att->use_fentries) {
+		btf_ids = calloc(att->func_cnt, 4);
+		for (i = 0; i < att->func_cnt; i++)
+			btf_ids[i] = att->func_infos[i].btf_id;
+	}
+
 	for (i = 0; i < att->func_cnt; i++) {
 		struct mass_attacher_func_info *finfo = &att->func_infos[i];
 		const char *func_name = att->func_infos[i].name;
@@ -710,7 +718,7 @@ int mass_attacher__load(struct mass_attacher *att)
 			return err;
 		}
 
-		if (att->use_fentries) {
+		if (att->use_fentries && i == 0) {
 			err = clone_prog(att->fentries[finfo->arg_cnt],
 					 att->fentries_insns[finfo->arg_cnt],
 					 att->fentries_insn_cnts[finfo->arg_cnt],
@@ -749,7 +757,8 @@ static int clone_prog(const struct bpf_program *prog,
 	attr.insns = insns;
 	attr.insns_cnt = insn_cnt;
 	attr.license = "Dual BSD/GPL";
-	attr.attach_btf_id = attach_btf_id;
+	attr.attach_btf_id = 0;//attach_btf_id;
+	attr.prog_flags = BPF_F_MULTI_FUNC;
 
 	fd = bpf_load_program_xattr(&attr, NULL, 0);
 	if (fd < 0)
@@ -760,7 +769,7 @@ static int clone_prog(const struct bpf_program *prog,
 
 int mass_attacher__attach(struct mass_attacher *att)
 {
-	int i, err;
+	int i, err = 0;
 
 	for (i = 0; i < att->func_cnt; i++) {
 		struct mass_attacher_func_info *finfo = &att->func_infos[i];
@@ -768,10 +777,18 @@ int mass_attacher__attach(struct mass_attacher *att)
 		long func_addr = finfo->addr;
 
 		if (att->use_fentries) {
-			int prog_fd;
+			int prog_fd, link_fd;
+
+			if (i != 0)
+				continue;
 
 			prog_fd = att->func_infos[i].fentry_prog_fd;
-			err = bpf_raw_tracepoint_open(NULL, prog_fd);
+			DECLARE_LIBBPF_OPTS(bpf_link_create_opts, opts,
+				.multi_btf_ids = btf_ids,
+				.multi_btf_ids_cnt = att->func_cnt,
+			);
+			//err = bpf_raw_tracepoint_open(NULL, prog_fd);
+			link_fd = err = bpf_link_create(prog_fd, 0, BPF_TRACE_FENTRY, &opts);
 			if (err < 0) {
 				fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
 					prog_fd, i + 1, func_name, func_addr, -errno);
@@ -779,7 +796,9 @@ int mass_attacher__attach(struct mass_attacher *att)
 			}
 
 			prog_fd = att->func_infos[i].fexit_prog_fd;
-			err = bpf_raw_tracepoint_open(NULL, prog_fd);
+			//err = bpf_raw_tracepoint_open(NULL, prog_fd);
+			//err = bpf_link_create(prog_fd, 0, BPF_TRACE_FEXIT, &opts);
+			err = bpf_link_update(link_fd, prog_fd, NULL);
 			if (err < 0) {
 				fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
 					prog_fd, i + 1, func_name, func_addr, -errno);
