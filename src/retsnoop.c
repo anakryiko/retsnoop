@@ -454,6 +454,9 @@ static const char *bpf_deny_globs[] = {
 	/* non-failing */
 	"btf_sec_info_cmp",
 
+	/* can't attach for some reason */
+	"copy_to_user_nofault",
+
 	NULL,
 };
 
