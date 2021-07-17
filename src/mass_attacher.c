@@ -52,15 +52,21 @@ static const char *enforced_deny_globs[] = {
 	"rcu_read_unlock*",
 	"__bpf_prog_enter*",
 	"__bpf_prog_exit*",
+};
 
-	/* long-sleeping syscalls, avoid attaching to them unless kernel has
-	 * e21aa341785c ("bpf: Fix fexit trampoline.")
-	 * TODO: check the presence of above commit and allow long-sleeping
-	 * functions.
-	 */
+/* For older kernels with fexit crashing on long-sleeping functions,
+ * avoid attaching to them unless kernel has
+ * e21aa341785c ("bpf: Fix fexit trampoline."), fixing the issue.
+ */
+static const char *sleepable_deny_globs[] = {
 	"*_sys_select",
+	"*_sys_pselect6*",
 	"*_sys_epoll_wait",
-	"*_sys_ppoll",
+	"*_sys_epoll_pwait",
+	"*_sys_poll*",
+	"*_sys_ppoll*",
+	"*_sys_nanosleep*",
+	"*_sys_clock_nanosleep*",
 };
 
 #define MAX_FUNC_ARG_CNT 6
@@ -313,6 +319,18 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		fprintf(stderr, "Failed to perform feature calibration: %d\n", err);
 		return err;
 	}
+
+	if (att->use_fentries && !att->has_fexit_sleep_fix) {
+		for (i = 0; i < ARRAY_SIZE(sleepable_deny_globs); i++) {
+			err = mass_attacher__deny_glob(att, sleepable_deny_globs[i]);
+			if (err) {
+				fprintf(stderr, "Failed to add enforced deny glob '%s': %d\n",
+					sleepable_deny_globs[i], err);
+				return err;
+			}
+		}
+	}
+
 	att->skel->rodata->kret_ip_off = att->kret_ip_off;
 	att->skel->rodata->has_fentry_protection = att->has_fentry_protection;
 	att->skel->rodata->has_bpf_get_func_ip = att->has_bpf_get_func_ip;

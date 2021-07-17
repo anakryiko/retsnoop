@@ -441,10 +441,6 @@ static const char *bpf_deny_globs[] = {
 	"rcu_read_lock*",
 	"rcu_read_unlock*",
 
-	"__x64_sys_select",
-	"__x64_sys_epoll_wait",
-	"__x64_sys_ppoll",
-	
 	/* too noisy */
 	"bpf_lsm_*",
 	"check_cfs_rq_runtime",
