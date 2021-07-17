@@ -190,6 +190,11 @@ void fail_bpf_fentry_unsupp_func(long arg)
 	fentry_unsupp_func_bpf__destroy(skel);
 }
 
+void syscall_long_sleep(long ms)
+{
+	usleep(1000 * ms);
+}
+
 struct case_desc {
 	const char *subsys;
 	const char *name;
@@ -197,31 +202,34 @@ struct case_desc {
 	long arg;
 	const char *desc;
 } cases[] = {
-	{ "bpf","bpf-bad-map-type", fail_bpf_bad_map, BAD_MAP_TYPE,
+	{ "bpf", "bpf-bad-map-type", fail_bpf_bad_map, BAD_MAP_TYPE,
 	  "Pass bad BPF map type to BPF_MAP_CREATE" },
-	{ "bpf","bpf-bad-map-create-flags", fail_bpf_bad_map, BAD_MAP_CREATE_FLAGS,
+	{ "bpf", "bpf-bad-map-create-flags", fail_bpf_bad_map, BAD_MAP_CREATE_FLAGS,
 	  "Pass bad BPF map flags to BPF_MAP_CREATE" },
-	{ "bpf","bpf-bad-map-key-size-array", fail_bpf_bad_map, BAD_MAP_KEY_SIZE_ARRAY,
+	{ "bpf", "bpf-bad-map-key-size-array", fail_bpf_bad_map, BAD_MAP_KEY_SIZE_ARRAY,
 	  "Pass bad BPF map key size for ARRAY map" },
-	{ "bpf","bpf-bad-map-key-size-stackmap", fail_bpf_bad_map, BAD_MAP_KEY_SIZE_STACKMAP,
+	{ "bpf", "bpf-bad-map-key-size-stackmap", fail_bpf_bad_map, BAD_MAP_KEY_SIZE_STACKMAP,
 	  "Pass bad BPF map key size for STACK_TRACE map" },
-	{ "bpf","bpf-bad-map-key-size-ringbuf", fail_bpf_bad_map, BAD_MAP_KEY_SIZE_RINGBUF,
+	{ "bpf", "bpf-bad-map-key-size-ringbuf", fail_bpf_bad_map, BAD_MAP_KEY_SIZE_RINGBUF,
 	  "Pass bad BPF map key size for RINGBUF map" },
-	{ "bpf","bpf-bad-map-val-size-percpu-array", fail_bpf_bad_map, BAD_MAP_VAL_SIZE_PERCPU_ARRAY,
+	{ "bpf", "bpf-bad-map-val-size-percpu-array", fail_bpf_bad_map, BAD_MAP_VAL_SIZE_PERCPU_ARRAY,
 	  "Pass bad BPF map value size (too big) for PERCPU_ARRAY map" },
-	{ "bpf","bpf-bad-map-max-entries-array", fail_bpf_bad_map, BAD_MAP_MAX_ENTRIES_ARRAY,
+	{ "bpf", "bpf-bad-map-max-entries-array", fail_bpf_bad_map, BAD_MAP_MAX_ENTRIES_ARRAY,
 	  "Pass bad BPF map max entries for ARRAY map" },
-	{ "bpf","bpf-bad-map-max-entries-ringbuf", fail_bpf_bad_map, BAD_MAP_MAX_ENTRIES_RINGBUF,
+	{ "bpf", "bpf-bad-map-max-entries-ringbuf", fail_bpf_bad_map, BAD_MAP_MAX_ENTRIES_RINGBUF,
 	  "Pass bad BPF map max entries for RINGBUF map" },
-	{ "bpf","bpf-bad-map-lookup-key", fail_bpf_bad_map, BAD_MAP_LOOKUP_KEY,
+	{ "bpf", "bpf-bad-map-lookup-key", fail_bpf_bad_map, BAD_MAP_LOOKUP_KEY,
 	  "Pass bad BPF map key pointer on lookup" },
-	{ "bpf","bpf-bad-map-lookup-value", fail_bpf_bad_map, BAD_MAP_LOOKUP_VALUE,
+	{ "bpf", "bpf-bad-map-lookup-value", fail_bpf_bad_map, BAD_MAP_LOOKUP_VALUE,
 	  "Pass bad BPF map value pointer on lookup" },
 
-	{ "bpf","bpf-kprobe-bad-kfunc", fail_bpf_kprobe_bad_kfunc, 0,
+	{ "bpf", "bpf-kprobe-bad-kfunc", fail_bpf_kprobe_bad_kfunc, 0,
 	  "Attempt to attach kprobe BPF program to not existing kfunc" },
-	{ "bpf","bpf-fentry-unsupp-func", fail_bpf_fentry_unsupp_func, 0,
+	{ "bpf", "bpf-fentry-unsupp-func", fail_bpf_fentry_unsupp_func, 0,
 	  "Attempt to attach fentry BPF program to unsupported function" },
+
+	{ "syscall", "syscall-long-sleep", syscall_long_sleep, 1000,
+	  "Trigger a long sleep (> 1000 ms)" },
 };
 
 int main(int argc, char **argv)
