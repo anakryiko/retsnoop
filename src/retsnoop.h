@@ -18,7 +18,7 @@ struct call_stack {
 	unsigned depth;
 	unsigned max_depth;
 	int pid;
-	long ts;
+	long emit_ts;
 	char comm[16];
 	bool is_err;
 

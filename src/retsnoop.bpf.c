@@ -62,14 +62,24 @@ struct {
 const volatile __u32 comm_allow_cnt = 0;
 const volatile __u32 comm_deny_cnt = 0;
 
+const volatile __u64 duration_ns = 0;
+
 char func_names[MAX_FUNC_CNT][MAX_FUNC_NAME_LEN] = {};
 long func_ips[MAX_FUNC_CNT] = {};
 int func_flags[MAX_FUNC_CNT] = {};
 
 const volatile char spaces[512] = {};
 
-static __always_inline int ringbuf_output(void *ctx, void *map, struct call_stack *stack)
+static __always_inline int output_stack(void *ctx, void *map, struct call_stack *stack)
 {
+	stack->emit_ts = bpf_ktime_get_ns();
+
+	if (duration_ns && stack->emit_ts - stack->func_lat[0] < duration_ns)
+		return 0;
+
+	if (!stack->is_err)
+		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
+
 	/* use_ringbuf is read-only variable, so verifier will detect which of
 	 * the branch is dead code and will eliminate it, so on old kernels
 	 * bpf_ringbuf_output() won't be present in the resulting code
@@ -110,8 +120,7 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 		/* we are partially overriding previous stack, so emit error stack, if present */
 		if (extra_verbose)
 			bpf_printk("EMIT PARTIAL STACK DEPTH %d..%d\n", stack->depth + 1, stack->max_depth);
-		stack->ts = bpf_ktime_get_ns();
-		ringbuf_output(ctx, &rb, stack);
+		output_stack(ctx, &rb, stack);
 	} else if (extra_verbose) {
 		bpf_printk("RESETTING SAVED ERR STACK %d..%d to %d..\n",
 			   stack->saved_depth, stack->saved_max_depth, stack->depth + 1);
@@ -381,13 +390,11 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	}
 	stack->depth = d;
 
-	if (emit_success_stacks && !stack->is_err && d + 1 == stack->max_depth) {
+	if (emit_success_stacks && !stack->is_err && d > 0 && d + 1 == stack->max_depth) {
 		if (extra_verbose) {
 			bpf_printk("EMIT DEEPEST SUCCESS STACK DEPTH %d\n", stack->max_depth);
 		}
-		stack->ts = bpf_ktime_get_ns();
-		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
-		ringbuf_output(ctx, &rb, stack);
+		output_stack(ctx, &rb, stack);
 	}
 
 	/* emit last complete stack trace */
@@ -397,15 +404,13 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 				bpf_printk("EMIT ERROR STACK DEPTH %d (SAVED ..%d)\n",
 					   stack->max_depth, stack->saved_max_depth);
 			}
-			stack->ts = bpf_ktime_get_ns();
-			ringbuf_output(ctx, &rb, stack);
+			output_stack(ctx, &rb, stack);
 		} else if (emit_success_stacks) {
 			if (extra_verbose) {
 				bpf_printk("EMIT SUCCESS STACK DEPTH %d (SAVED ..%d)\n",
 					   stack->max_depth, stack->saved_max_depth);
 			}
-			stack->ts = bpf_ktime_get_ns();
-			ringbuf_output(ctx, &rb, stack);
+			output_stack(ctx, &rb, stack);
 		}
 		stack->is_err = false;
 		stack->saved_depth = 0;

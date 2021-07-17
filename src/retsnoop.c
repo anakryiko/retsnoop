@@ -40,6 +40,7 @@ static struct env {
 	bool use_kprobes;
 	const char *vmlinux_path;
 	int pid;
+	int longer_than_ms;
 
 	char **allow_globs;
 	char **deny_globs;
@@ -67,24 +68,23 @@ static struct env {
 	.stacks_map_sz = 1024,
 };
 
-const char *argp_program_version = "retsnoop (aka dude-where-is-my-error) 0.1";
+const char *argp_program_version = "retsnoop 0.1";
 const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
-"retsnoop tool shows error call stacks based on specified function filters.\n"
+"retsnoop tool shows kernel call stacks based on specified function filters.\n"
 "\n"
-"USAGE: retsnoop [-v|-vv|-vvv] [-s|-ss] [-k VMLINUX_PATH] [-p PID] [-c CASE]* [-a GLOB]* [-d GLOB]* [-e GLOB]*\n";
+"USAGE: retsnoop [-v] [-ss] [-p PID] [-n COMM] [-L MS] [-c CASE]* [-a GLOB]* [-d GLOB]* [-e GLOB]*\n";
 
-#define OPT_SUCCESS_STACKS 1000
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
-#define OPT_USE_KPROBES 'K'
-#define OPT_INTERMEDIATE_STACKS 'A'
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
 	  "Verbose output (use -vv for debug-level verbosity, -vvv for libbpf debug log)" },
 	{ "bpf-logs", 'l', NULL, 0,
 	  "Emit BPF-side logs (use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to read)" },
+	{ "kprobes", 'K', NULL, 0,
+	  "Use kprobes/kretprobes instead of fentries/fexits" },
 	{ "case", 'c', "CASE", 0,
 	  "Use a pre-defined set of entry/allow/deny globs for a given use case (supported cases: bpf, perf)" },
 	{ "entry", 'e', "GLOB", 0,
@@ -96,7 +96,7 @@ static const struct argp_option opts[] = {
 	{ "kernel", 'k',
 	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
 	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
-	  "Perform extra symbolization (-s for line numbers, -ss for also inlines) also also inline symbols. Relies on having vmlinux with DWARF available." },
+	  "Perform extra symbolization (-s for line numbers, -ss for also inlines). Relies on having vmlinux with DWARF available." },
 	{ "pid", 'p', "PID", 0,
 	  "Only trace given PID. Can be specified multiple times" },
 	{ "no-pid", 'P', "PID", 0,
@@ -105,14 +105,14 @@ static const struct argp_option opts[] = {
 	  "Only trace processes with given name (COMM). Can be specified multiple times" },
 	{ "no-comm", 'N', "COMM", 0,
 	  "Skip tracing processes with given name (COMM). Can be specified multiple times" },
-	{ "success-stacks", OPT_SUCCESS_STACKS, NULL, 0,
-	  "Emit matched successful stacks" },
+	{ "longer", 'L', "MS", 0,
+	  "Only emit stacks that took at least a given amount of milliseconds" },
+	{ "success-stacks", 'S', NULL, 0,
+	  "Emit any stack, successful or not" },
+	{ "intermediate-stacks", 'A', NULL, 0,
+	  "Emit all partial (intermediate) stack traces" },
 	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
 	  "Emit non-filtered full stack traces" },
-	{ "intermediate-stacks", OPT_INTERMEDIATE_STACKS, NULL, 0,
-	  "Emit all partial (intermediate) stack traces" },
-	{ "kprobes", OPT_USE_KPROBES, NULL, 0,
-	  "Use kprobes/kretprobes instead of fentries/fexits" },
 	{ "stacks-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
 	  "Stacks map size (default 1024)" },
 	{},
@@ -327,17 +327,25 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		if (err)
 			return err;
 		break;
-	case OPT_SUCCESS_STACKS:
+	case 'S':
 		env.emit_success_stacks = true;
+		break;
+	case 'K':
+		env.use_kprobes = true;
+		break;
+	case 'A':
+		env.emit_intermediate_stacks = true;
+		break;
+	case 'L':
+		errno = 0;
+		env.longer_than_ms = strtol(arg, NULL, 10);
+		if (errno || env.longer_than_ms <= 0) {
+			fprintf(stderr, "Invalid -L duration: %d\n", env.longer_than_ms);
+			return -EINVAL;
+		}
 		break;
 	case OPT_FULL_STACKS:
 		env.emit_full_stacks = true;
-		break;
-	case OPT_USE_KPROBES:
-		env.use_kprobes = true;
-		break;
-	case OPT_INTERMEDIATE_STACKS:
-		env.emit_intermediate_stacks = true;
 		break;
 	case OPT_STACKS_MAP_SIZE:
 		errno = 0;
@@ -857,7 +865,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		printf("KSTACK (%d items out of original %ld):\n", kstack_n, s->kstack_sz / 8);
 	}
 
-	ts_to_str(s->ts + ktime_off, timestamp, sizeof(timestamp));
+	ts_to_str(s->emit_ts + ktime_off, timestamp, sizeof(timestamp));
 	printf("%s PID %d (%s):\n", timestamp, s->pid, s->comm);
 
 	i = 0;
@@ -1101,6 +1109,7 @@ int main(int argc, char **argv)
 	skel->rodata->targ_tgid = env.pid;
 	skel->rodata->emit_success_stacks = env.emit_success_stacks;
 	skel->rodata->emit_intermediate_stacks = env.emit_intermediate_stacks;
+	skel->rodata->duration_ns = env.longer_than_ms * 1000000ULL;
 
 	memset(skel->rodata->spaces, ' ', 511);
 
