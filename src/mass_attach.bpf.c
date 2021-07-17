@@ -29,8 +29,13 @@ bool ready = false;
 
 /* feature detection/calibration inputs */
 const volatile int kret_ip_off = 0;
-const volatile bool has_fentry_protection = false;
 const volatile bool has_bpf_get_func_ip = false;
+
+/* Kernel protects from the same BPF program from refiring on the same CPU.
+ * Unfortunately, it's not very useful for us right now, because each attached
+ * fentry/fexit is a separate BPF, so we need to still protected ourselves.
+ */
+const volatile bool has_fentry_protection = false;
 
 /* has to be called from entry-point BPF program if not using
  * bpf_get_func_ip()
@@ -116,26 +121,31 @@ static __always_inline void recur_exit(u32 cpu)
 	running[cpu & MAX_CPU_MASK] -= 1;
 }
 
-static __always_inline u64 get_ftrace_caller_ip(void *ctx, int arg_cnt)
+static __always_inline u64 get_ftrace_func_ip(void *ctx, int arg_cnt)
 {
-	u64 off = 1 /* skip orig rbp */ + 1 /* skip reserved space for ret value */;
-	u64 ip;
+	if (!has_bpf_get_func_ip) {
+		u64 off = 1 /* skip orig rbp */
+			+ 1 /* skip reserved space for ret value */;
+		u64 ip;
 
-	if (arg_cnt <= 6)
-		off += arg_cnt;
-	else
-		off += 6;
-	off = (u64)ctx + off * 8;
+		if (arg_cnt <= 6)
+			off += arg_cnt;
+		else
+			off += 6;
+		off = (u64)ctx + off * 8;
 
-	if (bpf_probe_read_kernel(&ip, sizeof(ip), (void *)off))
-		return 0;
+		if (bpf_probe_read_kernel(&ip, sizeof(ip), (void *)off))
+			return 0;
 
-	ip -= 5; /* compensate for 5-byte fentry stub */
-	return ip;
+		ip -= 5; /* compensate for 5-byte fentry stub */
+		return ip;
+	}
+
+	return bpf_get_func_ip(ctx);
 }
 
 /* we need arg_cnt * sizeof(__u64) to be a constant, so need to inline */
-static __always_inline int handle_fentry(void *ctx, int arg_cnt, bool entry)
+static __always_inline int handle_fentry(void *ctx, int arg_cnt)
 {
 	u32 *id_ptr, cpu;
 	const char *name;
@@ -148,20 +158,45 @@ static __always_inline int handle_fentry(void *ctx, int arg_cnt, bool entry)
 	if (!recur_enter(cpu))
 		return 0;
 
-	ip = get_ftrace_caller_ip(ctx, arg_cnt);
+	ip = get_ftrace_func_ip(ctx, arg_cnt);
 	id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);
 	if (!id_ptr) {
-		bpf_printk("UNRECOGNIZED IP %lx ARG_CNT %d ENTRY %d", ip, arg_cnt, entry);
+		bpf_printk("UNRECOGNIZED FENTRY IP %lx ARG_CNT %d", ip, arg_cnt);
 		goto out;
 	}
 
-	if (entry) {
-		handle_func_entry(ctx, *id_ptr, ip);
-	} else {
-		u64 res = *(u64 *)(ctx + sizeof(u64) * arg_cnt);
+	handle_func_entry(ctx, *id_ptr, ip);
 
-		handle_func_exit(ctx, *id_ptr, ip, res);
+out:
+	recur_exit(cpu);
+	return 0;
+}
+
+/* we need arg_cnt * sizeof(__u64) to be a constant, so need to inline */
+static __always_inline int handle_fexit(void *ctx, int arg_cnt)
+{
+	u32 *id_ptr, cpu;
+	const char *name;
+	long ip;
+	u64 res;
+
+	if (!ready)
+		return 0;
+
+	cpu = bpf_get_smp_processor_id();
+	if (!recur_enter(cpu))
+		return 0;
+
+	ip = get_ftrace_func_ip(ctx, arg_cnt);
+	id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);
+	if (!id_ptr) {
+		bpf_printk("UNRECOGNIZED FEXIT IP %lx ARG_CNT %d", ip, arg_cnt);
+		goto out;
 	}
+
+	res = *(u64 *)(ctx + sizeof(u64) * arg_cnt);
+	handle_func_exit(ctx, *id_ptr, ip, res);
+
 out:
 	recur_exit(cpu);
 	return 0;
@@ -171,12 +206,12 @@ out:
 SEC("fentry/__x64_sys_read") \
 int fentry ## arg_cnt(void *ctx) \
 { \
-	return handle_fentry(ctx, arg_cnt, true); \
+	return handle_fentry(ctx, arg_cnt); \
 } \
 SEC("fexit/__x64_sys_read") \
 int fexit ## arg_cnt(void *ctx) \
 { \
-	return handle_fentry(ctx, arg_cnt, false); \
+	return handle_fexit(ctx, arg_cnt); \
 }
 
 DEF_PROGS(0)
