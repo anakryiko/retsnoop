@@ -313,10 +313,10 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	const char *func_name = func_names[id & MAX_FUNC_MASK];
 	u32 pid = (u32)bpf_get_current_pid_tgid();
 	struct call_stack *stack;
-	u64 d, actual_ip;
-	u32 actual_id, flags, fmt_sz;
+	u32 exp_id, flags, fmt_sz;
 	const char *fmt;
 	bool failed;
+	u64 d;
 
 	stack = bpf_map_lookup_elem(&stacks, &pid);
 	if (!stack)
@@ -345,18 +345,20 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	if (verbose)
 		print_exit(ctx, d, id, res);
 
-	actual_id = stack->func_ids[d];
-	if (actual_id != id) {
-		if (actual_id < MAX_FUNC_CNT)
-			actual_ip = func_ips[actual_id];
+	exp_id = stack->func_ids[d];
+	if (exp_id != id) {
+		const char *exp_func_name = func_names[exp_id & MAX_FUNC_MASK];
+		u64 exp_ip;
+
+		if (exp_id < MAX_FUNC_CNT)
+			exp_ip = func_ips[exp_id];
 		else
-			actual_ip = 0;
+			exp_ip = 0;
 
 		if (verbose) {
 			bpf_printk("POP(0) UNEXPECTED PID %d DEPTH %d MAX DEPTH %d", pid, stack->depth, stack->max_depth);
-			bpf_printk("POP(1) UNEXPECTEC GOT ID %d ADDR %lx NAME %s", id, ip, func_name);
-			bpf_printk("POP(2) UNEXPECTED. WANTED ID %u ADDR %lx NAME %s",
-				   actual_id, actual_ip, func_name);
+			bpf_printk("POP(1) UNEXPECTED GOT  ID %d ADDR %lx NAME %s", id, ip, func_name);
+			bpf_printk("POP(2) UNEXPECTED WANT ID %u ADDR %lx NAME %s", exp_id, exp_ip, exp_func_name);
 		}
 
 		stack->depth = 0;
