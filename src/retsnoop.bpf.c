@@ -8,15 +8,7 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-enum bpf_func_id___custom
-{
-	BPF_FUNC_snprintf = 123, /* value doesn't matter */
-};
-
-#define printk_is_sane (bpf_core_enum_value_exists(enum bpf_func_id___custom, BPF_FUNC_snprintf))
-
-/* our vmlinux.h is outdated, stub out expected struct */
-struct trace_event_raw_bpf_trace_printk {};
+#define printk_is_sane (bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_snprintf))
 
 #define printk_needs_endline (!bpf_core_type_exists(struct trace_event_raw_bpf_trace_printk))
 
