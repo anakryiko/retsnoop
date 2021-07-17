@@ -59,7 +59,7 @@ $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPU
 		    install
 
 # Build BPF object files
-$(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) vmlinux.h | $(OUTPUT) $(OUTPUT)/tests
+$(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard *.h) vmlinux.h | $(OUTPUT) $(OUTPUT)/tests
 	$(call msg,BPF,$@)
 	$(Q)$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -c $(filter %.c,$^) -o $@
 
@@ -71,13 +71,13 @@ $(OUTPUT)/%.skel.h: $(OUTPUT)/%.bpf.o
 	$(Q)$(BPFTOOL) gen skeleton $(@:.skel.h=.bpfo) name $(notdir $*_bpf) > $@
 
 # Build application object files
-$(OUTPUT)/%.o: %.c $(wildcard %.h) | $(OUTPUT) $(OUTPUT)/tests
+$(OUTPUT)/%.o: %.c $(wildcard *.h) | $(OUTPUT) $(OUTPUT)/tests
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
 $(OUTPUT)/retsnoop.skel.h: $(OUTPUT)/mass_attach.bpf.o
 $(OUTPUT)/retsnoop.o: $(OUTPUT)/retsnoop.skel.h
-$(OUTPUT)/mass_attacher.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_kret_ip.skel.h
+$(OUTPUT)/mass_attacher.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 
 $(OUTPUT)/addr2line.embed.o: ../tools/addr2line
 	$(call msg,LD,$@)

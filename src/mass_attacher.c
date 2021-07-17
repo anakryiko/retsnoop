@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include "mass_attacher.h"
 #include "ksyms.h"
-#include "calib_kret_ip.skel.h"
+#include "calib_feat.skel.h"
 
 #ifndef SKEL_NAME
 #error "Please define -DSKEL_NAME=<BPF skeleton name> for mass_attacher"
@@ -308,27 +308,27 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	}
 
 	if (!att->use_fentries) {
-		struct calib_kret_ip_bpf *calib_skel;
+		struct calib_feat_bpf *calib_skel;
 
-		calib_skel = calib_kret_ip_bpf__open_and_load();
+		calib_skel = calib_feat_bpf__open_and_load();
 		if (!calib_skel) {
-			fprintf(stderr, "Failed to load kretprobe calibration skeleton\n");
+			fprintf(stderr, "Failed to load feature calibration skeleton\n");
 			return -EFAULT;
 		}
 
 		calib_skel->bss->my_tid = syscall(SYS_gettid);
 
-		err = calib_kret_ip_bpf__attach(calib_skel);
+		err = calib_feat_bpf__attach(calib_skel);
 		if (err) {
-			fprintf(stderr, "Failed to attach kretprobe calibration skeleton\n");
-			calib_kret_ip_bpf__destroy(calib_skel);
+			fprintf(stderr, "Failed to attach feature calibration skeleton\n");
+			calib_feat_bpf__destroy(calib_skel);
 			return -EFAULT;
 		}
 
 		usleep(1);
 
 		if (!calib_skel->bss->found_off) {
-			fprintf(stderr, "Failed to calibrate kretprobe entry IP extraction.\n");
+			fprintf(stderr, "Failed to calibrate features.\n");
 			return -EFAULT;
 		}
 
@@ -336,7 +336,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		if (att->debug)
 			printf("Entry IP calibration offset is %d\n", att->skel->bss->kret_ip_off);
 
-		calib_kret_ip_bpf__destroy(calib_skel);
+		calib_feat_bpf__destroy(calib_skel);
 	}
 
 	_Static_assert(MAX_FUNC_ARG_CNT == 6, "Unexpected maximum function arg count");
