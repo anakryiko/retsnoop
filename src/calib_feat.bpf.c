@@ -11,18 +11,43 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 int my_tid = 0;
 long entry_ip = 0;
-int found_off = 0;
+int kret_ip_off = 0;
+
+bool has_bpf_get_func_ip = false;
+bool has_fexit_sleep_fix = false;
+bool has_fentry_protection = false;
 
 SEC("kprobe/hrtimer_start_range_ns")
 int calib_entry(struct pt_regs *ctx)
 {
+	static struct bpf_prog *bpf_prog = NULL;
 	pid_t tid;
 
 	tid = (__u32)bpf_get_current_pid_tgid();
 	if (tid != my_tid)
 		return 0;
 
+	/* Used for kretprobe function entry IP discovery, before
+	 * bpf_get_func_ip() helper was added.
+	 */
 	entry_ip = ctx->ip - 1;
+
+	/* Detect if bpf_get_func_ip() helper is supported by the kernel.
+	 * Added in: 9b99edcae5c8 ("bpf: Add bpf_get_func_ip helper for tracing programs")
+	 * Added in: 9ffd9f3ff719 ("bpf: Add bpf_get_func_ip helper for kprobe programs")
+	 */
+	has_bpf_get_func_ip = bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_get_func_ip);
+
+	/* Detect if fentry/fexit re-entry protection is implemented.
+	 * Added in: ca06f55b9002 ("bpf: Add per-program recursion prevention mechanism")
+	 */
+	has_fentry_protection = bpf_core_field_exists(bpf_prog->active);
+
+	/* Detect if fexit is safe to use for long-running and sleepable
+	 * kernel functions.
+	 * Added in: e21aa341785c ("bpf: Fix fexit trampoline")
+	 */
+	has_fexit_sleep_fix = bpf_core_type_exists(struct bpf_tramp_image);
 
 	return 0;
 }
@@ -46,7 +71,7 @@ int calib_exit(struct pt_regs *ctx)
 		ip = (__u64)BPF_CORE_READ(tk, rp.kp.addr);
 
 		if (ip == entry_ip) {
-			found_off = i;
+			kret_ip_off = i;
 			return 0;
 		}
 	}

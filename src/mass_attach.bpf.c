@@ -25,24 +25,31 @@ struct {
 #define MAX_CPU_CNT 256
 #define MAX_CPU_MASK (MAX_CPU_CNT - 1)
 
-int kret_ip_off = 0;
 bool ready = false;
 
-/* has to be called from entry-point BPF program */
-static __always_inline u64 get_kret_caller_ip(void *ctx)
+/* feature detection/calibration inputs */
+const volatile int kret_ip_off = 0;
+const volatile bool has_fentry_protection = false;
+const volatile bool has_bpf_get_func_ip = false;
+
+/* has to be called from entry-point BPF program if not using
+ * bpf_get_func_ip()
+ */
+static __always_inline u64 get_kret_func_ip(void *ctx)
 {
-	struct trace_kprobe *tk = NULL;
-	u64 fp, ip;
+	if (!has_bpf_get_func_ip) {
+		struct trace_kprobe *tk;
+		u64 fp, ip;
 
-	/* get frame pointer */
-	asm volatile ("%[fp] = r10" : [fp] "+r"(fp) :);
+		/* get frame pointer */
+		asm volatile ("%[fp] = r10" : [fp] "+r"(fp) :);
 
-	if (kret_ip_off > 0)
 		bpf_probe_read(&tk, sizeof(tk), (void *)(fp + kret_ip_off * sizeof(__u64)));
+		ip = (__u64)BPF_CORE_READ(tk, rp.kp.addr);
+		return ip;
+	}
 
-	ip = (__u64)BPF_CORE_READ(tk, rp.kp.addr);
-
-	return ip;
+	return bpf_get_func_ip(ctx);
 }
 
 SEC("kprobe/xxx")
@@ -55,7 +62,11 @@ int kentry(struct pt_regs *ctx)
 	if (!ready)
 		return 0;
 
-	ip = ctx->ip - 1;
+	if (has_bpf_get_func_ip)
+		ip = bpf_get_func_ip(ctx);
+	else
+		ip = ctx->ip - 1;
+
 	id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);
 	if (!id_ptr) {
 		bpf_printk("KENTRY UNRECOGNIZED IP %lx", ip);
@@ -76,7 +87,7 @@ int kexit(struct pt_regs *ctx)
 	if (!ready)
 		return 0;
 
-	ip = get_kret_caller_ip(ctx);
+	ip = get_kret_func_ip(ctx);
 	id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);
 	if (!id_ptr) {
 		bpf_printk("KEXIT UNRECOGNIZED IP %lx", ip);

@@ -94,6 +94,12 @@ struct mass_attacher {
 	int max_fileno_rlimit;
 	func_filter_fn func_filter;
 
+
+	int kret_ip_off;
+	bool has_bpf_get_func_ip;
+	bool has_fexit_sleep_fix;
+	bool has_fentry_protection;
+
 	struct mass_attacher_func_info *func_infos;
 	int func_cnt;
 
@@ -274,6 +280,7 @@ static int find_kprobe(const struct mass_attacher *att, const char *name);
 static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t);
 static int prepare_func(struct mass_attacher *att, const char *func_name,
 			const struct btf_type *t, int btf_id);
+static int calibrate_features(struct mass_attacher *att);
 
 int mass_attacher__prepare(struct mass_attacher *att)
 {
@@ -300,43 +307,21 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		return err;
 	}
 
+	/* Detect supported features and calibrate kretprobe IP extraction */
+	err = calibrate_features(att);
+	if (err) {
+		fprintf(stderr, "Failed to perform feature calibration: %d\n", err);
+		return err;
+	}
+	att->skel->rodata->kret_ip_off = att->kret_ip_off;
+	att->skel->rodata->has_fentry_protection = att->has_fentry_protection;
+	att->skel->rodata->has_bpf_get_func_ip = att->has_bpf_get_func_ip;
+
 	/* Load names of possible kprobes */
 	err = load_available_kprobes(att);
 	if (err) {
 		fprintf(stderr, "Failed to read the list of available kprobes: %d\n", err);
 		return err;
-	}
-
-	if (!att->use_fentries) {
-		struct calib_feat_bpf *calib_skel;
-
-		calib_skel = calib_feat_bpf__open_and_load();
-		if (!calib_skel) {
-			fprintf(stderr, "Failed to load feature calibration skeleton\n");
-			return -EFAULT;
-		}
-
-		calib_skel->bss->my_tid = syscall(SYS_gettid);
-
-		err = calib_feat_bpf__attach(calib_skel);
-		if (err) {
-			fprintf(stderr, "Failed to attach feature calibration skeleton\n");
-			calib_feat_bpf__destroy(calib_skel);
-			return -EFAULT;
-		}
-
-		usleep(1);
-
-		if (!calib_skel->bss->found_off) {
-			fprintf(stderr, "Failed to calibrate features.\n");
-			return -EFAULT;
-		}
-
-		att->skel->bss->kret_ip_off = calib_skel->bss->found_off;
-		if (att->debug)
-			printf("Entry IP calibration offset is %d\n", att->skel->bss->kret_ip_off);
-
-		calib_feat_bpf__destroy(calib_skel);
 	}
 
 	_Static_assert(MAX_FUNC_ARG_CNT == 6, "Unexpected maximum function arg count");
@@ -438,6 +423,54 @@ int mass_attacher__prepare(struct mass_attacher *att)
 
 	bpf_map__set_max_entries(att->skel->maps.ip_to_id, att->func_cnt);
 
+	return 0;
+}
+
+static int calibrate_features(struct mass_attacher *att)
+{
+	struct calib_feat_bpf *calib_skel;
+	int err;
+
+	calib_skel = calib_feat_bpf__open_and_load();
+	if (!calib_skel) {
+		fprintf(stderr, "Failed to load feature calibration skeleton\n");
+		return -EFAULT;
+	}
+
+	calib_skel->bss->my_tid = syscall(SYS_gettid);
+
+	err = calib_feat_bpf__attach(calib_skel);
+	if (err) {
+		fprintf(stderr, "Failed to attach feature calibration skeleton\n");
+		calib_feat_bpf__destroy(calib_skel);
+		return -EFAULT;
+	}
+
+	usleep(1);
+
+	if (!calib_skel->bss->has_bpf_get_func_ip && calib_skel->bss->kret_ip_off == 0) {
+		fprintf(stderr, "Failed to calibrate kretprobe func IP extraction.\n");
+		return -EFAULT;
+	}
+
+	att->kret_ip_off = calib_skel->bss->kret_ip_off;
+	att->has_bpf_get_func_ip = calib_skel->bss->has_bpf_get_func_ip;
+	att->has_fexit_sleep_fix = calib_skel->bss->has_fexit_sleep_fix;
+	att->has_fentry_protection = calib_skel->bss->has_fentry_protection;
+
+	if (att->debug) {
+		printf("Feature calibration results:\n"
+		       "\tkretprobe IP offset: %d\n"
+		       "\tfexit sleep fix: %s\n"
+		       "\tfentry re-entry protection: %s\n"
+		       "\tbpf_get_func_ip() supported: %s\n",
+		       att->kret_ip_off,
+		       att->has_fexit_sleep_fix ? "yes" : "no",
+		       att->has_fentry_protection ? "yes" : "no",
+		       att->has_bpf_get_func_ip ? "yes" : "no");
+	}
+
+	calib_feat_bpf__destroy(calib_skel);
 	return 0;
 }
 
