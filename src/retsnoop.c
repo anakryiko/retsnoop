@@ -1046,6 +1046,9 @@ int main(int argc, char **argv)
 	int err, i, j, n;
 	bool use_ringbuf;
 
+	if (setvbuf(stdout, NULL, _IOLBF, BUFSIZ))
+		fprintf(stderr, "Failed to set output mode to line-buffered!\n");
+
 	/* Parse command line arguments */
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
