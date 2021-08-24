@@ -11,12 +11,39 @@
 #include <bpf/libbpf.h>
 #include <bpf/btf.h>
 #include <sys/utsname.h>
+#include <linux/perf_event.h>
+#include <linux/unistd.h>
 #include <time.h>
 #include "retsnoop.h"
 #include "retsnoop.skel.h"
 #include "ksyms.h"
 #include "addr2line.h"
 #include "mass_attacher.h"
+
+static int pfd_array[128] = {-1};  /* TODO remove hardcodded 128 */
+
+static int create_perf_events(void)
+{
+	struct perf_event_attr attr = {0};
+	int cpu;
+
+	/* create perf event */
+	attr.size = sizeof(attr);
+	attr.type = PERF_TYPE_HARDWARE;
+	attr.config = PERF_COUNT_HW_CPU_CYCLES;
+	attr.freq = 1;
+	attr.sample_freq = 4000;
+	attr.sample_type = PERF_SAMPLE_BRANCH_STACK;
+	attr.branch_sample_type = PERF_SAMPLE_BRANCH_KERNEL |
+		PERF_SAMPLE_BRANCH_USER | PERF_SAMPLE_BRANCH_ANY;
+	for (cpu = 0; cpu < libbpf_num_possible_cpus(); cpu++) {
+		pfd_array[cpu] = syscall(__NR_perf_event_open, &attr,
+					 -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
+		if (pfd_array[cpu] < 0)
+			break;
+	}
+	return cpu == 0;
+}
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
@@ -905,6 +932,45 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		print_item(dctx, NULL, &kstack[j]);
 	}
 
+	for (i = 0; i < s->lbr_entry_cnt; i++) {
+		static struct a2l_resp resps[64];
+		struct a2l_resp *resp = NULL;
+		int symb_cnt = 0, line_off;
+		const struct ksym *ksym;
+		long addr;
+
+		addr = s->lbr_entries[i].from;
+
+		ksym = ksyms__map_addr(dctx->ksyms, addr);
+		if (ksym) {
+			printf("[LBR] %s+0x%lx", ksym->name, addr - ksym->addr);
+		} else {
+			printf("[LBR] ");
+		}
+
+		if (!dctx->a2l) {
+			printf("\n");
+			continue;
+		}
+
+		symb_cnt = addr2line__symbolize(dctx->a2l, addr, resps);
+		if (symb_cnt < 0)
+			symb_cnt = 0;
+
+		if (symb_cnt > 0) {
+			resp = &resps[symb_cnt - 1];
+
+			line_off = detect_linux_src_loc(resp->line);
+			printf(" (%s)\n", resp->line + line_off);
+
+			for (j = 1, resp--; j < symb_cnt; j++, resp--) {
+				printf("\t\t. %s", resp->fname);
+				line_off = detect_linux_src_loc(resp->line);
+				printf(" (%s)\n", resp->line + line_off);
+			}
+		}
+	}
+
 	printf("\n\n");
 
 	return 0;
@@ -1075,6 +1141,11 @@ int main(int argc, char **argv)
 				env.vmlinux_path ?: vmlinux_path);
 			return -1;
 		}
+	}
+
+	if (create_perf_events()) {
+		fprintf(stderr, "Failed to set up LBR perf events\n");
+		return -EINVAL;
 	}
 
 	/* determine mapping from bpf_ktime_get_ns() to real clock */

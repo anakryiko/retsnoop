@@ -10,7 +10,7 @@ LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
 INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi
-CFLAGS := -g -Wall -O0
+CFLAGS := -g -Wall -O2
 ARCH := $(shell uname -m | sed 's/x86_64/x86/')
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
@@ -55,7 +55,7 @@ $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPU
 	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1		      \
 		    OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@)		      \
 		    INCLUDEDIR= LIBDIR= UAPIDIR=			      \
-		    EXTRA_CFLAGS="-g -O0" \
+		    EXTRA_CFLAGS="-g -O2" \
 		    install
 
 # Build BPF object files

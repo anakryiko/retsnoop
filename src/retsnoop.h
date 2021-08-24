@@ -11,6 +11,20 @@
 #define MAX_FSTACK_DEPTH 64
 #define MAX_KSTACK_DEPTH 128
 
+#define MAX_LBR_ENTRIES 32
+
+struct perf_branch_entry1 {
+	__u64	from;
+	__u64	to;
+	__u64	mispred:1,  /* target mispredicted */
+		predicted:1,/* target predicted */
+		in_tx:1,    /* in transaction */
+		abort:1,    /* transaction abort */
+		cycles:16,  /* cycle count to last branch */
+		type:4,     /* branch type */
+		reserved:40;
+};
+
 struct call_stack {
 	unsigned short func_ids[MAX_FSTACK_DEPTH];
 	long func_res[MAX_FSTACK_DEPTH];
@@ -30,6 +44,9 @@ struct call_stack {
 
 	long kstack[MAX_KSTACK_DEPTH];
 	long kstack_sz;
+
+	struct perf_branch_entry1 lbr_entries[MAX_LBR_ENTRIES];
+	int lbr_entry_cnt;
 };
 
 #define FUNC_IS_ENTRY 0x1

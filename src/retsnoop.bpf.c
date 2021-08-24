@@ -6,6 +6,8 @@
 #include <bpf/bpf_core_read.h>
 #include "retsnoop.h"
 
+static long (*bpf_get_branch_trace)(void *entries, __u32 size, __u64 flags) = (void *) 175;
+
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 #define printk_is_sane (bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_snprintf))
@@ -77,8 +79,10 @@ static __always_inline int output_stack(void *ctx, void *map, struct call_stack 
 	if (duration_ns && stack->emit_ts - stack->func_lat[0] < duration_ns)
 		return 0;
 
-	if (!stack->is_err)
+	if (!stack->is_err) {
 		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
+		stack->lbr_entry_cnt = bpf_get_branch_trace(stack->lbr_entries, sizeof(stack->lbr_entries), 0);
+	}
 
 	/* use_ringbuf is read-only variable, so verifier will detect which of
 	 * the branch is dead code and will eliminate it, so on old kernels
@@ -384,9 +388,13 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	stack->func_lat[d] = bpf_ktime_get_ns() - stack->func_lat[d];
 
 	if (failed && !stack->is_err) {
+		long cnt, i;
+
 		stack->is_err = true;
 		stack->max_depth = d + 1;
 		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
+
+		stack->lbr_entry_cnt = bpf_get_branch_trace(stack->lbr_entries, sizeof(stack->lbr_entries), 0);
 	}
 	stack->depth = d;
 
