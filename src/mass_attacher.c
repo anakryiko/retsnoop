@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#include <linux/perf_event.h>
 #include <unistd.h>
 #include "mass_attacher.h"
 #include "ksyms.h"

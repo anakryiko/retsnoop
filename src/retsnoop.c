@@ -10,8 +10,11 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <bpf/btf.h>
+#include <linux/perf_event.h>
 #include <sys/utsname.h>
+#include <sys/syscall.h>
 #include <time.h>
+#include <unistd.h>
 #include "retsnoop.h"
 #include "retsnoop.skel.h"
 #include "calib_feat.skel.h"
@@ -39,6 +42,8 @@ static struct env {
 	bool emit_full_stacks;
 	bool emit_intermediate_stacks;
 	bool use_kprobes;
+	bool use_lbr;
+	long lbr_flags;
 	const char *vmlinux_path;
 	int pid;
 	int longer_than_ms;
@@ -83,6 +88,7 @@ const char argp_program_doc[] =
 
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
+#define OPT_LBR 1003
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
@@ -121,6 +127,8 @@ static const struct argp_option opts[] = {
 	  "Emit non-filtered full stack traces" },
 	{ "stacks-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
 	  "Stacks map size (default 1024)" },
+	{ "lbr", OPT_LBR, "SPEC", OPTION_ARG_OPTIONAL,
+	  "Capture and print LBR entries" },
 	{},
 };
 
@@ -347,6 +355,15 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.longer_than_ms = strtol(arg, NULL, 10);
 		if (errno || env.longer_than_ms <= 0) {
 			fprintf(stderr, "Invalid -L duration: %d\n", env.longer_than_ms);
+			return -EINVAL;
+		}
+		break;
+	case OPT_LBR:
+		env.use_lbr = true;
+		if (arg && sscanf(arg, "%li", &env.lbr_flags) != 1) {
+			err = -errno;
+			fprintf(stderr, "Failed to parse LBR flags spec '%s': %d\n",
+				arg, err);
 			return -EINVAL;
 		}
 		break;
@@ -836,6 +853,43 @@ static void print_item(struct ctx *ctx, const struct fstack_item *fitem, const s
 	}
 }
 
+static void emit_lbr(struct ctx *ctx, const char *pfx, long addr)
+{
+	static struct a2l_resp resps[64];
+	struct a2l_resp *resp = NULL;
+	int symb_cnt = 0, line_off, i;
+	const struct ksym *ksym;
+
+	ksym = ksyms__map_addr(ctx->ksyms, addr);
+	if (ksym) {
+		printf("%s%s+0x%lx", pfx, ksym->name, addr - ksym->addr);
+	} else {
+		printf("%s", pfx);
+	}
+
+	if (!ctx->a2l) {
+		printf("\n");
+		return;
+	}
+
+	symb_cnt = addr2line__symbolize(ctx->a2l, addr, resps);
+	if (symb_cnt <= 0) {
+		printf("\n");
+		return;
+	}
+
+	resp = &resps[symb_cnt - 1];
+
+	line_off = detect_linux_src_loc(resp->line);
+	printf(" (%s)\n", resp->line + line_off);
+
+	for (i = 1, resp--; i < symb_cnt; i++, resp--) {
+		printf("\t\t. %s", resp->fname);
+		line_off = detect_linux_src_loc(resp->line);
+		printf(" (%s)\n", resp->line + line_off);
+	}
+}
+
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	static struct fstack_item fstack[MAX_FSTACK_DEPTH];
@@ -911,6 +965,27 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		print_item(dctx, NULL, &kstack[j]);
 	}
 
+	if (env.use_lbr) {
+		int lbr_cnt;
+
+		if (s->lbrs_sz < 0) {
+			fprintf(stderr, "Failed to capture LBR entries: %ld\n", s->lbrs_sz);
+			goto out;
+		}
+
+		lbr_cnt = s->lbrs_sz / sizeof(struct perf_branch_entry);
+		for (i = 0; i < lbr_cnt; i++) {
+			printf("[LBR #%02d] 0x%016lx -> 0x%016lx (%c type %d)\n",
+			       i, (long)s->lbrs[i].from, (long)s->lbrs[i].to,
+			       s->lbrs[i].mispred ? 'M' : (s->lbrs[i].predicted ? 'P' : '?'),
+			       s->lbrs[i].type);
+
+			emit_lbr(dctx, "<-\t", s->lbrs[i].from);
+			emit_lbr(dctx, "->\t", s->lbrs[i].to);
+		}
+	}
+
+out:
 	printf("\n\n");
 
 	return 0;
@@ -1013,17 +1088,74 @@ static int find_vmlinux(char *path, size_t max_len)
 	return -ESRCH;
 }
 
-static bool kernel_supports_ringbuf(void)
+static int detect_kernel_features(void)
 {
-	long page_size = sysconf(_SC_PAGESIZE);
-	int fd;
+	struct calib_feat_bpf *skel;
+	int err;
 
-	fd = bpf_create_map(BPF_MAP_TYPE_RINGBUF, 0, 0, page_size, 0);
-	if (fd < 0)
-		return false;
+	skel = calib_feat_bpf__open_and_load();
+	if (!skel) {
+		fprintf(stderr, "Failed to load feature detection skeleton\n");
+		return -EFAULT;
+	}
 
-	close(fd);
-	return true;
+	skel->bss->my_tid = syscall(SYS_gettid);
+
+	err = calib_feat_bpf__attach(skel);
+	if (err) {
+		fprintf(stderr, "Failed to attach feature detection skeleton\n");
+		calib_feat_bpf__destroy(skel);
+		return -EFAULT;
+	}
+
+	usleep(1);
+
+	if (env.debug) {
+		printf("Feature detection results:\n"
+		       "\tBPF ringbuf map supported: %s\n"
+		       "\tbpf_get_branch_snapshot() supported: %s\n",
+		       skel->bss->has_ringbuf ? "yes" : "no",
+		       skel->bss->has_branch_snapshot ? "yes" : "no");
+	}
+
+	env.has_ringbuf = skel->bss->has_ringbuf;
+	env.has_branch_snapshot = skel->bss->has_branch_snapshot;
+
+	calib_feat_bpf__destroy(skel);
+	return 0;
+}
+
+#define INTEL_FIXED_VLBR_EVENT        0x1b00
+
+static int create_lbr_perf_events(int *fds, int cpu_cnt)
+{
+	struct perf_event_attr attr;
+	int cpu, err;
+
+	memset(&attr, 0, sizeof(attr));
+	attr.size = sizeof(attr);
+	attr.type = PERF_TYPE_RAW;
+	attr.config = INTEL_FIXED_VLBR_EVENT;
+	attr.sample_type = PERF_SAMPLE_BRANCH_STACK;
+	attr.branch_sample_type = PERF_SAMPLE_BRANCH_KERNEL |
+				  (env.lbr_flags ?: PERF_SAMPLE_BRANCH_ANY);
+
+	if (env.debug)
+		printf("LBR flags are 0x%lx\n", (long)attr.branch_sample_type);
+
+	for (cpu = 0; cpu < env.cpu_cnt; cpu++) {
+		fds[cpu] = syscall(__NR_perf_event_open, &attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
+		if (fds[cpu] < 0) {
+			err = -errno;
+			for (cpu--; cpu >= 0; cpu--) {
+				close(fds[cpu]);
+				fds[cpu] = -1;
+			}
+			return err;
+		}
+	}
+
+	return 0;
 }
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
@@ -1049,6 +1181,7 @@ int main(int argc, char **argv)
 	struct retsnoop_bpf *skel = NULL;
 	struct ring_buffer *rb = NULL;
 	struct perf_buffer *pb = NULL;
+	int *lbr_perf_fds = NULL;
 	int err, i, j, n;
 
 	if (setvbuf(stdout, NULL, _IOLBF, BUFSIZ))
@@ -1144,6 +1277,31 @@ int main(int argc, char **argv)
 		bpf_map__set_value_size(skel->maps.rb, 4);
 		bpf_map__set_max_entries(skel->maps.rb, 0);
 	}
+
+	/* LBR detection and setup */
+	if (env.use_lbr && env.has_branch_snapshot) {
+		lbr_perf_fds = malloc(sizeof(int) * env.cpu_cnt);
+		if (!lbr_perf_fds) {
+			err = -ENOMEM;
+			goto cleanup;
+		}
+		for (i = 0; i < env.cpu_cnt; i++) {
+			lbr_perf_fds[i] = -1;
+		}
+
+		err = create_lbr_perf_events(lbr_perf_fds, env.cpu_cnt);
+		if (err) {
+			if (env.verbose)
+				fprintf(stderr, "Failed to create LBR perf events: %d. Disabling LBR capture.\n", err);
+			err = 0;
+		} else {
+			env.has_lbr = true;
+		}
+	}
+	env.use_lbr = env.use_lbr && env.has_lbr && env.has_branch_snapshot;
+	skel->rodata->use_lbr = env.use_lbr;
+	if (env.use_lbr && env.verbose)
+		printf("LBR capture enabled.\n");
 
 	att_opts.verbose = env.verbose;
 	att_opts.debug = env.debug;
@@ -1355,6 +1513,11 @@ cleanup:
 
 	addr2line__free(env.ctx.a2l);
 	ksyms__free(env.ctx.ksyms);
+
+	for (i = 0; i < env.cpu_cnt; i++) {
+		if (lbr_perf_fds && lbr_perf_fds[i] >= 0)
+			close(lbr_perf_fds[i]);
+	}
 
 	for (i = 0; i < env.allow_glob_cnt; i++)
 		free(env.allow_globs[i]);

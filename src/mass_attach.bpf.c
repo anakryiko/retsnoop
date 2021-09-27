@@ -24,6 +24,7 @@ struct {
 
 #define MAX_CPU_CNT 256
 #define MAX_CPU_MASK (MAX_CPU_CNT - 1)
+#define MAX_LBR_ENTRIES 32
 
 bool ready = false;
 
@@ -36,6 +37,12 @@ const volatile bool has_bpf_get_func_ip = false;
  * fentry/fexit is a separate BPF, so we need to still protected ourselves.
  */
 const volatile bool has_fentry_protection = false;
+
+extern const volatile bool use_lbr;
+
+static long lbr_szs[MAX_CPU_CNT];
+static struct perf_branch_entry lbrs[MAX_CPU_CNT][MAX_LBR_ENTRIES];
+
 
 /* has to be called from entry-point BPF program if not using
  * bpf_get_func_ip()
@@ -56,6 +63,30 @@ static __always_inline u64 get_kret_func_ip(void *ctx)
 
 	return bpf_get_func_ip(ctx);
 }
+
+static __always_inline void capture_lbrs(int cpu)
+{
+	long lbr_sz;
+
+	if (!use_lbr)
+		return;
+
+	lbr_sz = bpf_get_branch_snapshot(&lbrs[cpu & MAX_CPU_MASK], sizeof(lbrs[0]), 0);
+	lbr_szs[cpu & MAX_CPU_MASK] = lbr_sz;
+}
+
+__hidden int copy_lbrs(void *dst, size_t dst_sz)
+{
+	int cpu;
+
+	if (!use_lbr)
+		return 0;
+
+	cpu = bpf_get_smp_processor_id();
+	bpf_probe_read_kernel(dst, dst_sz, &lbrs[cpu & MAX_CPU_MASK]);
+	return lbr_szs[cpu & MAX_CPU_MASK];
+}
+
 
 SEC("kprobe/xxx")
 int kentry(struct pt_regs *ctx)
@@ -86,11 +117,14 @@ SEC("kretprobe/xxx")
 int kexit(struct pt_regs *ctx)
 {
 	const char *name;
-	u32 *id_ptr;
+	u32 *id_ptr, cpu;
 	long ip;
 
 	if (!ready)
 		return 0;
+
+	cpu = bpf_get_smp_processor_id();
+	capture_lbrs(cpu);
 
 	ip = get_kret_func_ip(ctx);
 	id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);
@@ -186,6 +220,8 @@ static __always_inline int handle_fexit(void *ctx, int arg_cnt)
 	cpu = bpf_get_smp_processor_id();
 	if (!recur_enter(cpu))
 		return 0;
+
+	capture_lbrs(cpu);
 
 	ip = get_ftrace_func_ip(ctx, arg_cnt);
 	id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);

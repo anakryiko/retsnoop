@@ -38,6 +38,7 @@ struct {
 const volatile bool verbose = false;
 const volatile bool extra_verbose = false;
 const volatile bool use_ringbuf = false;
+const volatile bool use_lbr = false;
 const volatile int targ_tgid = 0;
 const volatile bool emit_success_stacks = false;
 const volatile bool emit_intermediate_stacks = false;
@@ -70,6 +71,9 @@ int func_flags[MAX_FUNC_CNT] = {};
 
 const volatile char spaces[512] = {};
 
+/* provided by mass_attach.bpf.c */
+int copy_lbrs(void *dst, size_t dst_sz);
+
 static __always_inline int output_stack(void *ctx, void *map, struct call_stack *stack)
 {
 	stack->emit_ts = bpf_ktime_get_ns();
@@ -77,8 +81,10 @@ static __always_inline int output_stack(void *ctx, void *map, struct call_stack 
 	if (duration_ns && stack->emit_ts - stack->func_lat[0] < duration_ns)
 		return 0;
 
-	if (!stack->is_err)
+	if (!stack->is_err) {
 		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
+		stack->lbrs_sz = copy_lbrs(&stack->lbrs, sizeof(stack->lbrs));
+	}
 
 	/* use_ringbuf is read-only variable, so verifier will detect which of
 	 * the branch is dead code and will eliminate it, so on old kernels
@@ -320,13 +326,13 @@ static __noinline void print_exit(void *ctx, __u32 d, __u32 id, long res)
 static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 {
 	const char *func_name = func_names[id & MAX_FUNC_MASK];
-	u32 pid = (u32)bpf_get_current_pid_tgid();
 	struct call_stack *stack;
-	u32 exp_id, flags, fmt_sz;
+	u32 pid, exp_id, flags, fmt_sz;
 	const char *fmt;
 	bool failed;
 	u64 d;
 
+	pid = (u32)bpf_get_current_pid_tgid();
 	stack = bpf_map_lookup_elem(&stacks, &pid);
 	if (!stack)
 		return false;
@@ -374,6 +380,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 		stack->max_depth = 0;
 		stack->is_err = false;
 		stack->kstack_sz = 0;
+		stack->lbrs_sz = 0;
 
 		bpf_map_delete_elem(&stacks, &pid);
 
@@ -387,6 +394,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 		stack->is_err = true;
 		stack->max_depth = d + 1;
 		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
+		stack->lbrs_sz = copy_lbrs(&stack->lbrs, sizeof(stack->lbrs));
 	}
 	stack->depth = d;
 
@@ -418,6 +426,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 		stack->depth = 0;
 		stack->max_depth = 0;
 		stack->kstack_sz = 0;
+		stack->lbrs_sz = 0;
 
 		bpf_map_delete_elem(&stacks, &pid);
 	}

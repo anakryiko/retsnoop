@@ -3,6 +3,9 @@
 #ifndef __RETSNOOP_H
 #define __RETSNOOP_H
 
+#define MAX_CPUS 256
+#define MAX_CPUS_MSK (MAX_CPUS - 1)
+
 /* MAX_FUNC_CNT needs to be power-of-2 */
 #define MAX_FUNC_CNT (4 * 1024)
 #define MAX_FUNC_MASK (MAX_FUNC_CNT - 1)
@@ -10,6 +13,8 @@
 
 #define MAX_FSTACK_DEPTH 64
 #define MAX_KSTACK_DEPTH 128
+
+#define MAX_LBR_ENTRIES 32
 
 struct call_stack {
 	unsigned short func_ids[MAX_FSTACK_DEPTH];
@@ -30,6 +35,9 @@ struct call_stack {
 
 	long kstack[MAX_KSTACK_DEPTH];
 	long kstack_sz;
+
+	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
+	long lbrs_sz;
 };
 
 #define FUNC_IS_ENTRY 0x1
