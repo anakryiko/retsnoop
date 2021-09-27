@@ -16,6 +16,8 @@ int kret_ip_off = 0;
 bool has_bpf_get_func_ip = false;
 bool has_fexit_sleep_fix = false;
 bool has_fentry_protection = false;
+bool has_branch_snapshot = false;
+bool has_ringbuf = false;
 
 SEC("kprobe/hrtimer_start_range_ns")
 int calib_entry(struct pt_regs *ctx)
@@ -48,6 +50,16 @@ int calib_entry(struct pt_regs *ctx)
 	 * Added in: e21aa341785c ("bpf: Fix fexit trampoline")
 	 */
 	has_fexit_sleep_fix = bpf_core_type_exists(struct bpf_tramp_image);
+
+	/* Detect if bpf_get_branch_snapshot() helper is supported.
+	 * Added in: 856c02dbce4f ("bpf: Introduce helper bpf_get_branch_snapshot")
+	 */
+	has_branch_snapshot = bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_get_branch_snapshot);
+
+	/* Detect if BPF_MAP_TYPE_RINGBUF map is supported.
+	 * Added in: 457f44363a88 ("bpf: Implement BPF ring buffer and verifier support for it")
+	 */
+	has_ringbuf = bpf_core_enum_value_exists(enum bpf_map_type, BPF_MAP_TYPE_RINGBUF);
 
 	return 0;
 }

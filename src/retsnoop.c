@@ -14,6 +14,7 @@
 #include <time.h>
 #include "retsnoop.h"
 #include "retsnoop.skel.h"
+#include "calib_feat.skel.h"
 #include "ksyms.h"
 #include "addr2line.h"
 #include "mass_attacher.h"
@@ -62,6 +63,11 @@ static struct env {
 	int ringbuf_sz;
 	int perfbuf_percpu_sz;
 	int stacks_map_sz;
+
+	int cpu_cnt;
+	bool has_branch_snapshot;
+	bool has_lbr;
+	bool has_ringbuf;
 } env = {
 	.ringbuf_sz = 4 * 1024 * 1024,
 	.perfbuf_percpu_sz = 256 * 1024,
@@ -1044,7 +1050,6 @@ int main(int argc, char **argv)
 	struct ring_buffer *rb = NULL;
 	struct perf_buffer *pb = NULL;
 	int err, i, j, n;
-	bool use_ringbuf;
 
 	if (setvbuf(stdout, NULL, _IOLBF, BUFSIZ))
 		fprintf(stderr, "Failed to set output mode to line-buffered!\n");
@@ -1083,11 +1088,22 @@ int main(int argc, char **argv)
 	/* Set up libbpf errors and debug info callback */
 	libbpf_set_print(libbpf_print_fn);
 
+	if (detect_kernel_features()) {
+		fprintf(stderr, "Kernel feature detection failed.\n");
+		return -1;
+	}
+
+	env.cpu_cnt = libbpf_num_possible_cpus();
+	if (env.cpu_cnt <= 0) {
+		fprintf(stderr, "Failed to determine number of CPUs: %d\n", env.cpu_cnt);
+		return -1;
+	}
+
 	/* Open BPF skeleton */
 	env.ctx.skel = skel = retsnoop_bpf__open();
 	if (!skel) {
-		fprintf(stderr, "Failed to open BPF skeleton\n");
-		return -EINVAL;
+		fprintf(stderr, "Failed to open BPF skeleton.\n");
+		return -1;
 	}
 
 	bpf_map__set_max_entries(skel->maps.stacks, env.stacks_map_sz);
@@ -1116,8 +1132,8 @@ int main(int argc, char **argv)
 
 	memset(skel->rodata->spaces, ' ', 511);
 
-	skel->rodata->use_ringbuf = use_ringbuf = kernel_supports_ringbuf();
-	if (use_ringbuf) {
+	skel->rodata->use_ringbuf = env.has_ringbuf;
+	if (env.has_ringbuf) {
 		bpf_map__set_type(skel->maps.rb, BPF_MAP_TYPE_RINGBUF);
 		bpf_map__set_key_size(skel->maps.rb, 0);
 		bpf_map__set_value_size(skel->maps.rb, 0);
@@ -1291,7 +1307,7 @@ int main(int argc, char **argv)
 	}
 
 	/* Set up ring/perf buffer polling */
-	if (use_ringbuf) {
+	if (env.has_ringbuf) {
 		rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, &env.ctx, NULL);
 		if (!rb) {
 			err = -1;
