@@ -18,6 +18,7 @@ typedef bool (*func_filter_fn)(const struct mass_attacher *att,
 struct mass_attacher_func_info {
 	const char *name;
 	long addr;
+	long size;
 	int arg_cnt;
 	int btf_id;
 

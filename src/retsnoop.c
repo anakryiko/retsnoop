@@ -504,6 +504,7 @@ static const char *perf_deny_globs[] = {
 
 /* fexit logical stack trace item */
 struct fstack_item {
+	const struct mass_attacher_func_info *finfo;
 	const char *name;
 	long res;
 	long lat;
@@ -528,6 +529,7 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 		fname = finfo->name;
 
 		fitem = &r[cnt];
+		fitem->finfo = finfo;
 		fitem->name = fname;
 		fitem->stitched = false;
 		if (i >= s->depth) {
@@ -555,6 +557,7 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 		fname = finfo->name;
 
 		fitem = &r[cnt];
+		fitem->finfo = finfo;
 		fitem->name = fname;
 		fitem->stitched = true;
 		fitem->finished = true;
@@ -890,6 +893,14 @@ static void emit_lbr(struct ctx *ctx, const char *pfx, long addr)
 	}
 }
 
+static bool lbr_matches(unsigned long addr, unsigned long start, unsigned long end)
+{
+	if (!start)
+		return true;
+
+	return start <= addr && addr < end;
+}
+
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	static struct fstack_item fstack[MAX_FSTACK_DEPTH];
@@ -966,23 +977,49 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	}
 
 	if (env.use_lbr) {
-		int lbr_cnt;
+		unsigned long start = 0, end = 0;
+		int lbr_cnt, lbr_to = 0;
 
 		if (s->lbrs_sz < 0) {
 			fprintf(stderr, "Failed to capture LBR entries: %ld\n", s->lbrs_sz);
 			goto out;
 		}
 
+		if (fstack_n > 0) {
+			fitem = &fstack[fstack_n - 1];
+			if (fitem->finfo->size) {
+				start = fitem->finfo->addr;
+				end = fitem->finfo->addr + fitem->finfo->size;
+			}
+		}
+
 		lbr_cnt = s->lbrs_sz / sizeof(struct perf_branch_entry);
-		for (i = 0; i < lbr_cnt; i++) {
-			printf("[LBR #%02d] 0x%016lx -> 0x%016lx (%c type %d)\n",
-			       i, (long)s->lbrs[i].from, (long)s->lbrs[i].to,
-			       s->lbrs[i].mispred ? 'M' : (s->lbrs[i].predicted ? 'P' : '?'),
-			       s->lbrs[i].type);
+
+		if (!env.emit_full_stacks) {
+			/* Filter out last few irrelevant LBRs that captured
+			 * internal BPF/kprobe/perf jumps. For that, find the
+			 * first LBR record that overlaps with the last traced
+			 * function. All the records after that are assumed
+			 * relevant.
+			 */
+			for (i = 0, lbr_to = 0; i < lbr_cnt; i++, lbr_to++) {
+				if (lbr_matches(s->lbrs[i].from, start, end) ||
+				    lbr_matches(s->lbrs[i].to, start, end))
+					break;
+			}
+		}
+
+		for (i = lbr_cnt - 1; i >= (lbr_to == lbr_cnt ? 0 : lbr_to); i--) {
+
+			printf("[LBR #%02d] 0x%016lx -> 0x%016lx\n",
+			       i, (long)s->lbrs[i].from, (long)s->lbrs[i].to);
 
 			emit_lbr(dctx, "<-\t", s->lbrs[i].from);
 			emit_lbr(dctx, "->\t", s->lbrs[i].to);
 		}
+
+		if (lbr_to == lbr_cnt)
+			printf("[LBR] No relevant LBR data were captured, showing unfiltered LBR stack!\n");
 	}
 
 out:

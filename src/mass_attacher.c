@@ -589,6 +589,7 @@ static int prepare_func(struct mass_attacher *att, const char *func_name,
 	arg_cnt = func_arg_cnt(att->vmlinux_btf, btf_id);
 
 	finfo->addr = ksym->addr;
+	finfo->size = ksym->size;
 	finfo->name = ksym->name;
 	finfo->arg_cnt = arg_cnt;
 	finfo->btf_id = btf_id;

@@ -5,6 +5,7 @@
 struct ksym {
 	const char *name;
 	unsigned long addr;
+	unsigned long size;
 };
 
 struct ksyms;

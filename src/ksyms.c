@@ -16,7 +16,7 @@ struct ksyms {
 	int strs_cap;
 };
 
-static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, unsigned long addr)
+static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, unsigned long addr, char sym_type)
 {
 	size_t new_cap, name_len = strlen(name) + 1;
 	struct ksym *ksym;
@@ -49,6 +49,8 @@ static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, unsigned lon
 	/* while constructing, re-use pointer as just a plain offset */
 	ksym->name = (void *)(unsigned long)ksyms->strs_sz;
 	ksym->addr = addr;
+	/* mark which symbols are functions for post-processing */
+	ksym->size = (sym_type == 't' || sym_type == 'T') ? (unsigned long)-1 : 0;
 
 	memcpy(ksyms->strs + ksyms->strs_sz, name, name_len);
 	ksyms->strs_sz += name_len;
@@ -97,9 +99,10 @@ struct ksyms *ksyms__load(void)
 			break;
 		if (ret != 3)
 			goto err_out;
-		if (ksyms__add_symbol(ksyms, sym_name, sym_addr))
+		if (ksyms__add_symbol(ksyms, sym_name, sym_addr, sym_type))
 			goto err_out;
 	}
+	fclose(f);
 
 	ksyms->syms_by_name = calloc(ksyms->syms_sz, sizeof(*ksyms->syms_by_name));
 	if (!ksyms->syms_by_name)
@@ -114,7 +117,20 @@ struct ksyms *ksyms__load(void)
 	qsort(ksyms->syms, ksyms->syms_sz, sizeof(*ksyms->syms), ksym_cmp);
 	qsort(ksyms->syms_by_name, ksyms->syms_sz, sizeof(*ksyms->syms_by_name), ksym_by_name_cmp);
 
-	fclose(f);
+	/* do another pass to calculate (guess?) function sizes */
+	for (i = 0; i < ksyms->syms_sz; i++) {
+		struct ksym *ksym = &ksyms->syms[i];
+		struct ksym *next_ksym = ksym + 1;
+
+		if (!ksym->size)
+			continue;
+
+		if (i + 1 < ksyms->syms_sz && next_ksym->size)
+			ksym->size = next_ksym->addr - ksym->addr;
+		else
+			ksym->size = 0;
+	}
+
 	return ksyms;
 
 err_out:
