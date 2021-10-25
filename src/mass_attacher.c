@@ -278,9 +278,6 @@ int mass_attacher__deny_glob(struct mass_attacher *att, const char *glob)
 
 static int bump_rlimit(int resource, rlim_t max);
 static int load_available_kprobes(struct mass_attacher *attacher);
-static int hijack_prog(struct bpf_program *prog, int n,
-		       struct bpf_insn *insns, int insns_cnt,
-		       struct bpf_prog_prep_result *res);
 
 static int func_arg_cnt(const struct btf *btf, int id);
 static int find_kprobe(const struct mass_attacher *att, const char *name);
@@ -407,8 +404,6 @@ int mass_attacher__prepare(struct mass_attacher *att)
 				finfo = &att->func_infos[att->func_info_id_for_arg_cnt[i]];
 				bpf_program__set_attach_target(att->fentries[i], 0, finfo->name);
 				bpf_program__set_attach_target(att->fexits[i], 0, finfo->name);
-				bpf_program__set_prep(att->fentries[i], 1, hijack_prog);
-				bpf_program__set_prep(att->fexits[i], 1, hijack_prog);
 
 				if (att->debug)
 					printf("Found total %d functions with %d arguments.\n", att->func_info_cnts[i], i);
@@ -675,58 +670,7 @@ static int load_available_kprobes(struct mass_attacher *att)
 	return 0;
 }
 
-static int prog_arg_cnt(const struct mass_attacher *att, const struct bpf_program *p)
-{
-	int i;
-
-	for (i = 0; i <= MAX_FUNC_ARG_CNT; i++) {
-		if (att->fentries[i] == p || att->fexits[i] == p)
-			return i;
-	}
-
-	return -1;
-}
-
-static int hijack_prog(struct bpf_program *prog, int n,
-		       struct bpf_insn *insns, int insns_cnt,
-		       struct bpf_prog_prep_result *res)
-{
-	struct mass_attacher *att = cur_attacher;
-	struct bpf_insn **insns_ptr;
-	size_t *insn_cnt_ptr;
-	int arg_cnt;
-
-	arg_cnt = prog_arg_cnt(att, prog);
-
-	if (strncmp(bpf_program__name(prog), "fexit", sizeof("fexit") - 1) == 0) {
-		insn_cnt_ptr = &att->fexits_insn_cnts[arg_cnt];
-		insns_ptr = &att->fexits_insns[arg_cnt];
-	} else {
-		insn_cnt_ptr = &att->fentries_insn_cnts[arg_cnt];
-		insns_ptr = &att->fentries_insns[arg_cnt];
-	}
-
-	*insns_ptr = malloc(sizeof(*insns) * insns_cnt);
-	memcpy(*insns_ptr, insns, sizeof(*insns) * insns_cnt);
-	*insn_cnt_ptr = insns_cnt;
-
-	/* By not setting res->new_insn_ptr and res->new_insns_cnt we are
-	 * preventing unnecessary load of the "prototype" BPF program.
-	 * But we do load those programs in debug mode to use libbpf's logic
-	 * of showing BPF verifier log, which is useful to debug verification
-	 * errors.
-	 */
-	if (att->debug) {
-		res->new_insn_ptr = insns;
-		res->new_insn_cnt = insns_cnt;
-	}
-
-	return 0;
-}
-
-
-static int clone_prog(const struct bpf_program *prog,
-		      struct bpf_insn *insns, size_t insn_cnt, int attach_btf_id);
+static int clone_prog(const struct bpf_program *prog, int attach_btf_id);
 
 int mass_attacher__load(struct mass_attacher *att)
 {
@@ -764,20 +708,14 @@ int mass_attacher__load(struct mass_attacher *att)
 		}
 
 		if (att->use_fentries) {
-			err = clone_prog(att->fentries[finfo->arg_cnt],
-					 att->fentries_insns[finfo->arg_cnt],
-					 att->fentries_insn_cnts[finfo->arg_cnt],
-					 finfo->btf_id);
+			err = clone_prog(att->fentries[finfo->arg_cnt], finfo->btf_id);
 			if (err < 0) {
 				fprintf(stderr, "Failed to clone FENTRY BPF program for function '%s': %d\n", func_name, err);
 				return err;
 			}
 			finfo->fentry_prog_fd = err;
 
-			err = clone_prog(att->fexits[finfo->arg_cnt],
-					 att->fexits_insns[finfo->arg_cnt],
-					 att->fexits_insn_cnts[finfo->arg_cnt],
-					 finfo->btf_id);
+			err = clone_prog(att->fexits[finfo->arg_cnt], finfo->btf_id);
 			if (err < 0) {
 				fprintf(stderr, "Failed to clone FEXIT BPF program for function '%s': %d\n", func_name, err);
 				return err;
@@ -788,8 +726,7 @@ int mass_attacher__load(struct mass_attacher *att)
 	return 0;
 }
 
-static int clone_prog(const struct bpf_program *prog,
-		      struct bpf_insn *insns, size_t insn_cnt, int attach_btf_id)
+static int clone_prog(const struct bpf_program *prog, int attach_btf_id)
 {
 	struct bpf_load_program_attr attr;
 	int fd;
@@ -799,8 +736,8 @@ static int clone_prog(const struct bpf_program *prog,
 	attr.prog_type = bpf_program__get_type(prog);
 	attr.expected_attach_type = bpf_program__get_expected_attach_type(prog);
 	attr.name = bpf_program__name(prog);
-	attr.insns = insns;
-	attr.insns_cnt = insn_cnt;
+	attr.insns = bpf_program__insns(prog);
+	attr.insns_cnt = bpf_program__insn_cnt(prog);
 	attr.license = "Dual BSD/GPL";
 	attr.attach_btf_id = attach_btf_id;
 
