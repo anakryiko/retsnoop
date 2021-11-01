@@ -1171,8 +1171,8 @@ static int create_lbr_perf_events(int *fds, int cpu_cnt)
 
 	memset(&attr, 0, sizeof(attr));
 	attr.size = sizeof(attr);
-	attr.type = PERF_TYPE_RAW;
-	attr.config = INTEL_FIXED_VLBR_EVENT;
+	attr.type = PERF_TYPE_HARDWARE;
+	attr.config = PERF_COUNT_HW_CPU_CYCLES;
 	attr.sample_type = PERF_SAMPLE_BRANCH_STACK;
 	attr.branch_sample_type = PERF_SAMPLE_BRANCH_KERNEL |
 				  (env.lbr_flags ?: PERF_SAMPLE_BRANCH_ANY);
