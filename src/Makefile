@@ -76,7 +76,7 @@ $(OUTPUT)/%.o: %.c $(wildcard *.h) | $(OUTPUT) $(OUTPUT)/tests
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
 $(OUTPUT)/retsnoop.skel.h: $(OUTPUT)/mass_attach.bpf.o
-$(OUTPUT)/retsnoop.o: $(OUTPUT)/retsnoop.skel.h
+$(OUTPUT)/retsnoop.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 $(OUTPUT)/mass_attacher.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 
 $(OUTPUT)/addr2line.embed.o: ../tools/addr2line
