@@ -1,0 +1,18 @@
+[package]
+name = "addr2line"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+addr2line = { version = "0.17.0", features=["std-object"] }
+gimli = { version = "0.26", default-features = false, features = ["read"] }
+fallible-iterator = { version = "0.2", default-features = false }
+memmap = "0.7"
+clap = "2"
+backtrace = "0.3.13"
+findshlibs = "0.10"
+rustc-test = "0.3"
+typed-arena = "2"
+object = { version = "0.27.1", default-features = false, features = ["read"]}
