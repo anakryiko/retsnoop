@@ -13,8 +13,8 @@
 
 #include "addr2line.h"
  
-extern char _binary____tools_addr2line_start[];
-extern char _binary____tools_addr2line_end[];
+extern char __binary_sidecar_start[];
+extern char __binary_sidecar_end[];
 
 struct addr2line {
 	FILE *read_pipe;
@@ -43,7 +43,7 @@ static void sig_pipe(int signo)
 
 static void child_driver(int fd1[2], int fd2[2], const char *vmlinux, bool inlines)
 {
-	size_t a2l_sz = _binary____tools_addr2line_end - _binary____tools_addr2line_start;
+	size_t a2l_sz = __binary_sidecar_end - __binary_sidecar_start;
 	char *argv[] = {
 		"addr2line", "-f", "--llvm", "-e", (char *)vmlinux,
 		inlines ? "-i" : NULL, NULL,
@@ -86,7 +86,7 @@ static void child_driver(int fd1[2], int fd2[2], const char *vmlinux, bool inlin
 		goto kill_parent;
 	}
 
-	ret = fwrite(_binary____tools_addr2line_start, 1, a2l_sz, a2l_bin);
+	ret = fwrite(__binary_sidecar_start, 1, a2l_sz, a2l_bin);
 	if (ret != a2l_sz) {
 		fprintf(stderr, "CHILD: failed to write addr2line contents: %d\n", -errno);
 		goto kill_parent;

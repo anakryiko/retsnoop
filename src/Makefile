@@ -43,6 +43,7 @@ all: retsnoop simfail
 clean:
 	$(call msg,CLEAN)
 	$(Q)rm -rf $(OUTPUT) retsnoop simfail
+	$(Q)cargo clean --manifest-path=../sidecar/Cargo.toml
 
 $(OUTPUT) $(OUTPUT)/libbpf $(OUTPUT)/tests:
 	$(call msg,MKDIR,$@)
@@ -79,9 +80,19 @@ $(OUTPUT)/retsnoop.skel.h: $(OUTPUT)/mass_attach.bpf.o
 $(OUTPUT)/retsnoop.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 $(OUTPUT)/mass_attacher.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 
-$(OUTPUT)/addr2line.embed.o: ../tools/addr2line
+../sidecar/target/release/addr2line::
+	$(call msg,CARGO,addr2line)
+	$(Q)cargo build --manifest-path=../sidecar/Cargo.toml --release
+
+$(OUTPUT)/addr2line.embed.o: ../sidecar/target/release/addr2line
+	$(call msg,LLVM_STRIP,$<)
+	$(Q)$(LLVM_STRIP) -g $<
 	$(call msg,LD,$@)
-	$(Q)$(LD) -r -b binary -o $@ $<
+	$(Q)$(LD) -r -b binary \
+		--defsym __binary_sidecar_start=_binary____sidecar_target_release_addr2line_start \
+		--defsym __binary_sidecar_end=_binary____sidecar_target_release_addr2line_end \
+		--defsym __binary_sidecar_size=_binary____sidecar_target_release_addr2line_size \
+		-o $@ $<
 
 $(OUTPUT)/addr2line.o: $(OUTPUT)/addr2line.embed.o
 
