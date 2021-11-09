@@ -11,18 +11,25 @@ use std::fs::File;
 use std::io::{BufRead, Lines, StdinLock, Write};
 use std::path::Path;
 
-use clap::{App, Arg, Values};
+use clap::{App, Arg, ArgMatches, Values};
 use fallible_iterator::FallibleIterator;
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, SymbolMap, SymbolMapName};
 use typed_arena::Arena;
 
 use addr2line::{Context, Location};
 
-fn parse_uint_from_hex_string(string: &str) -> u64 {
-    if string.len() > 2 && string.starts_with("0x") {
-        u64::from_str_radix(&string[2..], 16).expect("Failed to parse address")
+enum QueryType {
+    Addr(u64),
+    CompileUnit(String),
+}
+
+fn parse_query_line(string: &str) -> QueryType {
+    if string.starts_with("symbolize ") {
+        QueryType::Addr(u64::from_str_radix(&string[10..], 16).expect("Failed to parse address"))
+    } else if string.starts_with("query_syms ") {
+        QueryType::CompileUnit(string[11..].to_string())
     } else {
-        u64::from_str_radix(string, 16).expect("Failed to parse address")
+        panic!("Failed to parse request")
     }
 }
 
@@ -32,16 +39,38 @@ enum Addrs<'a> {
 }
 
 impl<'a> Iterator for Addrs<'a> {
-    type Item = u64;
+    type Item = QueryType;
 
-    fn next(&mut self) -> Option<u64> {
+    fn next(&mut self) -> Option<QueryType> {
         let text = match *self {
             Addrs::Args(ref mut vals) => vals.next().map(Cow::from),
             Addrs::Stdin(ref mut lines) => lines.next().map(Result::unwrap).map(Cow::from),
         };
-        text.as_ref()
-            .map(Cow::as_ref)
-            .map(parse_uint_from_hex_string)
+        text.as_ref().map(Cow::as_ref).map(parse_query_line)
+    }
+}
+
+struct Config {
+    do_functions: bool,
+    do_inlines: bool,
+    pretty: bool,
+    print_addrs: bool,
+    basenames: bool,
+    demangle: bool,
+    llvm: bool,
+}
+
+impl Config {
+    fn load(matches: &ArgMatches) -> Config {
+        Config {
+            do_functions: matches.is_present("functions"),
+            do_inlines: matches.is_present("inlines"),
+            pretty: matches.is_present("pretty"),
+            print_addrs: matches.is_present("addresses"),
+            basenames: matches.is_present("basenames"),
+            demangle: matches.is_present("demangle"),
+            llvm: matches.is_present("llvm"),
+        }
     }
 }
 
@@ -75,6 +104,92 @@ fn print_function(name: &str, language: Option<gimli::DwLang>, demangle: bool) {
     } else {
         print!("{}", name);
     }
+}
+
+fn query_address<T: gimli::Endianity>(
+    addr: u64,
+    ctx: &Context<gimli::EndianSlice<T>>,
+    symbols: &SymbolMap<SymbolMapName>,
+    config: &Config,
+) {
+    let probe = addr;
+
+    if config.print_addrs {
+        if config.llvm {
+            print!("0x{:x}", probe);
+        } else {
+            print!("0x{:016x}", probe);
+        }
+        if config.pretty {
+            print!(": ");
+        } else {
+            println!();
+        }
+    }
+
+    if config.do_functions || config.do_inlines {
+        let mut printed_anything = false;
+        let mut frames = ctx.find_frames(probe).unwrap().enumerate();
+        while let Some((i, frame)) = frames.next().unwrap() {
+            if config.pretty && i != 0 {
+                print!(" (inlined by) ");
+            }
+
+            if config.do_functions {
+                if let Some(func) = frame.function {
+                    print_function(&func.raw_name().unwrap(), func.language, config.demangle);
+                } else if let Some(name) = symbols.get(probe).map(|x| x.name()) {
+                    print_function(name, None, config.demangle);
+                } else {
+                    print!("??");
+                }
+
+                if config.pretty {
+                    print!(" at ");
+                } else {
+                    println!();
+                }
+            }
+
+            print_loc(&frame.location, config.basenames, config.llvm);
+
+            printed_anything = true;
+
+            if !config.do_inlines {
+                break;
+            }
+        }
+
+        if !printed_anything {
+            if config.do_functions {
+                if let Some(name) = symbols.get(probe).map(|x| x.name()) {
+                    print_function(name, None, config.demangle);
+                } else {
+                    print!("??");
+                }
+
+                if config.pretty {
+                    print!(" at ");
+                } else {
+                    println!();
+                }
+            }
+
+            if config.llvm {
+                println!("??:0:0");
+            } else {
+                println!("??:?");
+            }
+        }
+    } else {
+        let loc = ctx.find_location(probe).unwrap();
+        print_loc(&loc, config.basenames, config.llvm);
+    }
+
+    if config.llvm {
+        println!();
+    }
+    std::io::stdout().flush().unwrap();
 }
 
 fn load_file_section<'input, 'arena, Endian: gimli::Endianity>(
@@ -169,13 +284,7 @@ fn main() {
 
     let arena_data = Arena::new();
 
-    let do_functions = matches.is_present("functions");
-    let do_inlines = matches.is_present("inlines");
-    let pretty = matches.is_present("pretty");
-    let print_addrs = matches.is_present("addresses");
-    let basenames = matches.is_present("basenames");
-    let demangle = matches.is_present("demangle");
-    let llvm = matches.is_present("llvm");
+    let config = Config::load(&matches);
     let path = matches.value_of("exe").unwrap();
 
     let file = File::open(path).unwrap();
@@ -213,87 +322,15 @@ fn main() {
     let ctx = Context::from_dwarf(dwarf).unwrap();
 
     let stdin = std::io::stdin();
-    let addrs = matches
+    let queries = matches
         .values_of("addrs")
         .map(Addrs::Args)
         .unwrap_or_else(|| Addrs::Stdin(stdin.lock().lines()));
 
-    for probe in addrs {
-        if print_addrs {
-            if llvm {
-                print!("0x{:x}", probe);
-            } else {
-                print!("0x{:016x}", probe);
-            }
-            if pretty {
-                print!(": ");
-            } else {
-                println!();
-            }
+    for addr_or_cunit in queries {
+        match addr_or_cunit {
+            QueryType::Addr(probe) => query_address(probe, &ctx, &symbols, &config),
+            _ => panic!("not implemented yet"),
         }
-
-        if do_functions || do_inlines {
-            let mut printed_anything = false;
-            let mut frames = ctx.find_frames(probe).unwrap().enumerate();
-            while let Some((i, frame)) = frames.next().unwrap() {
-                if pretty && i != 0 {
-                    print!(" (inlined by) ");
-                }
-
-                if do_functions {
-                    if let Some(func) = frame.function {
-                        print_function(&func.raw_name().unwrap(), func.language, demangle);
-                    } else if let Some(name) = symbols.get(probe).map(|x| x.name()) {
-                        print_function(name, None, demangle);
-                    } else {
-                        print!("??");
-                    }
-
-                    if pretty {
-                        print!(" at ");
-                    } else {
-                        println!();
-                    }
-                }
-
-                print_loc(&frame.location, basenames, llvm);
-
-                printed_anything = true;
-
-                if !do_inlines {
-                    break;
-                }
-            }
-
-            if !printed_anything {
-                if do_functions {
-                    if let Some(name) = symbols.get(probe).map(|x| x.name()) {
-                        print_function(name, None, demangle);
-                    } else {
-                        print!("??");
-                    }
-
-                    if pretty {
-                        print!(" at ");
-                    } else {
-                        println!();
-                    }
-                }
-
-                if llvm {
-                    println!("??:0:0");
-                } else {
-                    println!("??:?");
-                }
-            }
-        } else {
-            let loc = ctx.find_location(probe).unwrap();
-            print_loc(&loc, basenames, llvm);
-        }
-
-        if llvm {
-            println!();
-        }
-        std::io::stdout().flush().unwrap();
     }
 }
