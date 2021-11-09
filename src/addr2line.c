@@ -179,7 +179,7 @@ int addr2line__symbolize(const struct addr2line *a2l, long addr, struct a2l_resp
 {
 	int err, cnt = 0;
 
-	err = fprintf(a2l->write_pipe, "%lx\n", addr);
+	err = fprintf(a2l->write_pipe, "symbolize %lx\n", addr);
 	if (err <= 0) {
 		err = -errno;
 		fprintf(stderr, "Failed to symbolize %lx: %d\n", addr, err);
