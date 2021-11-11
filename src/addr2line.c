@@ -217,3 +217,8 @@ int addr2line__symbolize(const struct addr2line *a2l, long addr, struct a2l_resp
 	return cnt;
 }
 
+int addr2line__query_symbols(const struct addr2line *a2l, const char *compile_unit, struct a2l_resp *resp)
+{
+	return -ENOTSUP;
+}
+

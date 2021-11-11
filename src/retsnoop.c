@@ -195,6 +195,11 @@ cleanup:
 	return err;
 }
 
+static int append_compile_unit(char ***strs, int *cnt, const char *compile_unit)
+{
+	return -ENOTSUP;
+}
+
 static int append_pid(int **pids, int *cnt, const char *arg)
 {
 	void *tmp;
@@ -273,29 +278,35 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'a':
 		if (arg[0] == '@') {
 			err = append_str_file(&env.allow_globs, &env.allow_glob_cnt, arg + 1);
-			if (err)
-				return err;
-		} else if (append_str(&env.allow_globs, &env.allow_glob_cnt, arg)) {
-			return -ENOMEM;
+		} else if (arg[0] == ':') {
+			err = append_compile_unit(&env.allow_globs, &env.allow_glob_cnt, arg + 1);
+		} else {
+			err = append_str(&env.allow_globs, &env.allow_glob_cnt, arg);
 		}
+		if (err)
+			return err;
 		break;
 	case 'd':
 		if (arg[0] == '@') {
 			err = append_str_file(&env.deny_globs, &env.deny_glob_cnt, arg + 1);
-			if (err)
-				return err;
-		} else if (append_str(&env.deny_globs, &env.deny_glob_cnt, arg)) {
-			return -ENOMEM;
+		} else if (arg[0] == ':') {
+			err = append_compile_unit(&env.deny_globs, &env.deny_glob_cnt, arg + 1);
+		} else {
+			err = append_str(&env.deny_globs, &env.deny_glob_cnt, arg);
 		}
+		if (err)
+			return err;
 		break;
 	case 'e':
 		if (arg[0] == '@') {
 			err = append_str_file(&env.entry_globs, &env.entry_glob_cnt, arg + 1);
-			if (err)
-				return err;
-		} else if (append_str(&env.entry_globs, &env.entry_glob_cnt, arg)) {
-			return -ENOMEM;
+		} else if (arg[0] == ':') {
+			err = append_compile_unit(&env.entry_globs, &env.entry_glob_cnt, arg + 1);
+		} else {
+			err = append_str(&env.entry_globs, &env.entry_glob_cnt, arg);
 		}
+		if (err)
+			return err;
 		break;
 	case 's':
 		env.symb_lines = true;
