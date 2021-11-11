@@ -21,6 +21,7 @@ use addr2line::{Context, Location};
 enum QueryType {
     Addr(u64),
     CompileUnit(String),
+    _NotImplemented,
 }
 
 fn parse_query_line(string: &str) -> QueryType {
@@ -192,6 +193,88 @@ fn query_address<T: gimli::Endianity>(
     std::io::stdout().flush().unwrap();
 }
 
+// List functions defined in compile unit(s) with vi sense.  For every
+// compile unit, it starts with a ':e <filename>' line following by
+// symbol lines that looks like ' <sym> <address>'.  Show a ':q' line
+// after all compile units as the last line of the query result.
+//
+// For example,
+// :e bpf.c
+//  bpf_prog_bind_map 0x127b0
+//  bpf_enable_stats 0x126a0
+//  bpf_task_fd_query 0x125a0
+//  ...
+// :q
+//
+fn query_compile_unit<T: gimli::Endianity>(
+    compile_unit: &str,
+    ctx: &Context<gimli::EndianSlice<T>>,
+    _config: &Config,
+) {
+    let dwarf = ctx.dwarf();
+    let mut units = dwarf.units();
+    while let Some(header) = units.next().expect("fail to parse units") {
+        let unit = dwarf.unit(header).expect("fail to parse header");
+        if unit.name.is_none() {
+            continue;
+        }
+        let name = unit.name.unwrap();
+        let name = name.to_string().expect("name of a compile unit");
+        if !name.eq(compile_unit) {
+            continue;
+        }
+
+        println!(":e {}", name);
+        let mut entries = unit.entries();
+        while let Some((_, entry)) = entries.next_dfs().expect("fail to parse entries") {
+            if entry.tag() != gimli::DW_TAG_subprogram {
+                continue;
+            }
+
+            let declattr = entry
+                .attr(gimli::DW_AT_declaration)
+                .expect("DW_AT_declaration");
+            if let Some(_) = declattr {
+                continue;
+            }
+
+            let inlineattr = entry.attr(gimli::DW_AT_inline).expect("DW_AT_inline");
+            if let Some(_) = inlineattr {
+                continue;
+            }
+
+            let func_name_attr = entry
+                .attr(gimli::DW_AT_name)
+                .expect("no function name attr");
+            if func_name_attr.is_none() {
+                continue;
+            }
+            let func_name_attr = func_name_attr.unwrap();
+
+            let low_pc_attr = entry.attr(gimli::DW_AT_low_pc).expect("no low PC");
+            let low_pc: u64 = match low_pc_attr {
+                Some(low_pc) => {
+                    if let gimli::read::AttributeValue::Addr(addr) = low_pc.value() {
+                        addr
+                    } else {
+                        0
+                    }
+                }
+                _ => 0,
+            };
+
+            let namestr = func_name_attr
+                .string_value(&dwarf.debug_str)
+                .unwrap()
+                .to_string()
+                .expect("should have a string");
+            println!(" {} 0x{:x}", namestr, low_pc);
+        }
+    }
+    println!(":q");
+    std::io::stdout().flush().unwrap();
+}
+
 fn load_file_section<'input, 'arena, Endian: gimli::Endianity>(
     id: gimli::SectionId,
     file: &object::File<'input>,
@@ -330,6 +413,9 @@ fn main() {
     for addr_or_cunit in queries {
         match addr_or_cunit {
             QueryType::Addr(probe) => query_address(probe, &ctx, &symbols, &config),
+            QueryType::CompileUnit(compile_unit) => {
+                query_compile_unit(&compile_unit, &ctx, &config)
+            }
             _ => panic!("not implemented yet"),
         }
     }
