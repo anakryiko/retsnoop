@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <stdint.h>
 
 #include "addr2line.h"
  
@@ -217,8 +218,97 @@ int addr2line__symbolize(const struct addr2line *a2l, long addr, struct a2l_resp
 	return cnt;
 }
 
-int addr2line__query_symbols(const struct addr2line *a2l, const char *compile_unit, struct a2l_resp *resp)
+int addr2line__query_symbols(const struct addr2line *a2l, const char *compile_unit,
+			     struct a2l_cu_resp **resp_ret)
 {
-	return -ENOTSUP;
+	int cnt = 0;
+	int buf_size = 64;
+	int err = 0;
+	struct a2l_cu_resp *buf = NULL;
+	struct a2l_cu_resp *resp;
+
+	err = fprintf(a2l->write_pipe, "query_syms %s\n", compile_unit);
+	if (err <= 0) {
+		err = -errno;
+		fprintf(stderr, "Failed to get function names from compile unit(s): %d\n", err);
+		return err;
+	}
+	fflush(a2l->write_pipe);
+
+	buf = (struct a2l_cu_resp *)malloc(sizeof(struct a2l_cu_resp) * buf_size);
+	if (buf == NULL) {
+		return -ENOMEM;
+	}
+
+	err = 0;
+	while (true) {
+		char line[256];
+		if (fgets(line, sizeof(line), a2l->read_pipe) == NULL) {
+			err = -errno;
+			fprintf(stderr, "Failed to get functions from compile unit(s): %d\n", err);
+			break;
+		}
+		if (line[0] == ':') {
+			if (line[1] == 'q') {
+				/* :q is the last end of the result */
+				break;
+			}
+			/* Skip :e lines since we don't need filename so far */
+			continue;
+		}
+		if (line[0] != ' ') {
+			fprintf(stderr, "Invalid format: %s\n", line);
+			err = -1;
+			break;
+		}
+		/* |line| should be in the format of <spc><fuction><spc><address> */
+
+		if (cnt >= buf_size) {
+			buf_size *= 2;
+			buf = (struct a2l_cu_resp *)realloc(buf, sizeof(struct a2l_cu_resp) * buf_size);
+			if (buf == NULL) {
+				err = -ENOMEM;
+				break;
+			}
+		}
+		resp = buf + cnt;
+
+		/* Get function name */
+		char *sep = strchr(line + 1, ' ');
+		if (sep == NULL) {
+			fprintf(stderr, "Invalid format: %s\n", line);
+			err = -1;
+			break;
+		}
+		*sep = 0;
+
+		if (sep - (line + 1) >= sizeof(resp->fname)) {
+			fprintf(stderr, "Function name is too long: %s\n", line + 1);
+			err = -1;
+			break;
+		}
+		strcpy(resp->fname, line + 1);
+
+		/* Get address */
+		char *addr_str = sep + 1;
+		if (addr_str[0] != '0' || addr_str[1] != 'x') {
+			fprintf(stderr, "Invalid address for function: %s %s\n", resp->fname, addr_str);
+			err = -1;
+			break;
+		}
+		addr_str += 2;
+		resp->address = (void *)(uintptr_t)strtoul(addr_str, NULL, 16);
+
+		cnt++;
+	}
+
+	if (err) {
+		if (buf != NULL)
+			free(buf);
+		return err;
+	}
+
+	*resp_ret = buf;
+	return cnt;
 }
 

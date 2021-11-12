@@ -23,6 +23,7 @@
 #include "mass_attacher.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
+#define MIN(x, y) ((x) < (y) ? (x): (y))
 
 struct ctx {
 	struct mass_attacher *att;
@@ -54,6 +55,13 @@ static struct env {
 	int allow_glob_cnt;
 	int deny_glob_cnt;
 	int entry_glob_cnt;
+
+	char **cu_allow_globs;
+	char **cu_deny_globs;
+	char **cu_entry_globs;
+	int cu_allow_glob_cnt;
+	int cu_deny_glob_cnt;
+	int cu_entry_glob_cnt;
 
 	int *allow_pids;
 	int *deny_pids;
@@ -195,9 +203,55 @@ cleanup:
 	return err;
 }
 
-static int append_compile_unit(char ***strs, int *cnt, const char *compile_unit)
+static int append_compile_unit(struct ctx *ctx, char ***strs, int *cnt, const char *compile_unit)
 {
-	return -ENOTSUP;
+	int err = 0;
+	struct a2l_cu_resp *cu_resps = NULL;
+	int resp_cnt;
+	int i;
+
+	resp_cnt = addr2line__query_symbols(ctx->a2l, compile_unit, &cu_resps);
+	if (resp_cnt < 0) {
+		return resp_cnt;
+	}
+
+	for (i = 0; i < resp_cnt; i++) {
+		if (append_str(strs, cnt, cu_resps[i].fname)) {
+			err = -ENOMEM;
+			break;
+		}
+	}
+
+	free(cu_resps);
+	return err;
+}
+
+static int process_cu_globs() {
+	int err = 0;
+	int i;
+
+	for (i = 0; i < env.cu_allow_glob_cnt; i++) {
+		err = append_compile_unit(&env.ctx, &env.allow_globs, &env.allow_glob_cnt, env.cu_allow_globs[i]);
+		if (err < 0) {
+			return err;
+		}
+	}
+
+	for (i = 0; i < env.cu_deny_glob_cnt; i++) {
+		err = append_compile_unit(&env.ctx, &env.deny_globs, &env.deny_glob_cnt, env.cu_deny_globs[i]);
+		if (err < 0) {
+			return err;
+		}
+	}
+
+	for (i = 0; i < env.cu_entry_glob_cnt; i++) {
+		err = append_compile_unit(&env.ctx, &env.entry_globs, &env.entry_glob_cnt, env.cu_entry_globs[i]);
+		if (err < 0) {
+			return err;
+		}
+	}
+
+	return err;
 }
 
 static int append_pid(int **pids, int *cnt, const char *arg)
@@ -279,7 +333,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		if (arg[0] == '@') {
 			err = append_str_file(&env.allow_globs, &env.allow_glob_cnt, arg + 1);
 		} else if (arg[0] == ':') {
-			err = append_compile_unit(&env.allow_globs, &env.allow_glob_cnt, arg + 1);
+			err = append_str(&env.cu_allow_globs, &env.cu_allow_glob_cnt, arg + 1);
 		} else {
 			err = append_str(&env.allow_globs, &env.allow_glob_cnt, arg);
 		}
@@ -290,7 +344,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		if (arg[0] == '@') {
 			err = append_str_file(&env.deny_globs, &env.deny_glob_cnt, arg + 1);
 		} else if (arg[0] == ':') {
-			err = append_compile_unit(&env.deny_globs, &env.deny_glob_cnt, arg + 1);
+			err = append_str(&env.cu_deny_globs, &env.cu_deny_glob_cnt, arg + 1);
 		} else {
 			err = append_str(&env.deny_globs, &env.deny_glob_cnt, arg);
 		}
@@ -301,7 +355,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		if (arg[0] == '@') {
 			err = append_str_file(&env.entry_globs, &env.entry_glob_cnt, arg + 1);
 		} else if (arg[0] == ':') {
-			err = append_compile_unit(&env.entry_globs, &env.entry_glob_cnt, arg + 1);
+			err = append_str(&env.cu_entry_globs, &env.cu_entry_glob_cnt, arg + 1);
 		} else {
 			err = append_str(&env.entry_globs, &env.entry_glob_cnt, arg);
 		}
@@ -779,7 +833,7 @@ static void print_item(struct ctx *ctx, const struct fstack_item *fitem, const s
 	const char *fname;
 	int src_print_off = 70, func_print_off;
 
-	if (ctx->a2l && kitem && !kitem->filtered) {
+	if (env.symb_lines && ctx->a2l && kitem && !kitem->filtered) {
 		long addr = kitem->addr;
 
 		if (kitem->ksym && kitem->ksym && kitem->ksym->addr - kitem->addr == FTRACE_OFFSET)
@@ -881,7 +935,7 @@ static void emit_lbr(struct ctx *ctx, const char *pfx, long addr)
 		printf("%s", pfx);
 	}
 
-	if (!ctx->a2l) {
+	if (!ctx->a2l || !env.symb_lines) {
 		printf("\n");
 		return;
 	}
@@ -1249,7 +1303,7 @@ int main(int argc, char **argv)
 	if (geteuid() != 0)
 		fprintf(stderr, "You are not running as root! Expect failures. Please use sudo or run as root.\n");
 
-	if (env.symb_lines) {
+	if (env.symb_lines || env.cu_allow_glob_cnt || env.cu_deny_glob_cnt || env.cu_entry_glob_cnt) {
 		char vmlinux_path[1024];
 
 		if (!env.vmlinux_path && find_vmlinux(vmlinux_path, sizeof(vmlinux_path)))
@@ -1261,6 +1315,11 @@ int main(int argc, char **argv)
 				env.vmlinux_path ?: vmlinux_path);
 			return -1;
 		}
+	}
+
+	if (process_cu_globs()) {
+		fprintf(stderr, "Failed to process file paths.\n");
+		return -1;
 	}
 
 	/* determine mapping from bpf_ktime_get_ns() to real clock */
