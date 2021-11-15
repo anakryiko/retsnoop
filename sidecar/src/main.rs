@@ -15,6 +15,7 @@ use clap::{App, Arg, ArgMatches, Values};
 use fallible_iterator::FallibleIterator;
 use object::{Object, ObjectSection, SymbolMap, SymbolMapName};
 use typed_arena::Arena;
+use glob;
 
 use addr2line::{Context, Location};
 
@@ -211,6 +212,7 @@ fn query_compile_unit<T: gimli::Endianity>(
     ctx: &Context<gimli::EndianSlice<T>>,
     _config: &Config,
 ) {
+    let cu_pattern = glob::Pattern::new(compile_unit).unwrap();
     let dwarf = ctx.dwarf();
     let mut units = dwarf.units();
     while let Some(header) = units.next().expect("fail to parse units") {
@@ -220,7 +222,7 @@ fn query_compile_unit<T: gimli::Endianity>(
         }
         let name = unit.name.unwrap();
         let name = name.to_string().expect("name of a compile unit");
-        if !name.eq(compile_unit) {
+        if !cu_pattern.matches(name) {
             continue;
         }
 
