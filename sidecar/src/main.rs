@@ -40,6 +40,23 @@ enum Addrs<'a> {
     Stdin(Lines<StdinLock<'a>>),
 }
 
+fn conv_linux_src_loc<'a>(path: &'a str) -> &'a str {
+    let linux_dirs = [
+	"arch/", "kernel/", "include/", "block/", "fs/", "net/",
+	"drivers/", "mm/", "ipc/", "security/", "lib/", "crypto/",
+	"certs/", "init/", "lib/", "scripts/", "sound/", "tools/",
+	"usr/", "virt/",
+    ];
+
+    for cur_dir in linux_dirs {
+        match path.find(cur_dir) {
+            Some(pos) => return &path[pos..],
+            _ => ()
+        }
+    }
+    path
+}
+
 impl<'a> Iterator for Addrs<'a> {
     type Item = QueryType;
 
@@ -222,7 +239,7 @@ fn query_compile_unit<T: gimli::Endianity>(
         }
         let name = unit.name.unwrap();
         let name = name.to_string().expect("name of a compile unit");
-        if !cu_pattern.matches(name) {
+        if !cu_pattern.matches(conv_linux_src_loc(name)) {
             continue;
         }
 
