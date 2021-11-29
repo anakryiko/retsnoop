@@ -47,6 +47,7 @@ enum symb_mode {
 };
 
 static struct env {
+	bool show_version;
 	bool verbose;
 	bool debug;
 	bool debug_extra;
@@ -101,7 +102,7 @@ static struct env {
 	.stacks_map_sz = 1024,
 };
 
-const char *argp_program_version = "retsnoop 0.1";
+const char *argp_program_version = "retsnoop v0.6";
 const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
 "retsnoop tool shows kernel call stacks based on specified function filters.\n"
@@ -116,6 +117,8 @@ const char argp_program_doc[] =
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
 	  "Verbose output (use -vv for debug-level verbosity, -vvv for libbpf debug log)" },
+	{ "version", 'V', NULL, 0,
+	  "Print out retsnoop version." },
 	{ "bpf-logs", 'l', NULL, 0,
 	  "Emit BPF-side logs (use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to read)" },
 	{ "kprobes", 'K', NULL, 0,
@@ -302,6 +305,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	int i, j, err;
 
 	switch (key) {
+	case 'V':
+		env.show_version = true;
+		break;
 	case 'v':
 		env.verbose = true;
 		if (arg) {
@@ -1333,6 +1339,11 @@ int main(int argc, char **argv)
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
 		return -1;
+
+	if (env.show_version) {
+		printf("%s\n", argp_program_version);
+		return 0;
+	}
 
 	if (env.entry_glob_cnt == 0) {
 		fprintf(stderr, "No entry point globs specified. "
