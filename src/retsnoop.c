@@ -32,6 +32,12 @@ struct ctx {
 	struct addr2line *a2l;
 };
 
+enum attach_mode {
+	PREFER_KPROBE,
+	FORCE_KPROBE,
+	FORCE_FENTRY,
+};
+
 static struct env {
 	bool verbose;
 	bool debug;
@@ -43,7 +49,7 @@ static struct env {
 	bool emit_success_stacks;
 	bool emit_full_stacks;
 	bool emit_intermediate_stacks;
-	bool use_kprobes;
+	enum attach_mode attach_mode;
 	bool use_lbr;
 	long lbr_flags;
 	const char *vmlinux_path;
@@ -93,7 +99,7 @@ const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
 "retsnoop tool shows kernel call stacks based on specified function filters.\n"
 "\n"
-"USAGE: retsnoop [-v] [-ss] [-p PID] [-n COMM] [-L MS] [-c CASE]* [-a GLOB]* [-d GLOB]* [-e GLOB]*\n";
+"USAGE: retsnoop [-v] [-ss] [-F|-K] [-c CASE]* [-a GLOB]* [-d GLOB]* [-e GLOB]*\n";
 
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
@@ -106,7 +112,9 @@ static const struct argp_option opts[] = {
 	{ "bpf-logs", 'l', NULL, 0,
 	  "Emit BPF-side logs (use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to read)" },
 	{ "kprobes", 'K', NULL, 0,
-	  "Use kprobes/kretprobes instead of fentries/fexits" },
+	  "Use kprobes/kretprobes (default)" },
+	{ "kprobes", 'F', NULL, 0,
+	  "Use fentries/fexits instead of kprobes/kretprobes" },
 	{ "case", 'c', "CASE", 0,
 	  "Use a pre-defined set of entry/allow/deny globs for a given use case (supported cases: bpf, perf)" },
 	{ "entry", 'e', "GLOB", 0,
@@ -414,7 +422,18 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.emit_success_stacks = true;
 		break;
 	case 'K':
-		env.use_kprobes = true;
+		if (env.attach_mode == FORCE_FENTRY) {
+			fprintf(stderr, "Can't specify both -K and -F, pick one.\n");
+			return -EINVAL;
+		}
+		env.attach_mode = FORCE_KPROBE;
+		break;
+	case 'F':
+		if (env.attach_mode == FORCE_KPROBE) {
+			fprintf(stderr, "Can't specify both -K and -F, pick one.\n");
+			return -EINVAL;
+		}
+		env.attach_mode = FORCE_FENTRY;
 		break;
 	case 'A':
 		env.emit_intermediate_stacks = true;
@@ -1421,7 +1440,7 @@ int main(int argc, char **argv)
 	att_opts.debug = env.debug;
 	att_opts.debug_extra = env.debug_extra;
 	att_opts.dry_run = env.dry_run;
-	att_opts.use_kprobes = env.use_kprobes;
+	att_opts.use_kprobes = env.attach_mode != FORCE_FENTRY;
 	att_opts.func_filter = func_filter;
 	att = mass_attacher__new(skel, &att_opts);
 	if (!att)
