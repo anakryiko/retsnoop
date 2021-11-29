@@ -27,6 +27,8 @@ struct mass_attacher_func_info {
 
 	struct bpf_link *kentry_link;
 	struct bpf_link *kexit_link;
+	int fentry_link_fd;
+	int fexit_link_fd;
 };
 
 struct mass_attacher_opts {

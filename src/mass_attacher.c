@@ -179,6 +179,17 @@ void mass_attacher__free(struct mass_attacher *att)
 	ksyms__free(att->ksyms);
 	btf__free(att->vmlinux_btf);
 
+	for (i = 0; i < att->func_cnt; i++) {
+		struct mass_attacher_func_info *fi = &att->func_infos[i];
+
+		bpf_link__destroy(fi->kentry_link);
+		bpf_link__destroy(fi->kexit_link);
+		if (fi->fentry_link_fd > 0)
+			close(fi->fentry_link_fd);
+		if (fi->fexit_link_fd > 0)
+			close(fi->fexit_link_fd);
+	}
+
 	free(att->func_infos);
 
 	if (att->kprobes) {
@@ -767,6 +778,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 					prog_fd, i + 1, func_name, func_addr, -errno);
 				return err;
 			}
+			att->func_infos[i].fentry_link_fd = err;
 
 			prog_fd = att->func_infos[i].fexit_prog_fd;
 			err = bpf_raw_tracepoint_open(NULL, prog_fd);
@@ -775,6 +787,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 					prog_fd, i + 1, func_name, func_addr, -errno);
 				return err;
 			}
+			att->func_infos[i].fexit_link_fd = err;
 		} else {
 			finfo->kentry_link = bpf_program__attach_kprobe(att->skel->progs.kentry, false, func_name);
 			err = libbpf_get_error(finfo->kentry_link);
