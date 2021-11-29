@@ -38,6 +38,7 @@ struct mass_attacher_opts {
 	bool debug;
 	bool debug_extra;
 	bool use_kprobes;
+	bool dry_run;
 	func_filter_fn func_filter;
 };
 

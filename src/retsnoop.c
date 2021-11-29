@@ -39,6 +39,7 @@ static struct env {
 	bool symb_lines;
 	bool symb_inlines;
 	bool bpf_logs;
+	bool dry_run;
 	bool emit_success_stacks;
 	bool emit_full_stacks;
 	bool emit_intermediate_stacks;
@@ -97,6 +98,7 @@ const char argp_program_doc[] =
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
 #define OPT_LBR 1003
+#define OPT_DRY_RUN 1004
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
@@ -137,6 +139,8 @@ static const struct argp_option opts[] = {
 	  "Stacks map size (default 1024)" },
 	{ "lbr", OPT_LBR, "SPEC", OPTION_ARG_OPTIONAL,
 	  "Capture and print LBR entries" },
+	{ "dry-run", OPT_DRY_RUN, NULL, 0,
+	  "Perform a dry run (don't actually load and attach BPF programs)" },
 	{},
 };
 
@@ -442,6 +446,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			fprintf(stderr, "Invalid stacks map size: %d\n", env.stacks_map_sz);
 			return -EINVAL;
 		}
+		break;
+	case OPT_DRY_RUN:
+		env.dry_run = true;
 		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
@@ -1413,6 +1420,7 @@ int main(int argc, char **argv)
 	att_opts.verbose = env.verbose;
 	att_opts.debug = env.debug;
 	att_opts.debug_extra = env.debug_extra;
+	att_opts.dry_run = env.dry_run;
 	att_opts.use_kprobes = env.use_kprobes;
 	att_opts.func_filter = func_filter;
 	att = mass_attacher__new(skel, &att_opts);
@@ -1562,6 +1570,12 @@ int main(int argc, char **argv)
 	if (err)
 		goto cleanup;
 
+	if (env.dry_run) {
+		if (env.verbose)
+			printf("Dry run successful, exiting...\n");
+		goto cleanup_silent;
+	}
+
 	signal(SIGINT, sig_handler);
 
 	env.ctx.att = att;
@@ -1616,6 +1630,7 @@ int main(int argc, char **argv)
 
 cleanup:
 	printf("Detaching, be patient...\n");
+cleanup_silent:
 	mass_attacher__free(att);
 
 	addr2line__free(env.ctx.a2l);

@@ -97,10 +97,10 @@ struct mass_attacher {
 	bool verbose;
 	bool debug;
 	bool debug_extra;
+	bool dry_run;
 	int max_func_cnt;
 	int max_fileno_rlimit;
 	func_filter_fn func_filter;
-
 
 	int kret_ip_off;
 	bool has_bpf_get_func_ip;
@@ -150,6 +150,7 @@ struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_att
 	att->debug_extra = opts->debug_extra;
 	if (att->debug)
 		att->verbose = true;
+	att->dry_run = opts->dry_run;
 	att->use_fentries = !opts->use_kprobes;
 	att->func_filter = opts->func_filter;
 
@@ -685,7 +686,7 @@ static int clone_prog(const struct bpf_program *prog, int attach_btf_id);
 
 int mass_attacher__load(struct mass_attacher *att)
 {
-	int err, i, map_fd;
+	int err = 0, i, map_fd;
 
 	/* we can't pass extra context to hijack_progs, so we set thread-local
 	 * cur_attacher variable temporarily for the duration of skeleton's
@@ -693,7 +694,8 @@ int mass_attacher__load(struct mass_attacher *att)
 	 */
 	cur_attacher = att;
 	/* Load & verify BPF programs */
-	err = SKEL_LOAD(att->skel);
+	if (!att->dry_run)
+		err = SKEL_LOAD(att->skel);
 	cur_attacher = NULL;
 
 	if (err) {
@@ -703,6 +705,9 @@ int mass_attacher__load(struct mass_attacher *att)
 
 	if (att->use_fentries && att->debug)
 		printf("Preparing %d BPF program copies...\n", att->func_cnt * 2);
+
+	if (att->dry_run)
+		return 0;
 
 	for (i = 0; i < att->func_cnt; i++) {
 		struct mass_attacher_func_info *finfo = &att->func_infos[i];
@@ -768,6 +773,9 @@ int mass_attacher__attach(struct mass_attacher *att)
 		const char *func_name = finfo->name;
 		long func_addr = finfo->addr;
 
+		if (att->dry_run)
+			goto skip_attach;
+
 		if (att->use_fentries) {
 			int prog_fd;
 
@@ -806,15 +814,21 @@ int mass_attacher__attach(struct mass_attacher *att)
 			}
 		}
 
-		if (att->debug)
-			printf("Attached to function #%d '%s' (addr %lx, btf id %d).\n", i + 1,
+skip_attach:
+		if (att->debug) {
+			printf("Attached%s to function #%d '%s' (addr %lx, btf id %d).\n",
+			       att->dry_run ? " (dry run)" : "", i + 1,
 			       func_name, func_addr, finfo->btf_id);
-		else if (att->verbose)
-			printf("Attached to function #%d '%s'.\n", i + 1, func_name);
+		} else if (att->verbose) {
+			printf("Attached%s to function #%d '%s'.\n",
+			att->dry_run ? " (dry run)" : "", i + 1, func_name);
+		}
 	}
 
-	if (att->verbose)
-		printf("Total %d kernel functions attached successfully!\n", att->func_cnt);
+	if (att->verbose) {
+		printf("Total %d kernel functions attached%s successfully!\n",
+			att->func_cnt, att->dry_run ? " (dry run)" : "");
+	}
 
 	return 0;
 }
