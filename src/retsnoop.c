@@ -33,23 +33,30 @@ struct ctx {
 };
 
 enum attach_mode {
-	PREFER_KPROBE,
-	FORCE_KPROBE,
-	FORCE_FENTRY,
+	ATTACH_DEFAULT,
+	ATTACH_KPROBE,
+	ATTACH_FENTRY,
+};
+
+enum symb_mode {
+	SYMB_NONE = -1,
+
+	SYMB_DEFAULT = 0,
+	SYMB_LINEINFO = 0x1,
+	SYMB_INLINES = 0x2,
 };
 
 static struct env {
 	bool verbose;
 	bool debug;
 	bool debug_extra;
-	bool symb_lines;
-	bool symb_inlines;
 	bool bpf_logs;
 	bool dry_run;
 	bool emit_success_stacks;
 	bool emit_full_stacks;
 	bool emit_intermediate_stacks;
 	enum attach_mode attach_mode;
+	enum symb_mode symb_mode;
 	bool use_lbr;
 	long lbr_flags;
 	const char *vmlinux_path;
@@ -126,7 +133,8 @@ static const struct argp_option opts[] = {
 	{ "kernel", 'k',
 	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
 	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
-	  "Perform extra symbolization (-s for line numbers, -ss for also inlines). Relies on having vmlinux with DWARF available." },
+	  "Set symbolization settings (-s for line info, -ss for also inline functions, -sn to disable extra symbolization). "
+	  "If extra symbolization is requested, retsnoop relies on having vmlinux with DWARF available." },
 	{ "pid", 'p', "PID", 0,
 	  "Only trace given PID. Can be specified multiple times" },
 	{ "no-pid", 'P', "PID", 0,
@@ -375,13 +383,15 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return err;
 		break;
 	case 's':
-		env.symb_lines = true;
+		env.symb_mode = SYMB_LINEINFO;
 		if (arg) {
-			if (strcmp(arg, "s") == 0) {
-				env.symb_inlines = true;
+			if (strcmp(arg, "none") == 0 || strcmp(arg, "n") == 0) {
+				env.symb_mode = SYMB_NONE;
+			} else if (strcmp(arg, "inlines") == 0 || strcmp(arg, "s") == 0) {
+				env.symb_mode |= SYMB_INLINES;
 			} else {
 				fprintf(stderr,
-					"Unrecognized symbolization setting '%s', only -s, and -ss are supported\n",
+					"Unrecognized symbolization setting '%s', only -s, -ss (-s inlines), and -sn (-s none) are supported\n",
 					arg);
 				return -EINVAL;
 			}
@@ -422,18 +432,18 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.emit_success_stacks = true;
 		break;
 	case 'K':
-		if (env.attach_mode == FORCE_FENTRY) {
+		if (env.attach_mode == ATTACH_FENTRY) {
 			fprintf(stderr, "Can't specify both -K and -F, pick one.\n");
 			return -EINVAL;
 		}
-		env.attach_mode = FORCE_KPROBE;
+		env.attach_mode = ATTACH_KPROBE;
 		break;
 	case 'F':
-		if (env.attach_mode == FORCE_KPROBE) {
+		if (env.attach_mode == ATTACH_KPROBE) {
 			fprintf(stderr, "Can't specify both -K and -F, pick one.\n");
 			return -EINVAL;
 		}
-		env.attach_mode = FORCE_FENTRY;
+		env.attach_mode = ATTACH_FENTRY;
 		break;
 	case 'A':
 		env.emit_intermediate_stacks = true;
@@ -859,7 +869,7 @@ static void print_item(struct ctx *ctx, const struct fstack_item *fitem, const s
 	const char *fname;
 	int src_print_off = 70, func_print_off;
 
-	if (env.symb_lines && ctx->a2l && kitem && !kitem->filtered) {
+	if (env.symb_mode != SYMB_NONE && ctx->a2l && kitem && !kitem->filtered) {
 		long addr = kitem->addr;
 
 		if (kitem->ksym && kitem->ksym && kitem->ksym->addr - kitem->addr == FTRACE_OFFSET)
@@ -961,7 +971,7 @@ static void emit_lbr(struct ctx *ctx, const char *pfx, long addr)
 		printf("%s", pfx);
 	}
 
-	if (!ctx->a2l || !env.symb_lines) {
+	if (!ctx->a2l || env.symb_mode == SYMB_NONE) {
 		printf("\n");
 		return;
 	}
@@ -1180,7 +1190,7 @@ static bool func_filter(const struct mass_attacher *att,
 	return true;
 }
 
-static int find_vmlinux(char *path, size_t max_len)
+static int find_vmlinux(char *path, size_t max_len, bool soft)
 {
 	const char *locations[] = {
 		"/boot/vmlinux-%1$s",
@@ -1211,7 +1221,10 @@ static int find_vmlinux(char *path, size_t max_len)
 		return 0;
 	}
 
-	fprintf(stderr, "Failed to locate vmlinux image location. Please use -k <vmlinux-path> to specify explicitly.\n");
+	if (!soft || env.verbose)
+		fprintf(soft ? stdout : stderr, "Failed to locate vmlinux image location. Please use -k <vmlinux-path> to specify explicitly.\n");
+
+	path[0] = '\0';
 
 	return -ESRCH;
 }
@@ -1310,6 +1323,7 @@ int main(int argc, char **argv)
 	struct ring_buffer *rb = NULL;
 	struct perf_buffer *pb = NULL;
 	int *lbr_perf_fds = NULL;
+	char vmlinux_path[1024] = {};
 	int err, i, j, n;
 
 	if (setvbuf(stdout, NULL, _IOLBF, BUFSIZ))
@@ -1329,13 +1343,23 @@ int main(int argc, char **argv)
 	if (geteuid() != 0)
 		fprintf(stderr, "You are not running as root! Expect failures. Please use sudo or run as root.\n");
 
-	if (env.symb_lines || env.cu_allow_glob_cnt || env.cu_deny_glob_cnt || env.cu_entry_glob_cnt) {
-		char vmlinux_path[1024];
+	if (env.symb_mode == SYMB_DEFAULT && !env.vmlinux_path) {
+		if (find_vmlinux(vmlinux_path, sizeof(vmlinux_path), true /* soft */))
+			env.symb_mode = SYMB_NONE;
+	}
 
-		if (!env.vmlinux_path && find_vmlinux(vmlinux_path, sizeof(vmlinux_path)))
+	if (env.symb_mode != SYMB_NONE || env.cu_allow_glob_cnt || env.cu_deny_glob_cnt || env.cu_entry_glob_cnt) {
+		bool symb_inlines = false;;
+
+		if (!env.vmlinux_path &&
+		    vmlinux_path[0] == '\0' &&
+		    find_vmlinux(vmlinux_path, sizeof(vmlinux_path), false /* hard error */))
 			return -1;
 
-		env.ctx.a2l = addr2line__init(env.vmlinux_path ?: vmlinux_path, env.symb_inlines);
+		if (env.symb_mode == SYMB_DEFAULT || (env.symb_mode & SYMB_INLINES))
+			symb_inlines = true;
+
+		env.ctx.a2l = addr2line__init(env.vmlinux_path ?: vmlinux_path, symb_inlines);
 		if (!env.ctx.a2l) {
 			fprintf(stderr, "Failed to start addr2line for vmlinux image at %s!\n",
 				env.vmlinux_path ?: vmlinux_path);
@@ -1440,7 +1464,7 @@ int main(int argc, char **argv)
 	att_opts.debug = env.debug;
 	att_opts.debug_extra = env.debug_extra;
 	att_opts.dry_run = env.dry_run;
-	att_opts.use_kprobes = env.attach_mode != FORCE_FENTRY;
+	att_opts.use_kprobes = env.attach_mode == ATTACH_DEFAULT || env.attach_mode == ATTACH_KPROBE;
 	att_opts.func_filter = func_filter;
 	att = mass_attacher__new(skel, &att_opts);
 	if (!att)
