@@ -1625,6 +1625,7 @@ cleanup:
 		if (lbr_perf_fds && lbr_perf_fds[i] >= 0)
 			close(lbr_perf_fds[i]);
 	}
+	free(lbr_perf_fds);
 
 	for (i = 0; i < env.allow_glob_cnt; i++)
 		free(env.allow_globs[i]);
