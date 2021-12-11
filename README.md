@@ -7,7 +7,7 @@ results.
 
 It's output in a default brief form looks like this:
 ```shell
-$ sudo retsnoop -p bpf -ss
+$ sudo retsnoop -c bpf
 Receiving data...
                              entry_SYSCALL_64_after_hwframe+0x44       (arch/x86/entry/entry_64.S:112:0)
                              do_syscall_64+0x2d                        (arch/x86/entry/common.c:46:12)
@@ -50,7 +50,7 @@ was performed. Functions with '. ' prefix are inlined functions, detected by
 The same set of errors in verbose mode looks like this:
 
 ```shell
-$ sudo retsnoop -p bpf -ss -v
+$ sudo retsnoop -c bpf -v
 Using vmlinux image at /lib/modules/5.12.0-rc2-00442-g87d77e59d1eb/build/vmlinux.
 Discovered 46315 available kprobes!
 Found 1016 attachable functions in total.
@@ -136,6 +136,17 @@ To specify entry/allow/deny globs, use `-e`/`-a`/`-d` options, like so:
 
 ```shell
 $ sudo retsnoop -e '*_sys_bpf' -a '*bpf*' -d 'migrate*' -d 'rcu*'
+```
+
+If kernel image (vmlinux) is available and contains DWARF information, it's
+possible to select a set of functions using its source code location relative
+to the root. The syntax is `':<path-glob>'`. The following example will select
+all attachable functions in BTRFS-related files. Such syntax works for entry,
+allow, and deny function specifiers.
+
+```shell
+$ sudo retsnoop -e '*_sys_write' -a ':fs/btrfs/*.c' -v
+[...]
 ```
 
 ## Use cases
