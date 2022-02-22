@@ -219,10 +219,13 @@ program types, etc), so will require sufficiently recent kernel version. It's
 on our TODO list to determine minimum upstream kernel version that retsnoop
 supports.
 
-## Building retsnoop from source 
+# Getting retsnoop
 
-See pre-built versions of retsnoop for x86-64 (amd64) architecture in
-[Releases](https://github.com/anakryiko/retsnoop/releases) section.
+## Download pre-built x86-64 binary
+
+**Each release has pre-built retsnoop binary** for x86-64 (amd64) architecture ready to be downloaded and used. Go to ["Releases"](https://github.com/anakryiko/retsnoop/releases) page to download latest binary.
+
+## Building retsnoop from source 
 
 It's also straightforward to build retsnoop from sources. Most of retsnoop's
 dependencies are already included:
