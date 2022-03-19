@@ -34,7 +34,8 @@ struct ctx {
 
 enum attach_mode {
 	ATTACH_DEFAULT,
-	ATTACH_KPROBE,
+	ATTACH_KPROBE_MULTI,
+	ATTACH_KPROBE_SINGLE,
 	ATTACH_FENTRY,
 };
 
@@ -121,10 +122,18 @@ static const struct argp_option opts[] = {
 	  "Print out retsnoop version." },
 	{ "bpf-logs", 'l', NULL, 0,
 	  "Emit BPF-side logs (use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to read)" },
+	{ "dry-run", OPT_DRY_RUN, NULL, 0,
+	  "Perform a dry run (don't actually load and attach BPF programs)" },
+
+	/* Attach mechanism specification */
+	{ "kprobes-multi", 'M', NULL, 0,
+	  "Use multi-attach kprobes/kretprobes, if supported; fall back to single-attach kprobes/kretprobes, otherwise" },
 	{ "kprobes", 'K', NULL, 0,
-	  "Use kprobes/kretprobes (default)" },
-	{ "kprobes", 'F', NULL, 0,
+	  "Use single-attach kprobes/kretprobes" },
+	{ "fentries", 'F', NULL, 0,
 	  "Use fentries/fexits instead of kprobes/kretprobes" },
+
+	/* Target functions specification */
 	{ "case", 'c', "CASE", 0,
 	  "Use a pre-defined set of entry/allow/deny globs for a given use case (supported cases: bpf, perf)" },
 	{ "entry", 'e', "GLOB", 0,
@@ -133,11 +142,8 @@ static const struct argp_option opts[] = {
 	  "Glob for allowed functions captured in error stack trace collection" },
 	{ "deny", 'd', "GLOB", 0,
 	  "Glob for denied functions ignored during error stack trace collection" },
-	{ "kernel", 'k',
-	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
-	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
-	  "Set symbolization settings (-s for line info, -ss for also inline functions, -sn to disable extra symbolization). "
-	  "If extra symbolization is requested, retsnoop relies on having vmlinux with DWARF available." },
+
+	/* Stack filtering specification */
 	{ "pid", 'p', "PID", 0,
 	  "Only trace given PID. Can be specified multiple times" },
 	{ "no-pid", 'P', "PID", 0,
@@ -150,16 +156,21 @@ static const struct argp_option opts[] = {
 	  "Only emit stacks that took at least a given amount of milliseconds" },
 	{ "success-stacks", 'S', NULL, 0,
 	  "Emit any stack, successful or not" },
+
+	/* Misc settings */
+	{ "lbr", OPT_LBR, "SPEC", OPTION_ARG_OPTIONAL,
+	  "Capture and print LBR entries" },
+	{ "kernel", 'k',
+	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
+	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
+	  "Set symbolization settings (-s for line info, -ss for also inline functions, -sn to disable extra symbolization). "
+	  "If extra symbolization is requested, retsnoop relies on having vmlinux with DWARF available." },
 	{ "intermediate-stacks", 'A', NULL, 0,
 	  "Emit all partial (intermediate) stack traces" },
 	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
 	  "Emit non-filtered full stack traces" },
 	{ "stacks-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
 	  "Stacks map size (default 1024)" },
-	{ "lbr", OPT_LBR, "SPEC", OPTION_ARG_OPTIONAL,
-	  "Capture and print LBR entries" },
-	{ "dry-run", OPT_DRY_RUN, NULL, 0,
-	  "Perform a dry run (don't actually load and attach BPF programs)" },
 	{},
 };
 
@@ -447,16 +458,23 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'S':
 		env.emit_success_stacks = true;
 		break;
-	case 'K':
-		if (env.attach_mode == ATTACH_FENTRY) {
-			fprintf(stderr, "Can't specify both -K and -F, pick one.\n");
+	case 'M':
+		if (env.attach_mode != ATTACH_DEFAULT) {
+			fprintf(stderr, "Can't specify -M, -K or -F simultaneously, pick one.\n");
 			return -EINVAL;
 		}
-		env.attach_mode = ATTACH_KPROBE;
+		env.attach_mode = ATTACH_KPROBE_MULTI;
+		break;
+	case 'K':
+		if (env.attach_mode != ATTACH_DEFAULT) {
+			fprintf(stderr, "Can't specify -M, -K or -F simultaneously, pick one.\n");
+			return -EINVAL;
+		}
+		env.attach_mode = ATTACH_KPROBE_SINGLE;
 		break;
 	case 'F':
-		if (env.attach_mode == ATTACH_KPROBE) {
-			fprintf(stderr, "Can't specify both -K and -F, pick one.\n");
+		if (env.attach_mode != ATTACH_DEFAULT) {
+			fprintf(stderr, "Can't specify -M, -K or -F simultaneously, pick one.\n");
 			return -EINVAL;
 		}
 		env.attach_mode = ATTACH_FENTRY;
@@ -1494,7 +1512,22 @@ int main(int argc, char **argv)
 	att_opts.debug = env.debug;
 	att_opts.debug_extra = env.debug_extra;
 	att_opts.dry_run = env.dry_run;
-	att_opts.use_kprobes = env.attach_mode == ATTACH_DEFAULT || env.attach_mode == ATTACH_KPROBE;
+	switch (env.attach_mode) {
+	case ATTACH_DEFAULT:
+	case ATTACH_KPROBE_MULTI:
+		att_opts.attach_mode = MASS_ATTACH_KPROBE;
+		break;
+	case ATTACH_KPROBE_SINGLE:
+		att_opts.attach_mode = MASS_ATTACH_KPROBE_SINGLE;
+		break;
+	case ATTACH_FENTRY:
+		att_opts.attach_mode = MASS_ATTACH_FENTRY;
+		break;
+	default:
+		fprintf(stderr, "Unrecognized attach mode: %d.\n", env.attach_mode);
+		err = -EINVAL;
+		goto cleanup;
+	}
 	att_opts.func_filter = func_filter;
 	att = mass_attacher__new(skel, &att_opts);
 	if (!att)

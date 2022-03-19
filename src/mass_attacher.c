@@ -85,6 +85,8 @@ struct mass_attacher {
 	struct ksyms *ksyms;
 	struct btf *vmlinux_btf;
 	struct SKEL_NAME *skel;
+	struct bpf_link *kentry_multi_link;
+	struct bpf_link *kexit_multi_link;
 
 	struct bpf_program *fentries[MAX_FUNC_ARG_CNT + 1];
 	struct bpf_program *fexits[MAX_FUNC_ARG_CNT + 1];
@@ -93,7 +95,10 @@ struct mass_attacher {
 	size_t fentries_insn_cnts[MAX_FUNC_ARG_CNT + 1];
 	size_t fexits_insn_cnts[MAX_FUNC_ARG_CNT + 1];
 
+	enum mass_attacher_mode attach_mode;
 	bool use_fentries;
+	bool use_kprobe_multi;
+
 	bool verbose;
 	bool debug;
 	bool debug_extra;
@@ -153,7 +158,8 @@ struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_att
 	if (att->debug)
 		att->verbose = true;
 	att->dry_run = opts->dry_run;
-	att->use_fentries = !opts->use_kprobes;
+	att->attach_mode = opts->attach_mode;
+	att->use_fentries = opts->attach_mode == MASS_ATTACH_FENTRY;
 	att->func_filter = opts->func_filter;
 
 	for (i = 0; i < ARRAY_SIZE(enforced_deny_globs); i++) {
@@ -182,6 +188,8 @@ void mass_attacher__free(struct mass_attacher *att)
 	ksyms__free(att->ksyms);
 	btf__free(att->vmlinux_btf);
 
+	bpf_link__destroy(att->kentry_multi_link);
+	bpf_link__destroy(att->kexit_multi_link);
 	for (i = 0; i < att->func_cnt; i++) {
 		struct mass_attacher_func_info *fi = &att->func_infos[i];
 
@@ -332,6 +340,9 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		return err;
 	}
 
+	att->use_kprobe_multi = !att->use_fentries && att->has_kprobe_multi
+				&& att->attach_mode != MASS_ATTACH_KPROBE_SINGLE;
+
 	if (att->use_fentries && !att->has_fexit_sleep_fix) {
 		for (i = 0; i < ARRAY_SIZE(sleepable_deny_globs); i++) {
 			err = mass_attacher__deny_glob(att, sleepable_deny_globs[i]);
@@ -431,6 +442,10 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		for (i = 0; i <= MAX_FUNC_ARG_CNT; i++) {
 			bpf_program__set_autoload(att->fentries[i], false);
 			bpf_program__set_autoload(att->fexits[i], false);
+		}
+		if (att->use_kprobe_multi) {
+			bpf_program__set_expected_attach_type(att->skel->progs.kentry, BPF_TRACE_KPROBE_MULTI);
+			bpf_program__set_expected_attach_type(att->skel->progs.kexit, BPF_TRACE_KPROBE_MULTI);
 		}
 	}
 
@@ -778,7 +793,20 @@ static int clone_prog(const struct bpf_program *prog, int attach_btf_id)
 int mass_attacher__attach(struct mass_attacher *att)
 {
 	LIBBPF_OPTS(bpf_kprobe_opts, kprobe_opts);
+	unsigned long *addrs = NULL;
+	const char **syms = NULL;
+	__u64 *cookies = NULL;
 	int i, err;
+
+	if (att->use_kprobe_multi) {
+		addrs = calloc(att->func_cnt, sizeof(*addrs));
+		cookies = calloc(att->func_cnt, sizeof(*cookies));
+		syms = calloc(att->func_cnt, sizeof(*syms));
+		if (!addrs || !cookies || !syms) {
+			err = -ENOMEM;
+			goto err_out;
+		}
+	}
 
 	for (i = 0; i < att->func_cnt; i++) {
 		struct mass_attacher_func_info *finfo = &att->func_infos[i];
@@ -796,7 +824,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 			if (err < 0) {
 				fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
 					prog_fd, i + 1, func_name, func_addr, -errno);
-				return err;
+				goto err_out;
 			}
 			att->func_infos[i].fentry_link_fd = err;
 
@@ -805,10 +833,17 @@ int mass_attacher__attach(struct mass_attacher *att)
 			if (err < 0) {
 				fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
 					prog_fd, i + 1, func_name, func_addr, -errno);
-				return err;
+				goto err_out;
 			}
 			att->func_infos[i].fexit_link_fd = err;
 		} else {
+			if (att->use_kprobe_multi) {
+				addrs[i] = func_addr;
+				cookies[i] = i;
+				syms[i] = func_name;
+				goto skip_attach;
+			}
+
 			kprobe_opts.retprobe = false;
 			if (att->has_bpf_cookie)
 				kprobe_opts.bpf_cookie = i;
@@ -818,7 +853,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 			if (err) {
 				fprintf(stderr, "Failed to attach KPROBE prog for func #%d (%s) at addr %lx: %d\n",
 					i + 1, func_name, func_addr, err);
-				return err;
+				goto err_out;
 			}
 
 			kprobe_opts.retprobe = true;
@@ -830,7 +865,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 			if (err) {
 				fprintf(stderr, "Failed to attach KRETPROBE prog for func #%d (%s) at addr %lx: %d\n",
 					i + 1, func_name, func_addr, err);
-				return err;
+				goto err_out;
 			}
 		}
 
@@ -845,12 +880,55 @@ skip_attach:
 		}
 	}
 
+	if (!att->dry_run && att->use_kprobe_multi) {
+		LIBBPF_OPTS(bpf_kprobe_multi_opts, multi_opts,
+			/* currently .addrs doesn't let attaching to notrace
+			 * functions and thus is more restrictibe. We'll need
+			 * to figure out a way to determine notrace functions
+			 * and filter them out before we can start using
+			 * .addrs
+			 */
+			/*.addrs = addrs,*/
+			.syms = syms,
+			.cookies = cookies,
+			.cnt = att->func_cnt,
+		);
+
+		multi_opts.retprobe = false;
+		att->kentry_multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kentry,
+									       NULL, &multi_opts);
+		if (!att->kentry_multi_link) {
+			err = -errno;
+			fprintf(stderr, "Failed to multi-attach KPROBE.MULTI prog to %d functions: %d\n",
+				att->func_cnt, err);
+			goto err_out;
+		}
+
+		multi_opts.retprobe = true;
+		att->kexit_multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kexit,
+									      NULL, &multi_opts);
+		if (!att->kexit_multi_link) {
+			err = -errno;
+			fprintf(stderr, "Failed to multi-attach KRETPROBE.MULTI prog to %d functions: %d\n",
+				att->func_cnt, err);
+			goto err_out;
+		}
+	}
+
 	if (att->verbose) {
 		printf("Total %d kernel functions attached%s successfully!\n",
 			att->func_cnt, att->dry_run ? " (dry run)" : "");
 	}
 
+	free(cookies);
+	free(addrs);
+	free(syms);
 	return 0;
+err_out:
+	free(cookies);
+	free(addrs);
+	free(syms);
+	return err;
 }
 
 void mass_attacher__activate(struct mass_attacher *att)

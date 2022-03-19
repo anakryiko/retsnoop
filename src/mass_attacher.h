@@ -31,13 +31,19 @@ struct mass_attacher_func_info {
 	int fexit_link_fd;
 };
 
+enum mass_attacher_mode {
+	MASS_ATTACH_KPROBE, /* prefer multi, fallback to single */
+	MASS_ATTACH_KPROBE_SINGLE, /* enforce single */
+	MASS_ATTACH_FENTRY,
+};
+
 struct mass_attacher_opts {
+	enum mass_attacher_mode attach_mode;
 	int max_func_cnt;
 	int max_fileno_rlimit;
 	bool verbose;
 	bool debug;
 	bool debug_extra;
-	bool use_kprobes;
 	bool dry_run;
 	func_filter_fn func_filter;
 };
