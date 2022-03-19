@@ -111,6 +111,7 @@ static void fail_bpf_bad_map(long arg)
 	int max_entries = 1;
 	int map_flags = 0, lookup_flags = 0;
 	void *key_ptr = &key_size, *val_ptr = &val_size;
+	LIBBPF_OPTS(bpf_map_create_opts, map_opts);
 	bool do_lookup = false;
 
 	switch (arg) {
@@ -158,7 +159,9 @@ static void fail_bpf_bad_map(long arg)
 		break;
 	}
 
-	fd = bpf_create_map(map_type, key_size, val_size, max_entries, map_flags);
+	map_opts.map_flags = map_flags;
+	fd = bpf_map_create(map_type, "simfail_map", key_size, val_size,
+			    max_entries, &map_opts);
 	if (do_lookup)
 		bpf_map_lookup_elem_flags(fd, key_ptr, val_ptr, lookup_flags);
 	close(fd);

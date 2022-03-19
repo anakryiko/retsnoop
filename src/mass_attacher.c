@@ -375,8 +375,8 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		return -EINVAL;
 	}
 
-	n = btf__get_nr_types(att->vmlinux_btf);
-	for (i = 1; i <= n; i++) {
+	n = btf__type_cnt(att->vmlinux_btf);
+	for (i = 1; i < n; i++) {
 		const struct btf_type *t = btf__type_by_id(att->vmlinux_btf, i);
 		const char *func_name;
 
@@ -744,20 +744,18 @@ int mass_attacher__load(struct mass_attacher *att)
 
 static int clone_prog(const struct bpf_program *prog, int attach_btf_id)
 {
-	struct bpf_load_program_attr attr;
+	LIBBPF_OPTS(bpf_prog_load_opts, opts,
+		.expected_attach_type = bpf_program__get_expected_attach_type(prog),
+		.attach_btf_id = attach_btf_id,
+	);
 	int fd;
 
-	memset(&attr, 0, sizeof(attr));
-
-	attr.prog_type = bpf_program__get_type(prog);
-	attr.expected_attach_type = bpf_program__get_expected_attach_type(prog);
-	attr.name = bpf_program__name(prog);
-	attr.insns = bpf_program__insns(prog);
-	attr.insns_cnt = bpf_program__insn_cnt(prog);
-	attr.license = "Dual BSD/GPL";
-	attr.attach_btf_id = attach_btf_id;
-
-	fd = bpf_load_program_xattr(&attr, NULL, 0);
+	fd = bpf_prog_load(bpf_program__type(prog),
+			   bpf_program__name(prog),
+			   "Dual BSD/GPL",
+			   bpf_program__insns(prog),
+			   bpf_program__insn_cnt(prog),
+			   &opts);
 	if (fd < 0)
 		return -errno;
 

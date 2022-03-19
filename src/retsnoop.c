@@ -1383,6 +1383,8 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
+	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
+
 	/* determine mapping from bpf_ktime_get_ns() to real clock */
 	calibrate_ktime();
 
@@ -1648,13 +1650,9 @@ int main(int argc, char **argv)
 			goto cleanup;
 		}
 	} else {
-		struct perf_buffer_opts pb_opts = {
-			.sample_cb = handle_event_pb,
-			.ctx = &env.ctx,
-		};
-
 		pb = perf_buffer__new(bpf_map__fd(skel->maps.rb),
-				      env.perfbuf_percpu_sz / page_size, &pb_opts);
+				      env.perfbuf_percpu_sz / page_size,
+				      handle_event_pb, NULL, &env.ctx, NULL);
 		err = libbpf_get_error(pb);
 		if (err) {
 			fprintf(stderr, "Failed to create perf buffer: %d\n", err);
