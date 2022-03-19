@@ -183,6 +183,15 @@ static const struct preset presets[] = {
 	{"perf", perf_entry_globs, perf_allow_globs, perf_deny_globs},
 };
 
+static inline __u64 now_ns(void)
+{
+	struct timespec t;
+
+	clock_gettime(CLOCK_MONOTONIC, &t);
+
+	return (__u64)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+
 static int append_str(char ***strs, int *cnt, const char *str)
 {
 	void *tmp;
@@ -249,7 +258,8 @@ static int append_compile_unit(struct ctx *ctx, char ***strs, int *cnt, const ch
 	return err;
 }
 
-static int process_cu_globs() {
+static int process_cu_globs()
+{
 	int err = 0;
 	int i;
 
@@ -1337,6 +1347,7 @@ int main(int argc, char **argv)
 	int *lbr_perf_fds = NULL;
 	char vmlinux_path[1024] = {};
 	int err, i, j, n;
+	__u64 ts1, ts2;
 
 	if (setvbuf(stdout, NULL, _IOLBF, BUFSIZ))
 		fprintf(stderr, "Failed to set output mode to line-buffered!\n");
@@ -1628,9 +1639,13 @@ int main(int argc, char **argv)
 		}
 	}
 
+	ts1 = now_ns();
 	err = mass_attacher__attach(att);
 	if (err)
 		goto cleanup;
+	ts2 = now_ns();
+	if (env.verbose)
+		printf("Successfully attached in %ld ms.\n", (long)((ts2 - ts1) / 1000000));
 
 	if (env.dry_run) {
 		if (env.verbose)
@@ -1687,7 +1702,8 @@ int main(int argc, char **argv)
 	}
 
 cleanup:
-	printf("Detaching, be patient...\n");
+	printf("\nDetaching... ");
+	ts1 = now_ns();
 cleanup_silent:
 	mass_attacher__free(att);
 
@@ -1719,6 +1735,9 @@ cleanup_silent:
 
 	free(env.allow_pids);
 	free(env.deny_pids);
+
+	ts2 = now_ns();
+	printf("DONE in %ld ms.\n", (long)((ts2 - ts1) / 1000000));
 
 	return -err;
 }
