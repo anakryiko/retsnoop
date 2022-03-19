@@ -1260,9 +1260,15 @@ static int detect_kernel_features(void)
 	if (env.debug) {
 		printf("Feature detection results:\n"
 		       "\tBPF ringbuf map supported: %s\n"
-		       "\tbpf_get_branch_snapshot() supported: %s\n",
+		       "\tbpf_get_func_ip() supported: %s\n"
+		       "\tbpf_get_branch_snapshot() supported: %s\n"
+		       "\tBPF cookie supported: %s\n"
+		       "\tmulti-attach kprobe supported: %s\n",
 		       skel->bss->has_ringbuf ? "yes" : "no",
-		       skel->bss->has_branch_snapshot ? "yes" : "no");
+		       skel->bss->has_bpf_get_func_ip ? "yes" : "no",
+		       skel->bss->has_branch_snapshot ? "yes" : "no",
+		       skel->bss->has_bpf_cookie ? "yes" : "no",
+		       skel->bss->has_kprobe_multi ? "yes" : "no");
 	}
 
 	env.has_ringbuf = skel->bss->has_ringbuf;

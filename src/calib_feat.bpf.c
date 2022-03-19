@@ -18,6 +18,8 @@ bool has_fexit_sleep_fix = false;
 bool has_fentry_protection = false;
 bool has_branch_snapshot = false;
 bool has_ringbuf = false;
+bool has_bpf_cookie = false;
+bool has_kprobe_multi = false;
 
 SEC("kprobe/hrtimer_start_range_ns")
 int calib_entry(struct pt_regs *ctx)
@@ -60,6 +62,16 @@ int calib_entry(struct pt_regs *ctx)
 	 * Added in: 457f44363a88 ("bpf: Implement BPF ring buffer and verifier support for it")
 	 */
 	has_ringbuf = bpf_core_enum_value_exists(enum bpf_map_type, BPF_MAP_TYPE_RINGBUF);
+
+	/* Detect if BPF cookie is supported for kprobes.
+	 * Added in: 7adfc6c9b315 ("bpf: Add bpf_get_attach_cookie() BPF helper to access bpf_cookie value")
+	 */
+	has_bpf_cookie = bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_get_attach_cookie);
+
+	/* Detect if multi-attach kprobes are supported.
+	 * Added in: 0dcac2725406 ("bpf: Add multi kprobe link")
+	 */
+	has_kprobe_multi = bpf_core_enum_value_exists(enum bpf_attach_type, BPF_TRACE_KPROBE_MULTI);
 
 	return 0;
 }

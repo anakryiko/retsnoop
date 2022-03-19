@@ -106,6 +106,8 @@ struct mass_attacher {
 	bool has_bpf_get_func_ip;
 	bool has_fexit_sleep_fix;
 	bool has_fentry_protection;
+	bool has_bpf_cookie;
+	bool has_kprobe_multi;
 
 	struct mass_attacher_func_info *func_infos;
 	int func_cnt;
@@ -483,17 +485,17 @@ static int calibrate_features(struct mass_attacher *att)
 	att->has_bpf_get_func_ip = calib_skel->bss->has_bpf_get_func_ip;
 	att->has_fexit_sleep_fix = calib_skel->bss->has_fexit_sleep_fix;
 	att->has_fentry_protection = calib_skel->bss->has_fentry_protection;
+	att->has_bpf_cookie = calib_skel->bss->has_bpf_cookie;
+	att->has_kprobe_multi = calib_skel->bss->has_kprobe_multi;
 
 	if (att->debug) {
 		printf("Feature calibration results:\n"
 		       "\tkretprobe IP offset: %d\n"
 		       "\tfexit sleep fix: %s\n"
-		       "\tfentry re-entry protection: %s\n"
-		       "\tbpf_get_func_ip() supported: %s\n",
+		       "\tfentry re-entry protection: %s\n",
 		       att->kret_ip_off,
 		       att->has_fexit_sleep_fix ? "yes" : "no",
-		       att->has_fentry_protection ? "yes" : "no",
-		       att->has_bpf_get_func_ip ? "yes" : "no");
+		       att->has_fentry_protection ? "yes" : "no");
 	}
 
 	calib_feat_bpf__destroy(calib_skel);
