@@ -346,6 +346,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	att->skel->rodata->kret_ip_off = att->kret_ip_off;
 	att->skel->rodata->has_fentry_protection = att->has_fentry_protection;
 	att->skel->rodata->has_bpf_get_func_ip = att->has_bpf_get_func_ip;
+	att->skel->rodata->has_bpf_cookie = att->has_bpf_cookie;
 
 	/* Load names of possible kprobes */
 	err = load_available_kprobes(att);
@@ -449,8 +450,11 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		}
 	}
 
-	bpf_map__set_max_entries(att->skel->maps.ip_to_id, att->func_cnt);
-
+	/* we don't use ip_to_id map if using kprobes and BPF cookie is supported */
+	if (att->use_fentries || !att->has_bpf_cookie)
+		bpf_map__set_max_entries(att->skel->maps.ip_to_id, att->func_cnt);
+	else
+		bpf_map__set_max_entries(att->skel->maps.ip_to_id, 1);
 	return 0;
 }
 
@@ -716,13 +720,20 @@ int mass_attacher__load(struct mass_attacher *att)
 		const char *func_name = att->func_infos[i].name;
 		long func_addr = att->func_infos[i].addr;
 
-		map_fd = bpf_map__fd(att->skel->maps.ip_to_id);
-		err = bpf_map_update_elem(map_fd, &func_addr, &i, 0);
-		if (err) {
-			err = -errno;
-			fprintf(stderr, "Failed to add 0x%lx -> '%s' lookup entry to BPF map: %d\n",
-				func_addr, func_name, err);
-			return err;
+		/* fentry/fexit doesn't support BPF cookies yet, but if we are
+		 * using kprobes and BPF cookies are supported, we utilize it
+		 * to pass func ID directly, eliminating the need for ip_to_id
+		 * map and extra lookups at runtime
+		 */
+		if (att->use_fentries || !att->has_bpf_cookie) {
+			map_fd = bpf_map__fd(att->skel->maps.ip_to_id);
+			err = bpf_map_update_elem(map_fd, &func_addr, &i, 0);
+			if (err) {
+				err = -errno;
+				fprintf(stderr, "Failed to add 0x%lx -> '%s' lookup entry to BPF map: %d\n",
+					func_addr, func_name, err);
+				return err;
+			}
 		}
 
 		if (att->use_fentries) {
@@ -766,6 +777,7 @@ static int clone_prog(const struct bpf_program *prog, int attach_btf_id)
 
 int mass_attacher__attach(struct mass_attacher *att)
 {
+	LIBBPF_OPTS(bpf_kprobe_opts, kprobe_opts);
 	int i, err;
 
 	for (i = 0; i < att->func_cnt; i++) {
@@ -797,7 +809,11 @@ int mass_attacher__attach(struct mass_attacher *att)
 			}
 			att->func_infos[i].fexit_link_fd = err;
 		} else {
-			finfo->kentry_link = bpf_program__attach_kprobe(att->skel->progs.kentry, false, func_name);
+			kprobe_opts.retprobe = false;
+			if (att->has_bpf_cookie)
+				kprobe_opts.bpf_cookie = i;
+			finfo->kentry_link = bpf_program__attach_kprobe_opts(att->skel->progs.kentry,
+									     func_name, &kprobe_opts);
 			err = libbpf_get_error(finfo->kentry_link);
 			if (err) {
 				fprintf(stderr, "Failed to attach KPROBE prog for func #%d (%s) at addr %lx: %d\n",
@@ -805,7 +821,11 @@ int mass_attacher__attach(struct mass_attacher *att)
 				return err;
 			}
 
-			finfo->kexit_link = bpf_program__attach_kprobe(att->skel->progs.kexit, true, func_name);
+			kprobe_opts.retprobe = true;
+			if (att->has_bpf_cookie)
+				kprobe_opts.bpf_cookie = i;
+			finfo->kexit_link = bpf_program__attach_kprobe_opts(att->skel->progs.kexit,
+									    func_name, &kprobe_opts);
 			err = libbpf_get_error(finfo->kexit_link);
 			if (err) {
 				fprintf(stderr, "Failed to attach KRETPROBE prog for func #%d (%s) at addr %lx: %d\n",

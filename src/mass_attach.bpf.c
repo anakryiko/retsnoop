@@ -5,13 +5,6 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-#undef bpf_printk
-#define bpf_printk(fmt, ...)						\
-({									\
-	static const char ___fmt[] = fmt;				\
-	bpf_trace_printk(___fmt, sizeof(___fmt), ##__VA_ARGS__);	\
-})
-
 /* these two are defined by custom BPF code outside of mass_attacher */
 extern int handle_func_entry(void *ctx, u32 func_id, u64 func_ip);
 extern int handle_func_exit(void *ctx, u32 func_id, u64 func_ip, u64 ret);
@@ -31,6 +24,7 @@ bool ready = false;
 /* feature detection/calibration inputs */
 const volatile int kret_ip_off = 0;
 const volatile bool has_bpf_get_func_ip = false;
+const volatile bool has_bpf_cookie = false;
 
 /* Kernel protects from the same BPF program from refiring on the same CPU.
  * Unfortunately, it's not very useful for us right now, because each attached
@@ -92,8 +86,8 @@ SEC("kprobe/xxx")
 int kentry(struct pt_regs *ctx)
 {
 	const char *name;
-	u32 *id_ptr;
 	long ip;
+	u32 id;
 
 	if (!ready)
 		return 0;
@@ -103,13 +97,21 @@ int kentry(struct pt_regs *ctx)
 	else
 		ip = ctx->ip - 1;
 
-	id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);
-	if (!id_ptr) {
-		bpf_printk("KENTRY UNRECOGNIZED IP %lx", ip);
-		return 0;
+	if (has_bpf_cookie) {
+		id = bpf_get_attach_cookie(ctx);
+	} else {
+		u32 *id_ptr;
+
+		id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);
+		if (!id_ptr) {
+			bpf_printk("KENTRY UNRECOGNIZED IP %lx", ip);
+			return 0;
+		}
+
+		id = *id_ptr;
 	}
 
-	handle_func_entry(ctx, *id_ptr, ip);
+	handle_func_entry(ctx, id, ip);
 	return 0;
 }
 
@@ -117,7 +119,7 @@ SEC("kretprobe/xxx")
 int kexit(struct pt_regs *ctx)
 {
 	const char *name;
-	u32 *id_ptr, cpu;
+	u32 id, cpu;
 	long ip;
 
 	if (!ready)
@@ -127,13 +129,22 @@ int kexit(struct pt_regs *ctx)
 	capture_lbrs(cpu);
 
 	ip = get_kret_func_ip(ctx);
-	id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);
-	if (!id_ptr) {
-		bpf_printk("KEXIT UNRECOGNIZED IP %lx", ip);
-		return 0;
+
+	if (has_bpf_cookie) {
+		id = bpf_get_attach_cookie(ctx);
+	} else {
+		u32 *id_ptr;
+
+		id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);
+		if (!id_ptr) {
+			bpf_printk("KEXIT UNRECOGNIZED IP %lx", ip);
+			return 0;
+		}
+
+		id = *id_ptr;
 	}
 
-	handle_func_exit(ctx, *id_ptr, ip, PT_REGS_RC(ctx));
+	handle_func_exit(ctx, id, ip, PT_REGS_RC(ctx));
 
 	return 0;
 }
