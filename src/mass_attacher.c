@@ -51,8 +51,15 @@ static const char *enforced_deny_globs[] = {
 	"migrate_disable",
 	"rcu_read_lock*",
 	"rcu_read_unlock*",
+	"bpf_spin_lock",
+	"bpf_spin_unlock",
 	"__bpf_prog_enter*",
 	"__bpf_prog_exit*",
+	"__bpf_tramp_enter*",
+	"__bpf_tramp_exit*",
+	"update_prog_stats",
+	"inc_misses_counter",
+	"bpf_prog_start_time",
 };
 
 /* For older kernels with fexit crashing on long-sleeping functions,
@@ -839,8 +846,8 @@ int mass_attacher__attach(struct mass_attacher *att)
 		} else {
 			if (att->use_kprobe_multi) {
 				addrs[i] = func_addr;
-				cookies[i] = i;
 				syms[i] = func_name;
+				cookies[i] = i;
 				goto skip_attach;
 			}
 
@@ -882,37 +889,48 @@ skip_attach:
 
 	if (!att->dry_run && att->use_kprobe_multi) {
 		LIBBPF_OPTS(bpf_kprobe_multi_opts, multi_opts,
-			/* currently .addrs doesn't let attaching to notrace
-			 * functions and thus is more restrictibe. We'll need
-			 * to figure out a way to determine notrace functions
-			 * and filter them out before we can start using
-			 * .addrs
-			 */
-			/*.addrs = addrs,*/
-			.syms = syms,
+			.addrs = addrs,
 			.cookies = cookies,
 			.cnt = att->func_cnt,
 		);
+		struct bpf_link *multi_link;
 
+		/* retsnoop can't currently filter out notrace function as
+		 * kernel doesn't report them and doesn't list them in kprobe
+		 * blacklist. Multi-attach kprobe is strict about this when
+		 * using .addrs, but is less string when using .syms.
+		 * .addrs results in much faster attachment, so we try that
+		 * first, but if it fails, we fallback to .syms-based
+		 * attachment, which is still much faster than one-by-one
+		 * kprobe.
+		 */
 		multi_opts.retprobe = false;
-		att->kentry_multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kentry,
-									       NULL, &multi_opts);
-		if (!att->kentry_multi_link) {
+		multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kentry,
+								   NULL, &multi_opts);
+		if (!multi_link) {
+			multi_opts.addrs = NULL;
+			multi_opts.syms = syms;
+			multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kentry,
+									   NULL, &multi_opts);
+		}
+		if (!multi_link) {
 			err = -errno;
 			fprintf(stderr, "Failed to multi-attach KPROBE.MULTI prog to %d functions: %d\n",
 				att->func_cnt, err);
 			goto err_out;
 		}
+		att->kentry_multi_link = multi_link;
 
 		multi_opts.retprobe = true;
-		att->kexit_multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kexit,
-									      NULL, &multi_opts);
-		if (!att->kexit_multi_link) {
+		multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kexit,
+								   NULL, &multi_opts);
+		if (!multi_link) {
 			err = -errno;
 			fprintf(stderr, "Failed to multi-attach KRETPROBE.MULTI prog to %d functions: %d\n",
 				att->func_cnt, err);
 			goto err_out;
 		}
+		att->kexit_multi_link = multi_link;
 	}
 
 	if (att->verbose) {
