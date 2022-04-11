@@ -16,6 +16,11 @@
 
 #define MAX_LBR_ENTRIES 32
 
+/* Linux allows error from -1 up to -4095, even though most of the values are
+ * not used
+ */
+#define MAX_ERR_CNT 4096
+
 struct call_stack {
 	unsigned short func_ids[MAX_FSTACK_DEPTH];
 	long func_res[MAX_FSTACK_DEPTH];

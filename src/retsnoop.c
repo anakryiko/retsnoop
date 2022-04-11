@@ -81,12 +81,18 @@ static struct env {
 
 	int *allow_pids;
 	int *deny_pids;
-	char **allow_comms;
-	char **deny_comms;
 	int allow_pid_cnt;
 	int deny_pid_cnt;
+
+	char **allow_comms;
+	char **deny_comms;
 	int allow_comm_cnt;
 	int deny_comm_cnt;
+
+	int allow_error_cnt;
+	bool has_error_filter;
+	__u64 allow_error_mask[MAX_ERR_CNT / 64];
+	__u64 deny_error_mask[MAX_ERR_CNT / 64];
 
 	struct ctx ctx;
 	int ringbuf_sz;
@@ -156,6 +162,8 @@ static const struct argp_option opts[] = {
 	  "Only emit stacks that took at least a given amount of milliseconds" },
 	{ "success-stacks", 'S', NULL, 0,
 	  "Emit any stack, successful or not" },
+	{ "allow-errors", 'x', "ERROR", 0, "Record stacks only with specified errors" },
+	{ "deny-errors", 'X', "ERROR", 0, "Ignore stacks that have specified errors" },
 
 	/* Misc settings */
 	{ "lbr", OPT_LBR, "SPEC", OPTION_ARG_OPTIONAL,
@@ -321,6 +329,84 @@ static int append_pid(int **pids, int *cnt, const char *arg)
 	return 0;
 }
 
+static const char *err_map[] = {
+	[0] = "NULL",
+	[1] = "EPERM", [2] = "ENOENT", [3] = "ESRCH",
+	[4] = "EINTR", [5] = "EIO", [6] = "ENXIO", [7] = "E2BIG",
+	[8] = "ENOEXEC", [9] = "EBADF", [10] = "ECHILD", [11] = "EAGAIN",
+	[12] = "ENOMEM", [13] = "EACCES", [14] = "EFAULT", [15] = "ENOTBLK",
+	[16] = "EBUSY", [17] = "EEXIST", [18] = "EXDEV", [19] = "ENODEV",
+	[20] = "ENOTDIR", [21] = "EISDIR", [22] = "EINVAL", [23] = "ENFILE",
+	[24] = "EMFILE", [25] = "ENOTTY", [26] = "ETXTBSY", [27] = "EFBIG",
+	[28] = "ENOSPC", [29] = "ESPIPE", [30] = "EROFS", [31] = "EMLINK",
+	[32] = "EPIPE", [33] = "EDOM", [34] = "ERANGE", [35] = "EDEADLK",
+	[36] = "ENAMETOOLONG", [37] = "ENOLCK", [38] = "ENOSYS", [39] = "ENOTEMPTY",
+	[40] = "ELOOP", [42] = "ENOMSG", [43] = "EIDRM", [44] = "ECHRNG",
+	[45] = "EL2NSYNC", [46] = "EL3HLT", [47] = "EL3RST", [48] = "ELNRNG",
+	[49] = "EUNATCH", [50] = "ENOCSI", [51] = "EL2HLT", [52] = "EBADE",
+	[53] = "EBADR", [54] = "EXFULL", [55] = "ENOANO", [56] = "EBADRQC",
+	[57] = "EBADSLT", [59] = "EBFONT", [60] = "ENOSTR", [61] = "ENODATA",
+	[62] = "ETIME", [63] = "ENOSR", [64] = "ENONET", [65] = "ENOPKG",
+	[66] = "EREMOTE", [67] = "ENOLINK", [68] = "EADV", [69] = "ESRMNT",
+	[70] = "ECOMM", [71] = "EPROTO", [72] = "EMULTIHOP", [73] = "EDOTDOT",
+	[74] = "EBADMSG", [75] = "EOVERFLOW", [76] = "ENOTUNIQ", [77] = "EBADFD",
+	[78] = "EREMCHG", [79] = "ELIBACC", [80] = "ELIBBAD", [81] = "ELIBSCN",
+	[82] = "ELIBMAX", [83] = "ELIBEXEC", [84] = "EILSEQ", [85] = "ERESTART",
+	[86] = "ESTRPIPE", [87] = "EUSERS", [88] = "ENOTSOCK", [89] = "EDESTADDRREQ",
+	[90] = "EMSGSIZE", [91] = "EPROTOTYPE", [92] = "ENOPROTOOPT", [93] = "EPROTONOSUPPORT",
+	[94] = "ESOCKTNOSUPPORT", [95] = "EOPNOTSUPP", [96] = "EPFNOSUPPORT", [97] = "EAFNOSUPPORT",
+	[98] = "EADDRINUSE", [99] = "EADDRNOTAVAIL", [100] = "ENETDOWN", [101] = "ENETUNREACH",
+	[102] = "ENETRESET", [103] = "ECONNABORTED", [104] = "ECONNRESET", [105] = "ENOBUFS",
+	[106] = "EISCONN", [107] = "ENOTCONN", [108] = "ESHUTDOWN", [109] = "ETOOMANYREFS",
+	[110] = "ETIMEDOUT", [111] = "ECONNREFUSED", [112] = "EHOSTDOWN", [113] = "EHOSTUNREACH",
+	[114] = "EALREADY", [115] = "EINPROGRESS", [116] = "ESTALE", [117] = "EUCLEAN",
+	[118] = "ENOTNAM", [119] = "ENAVAIL", [120] = "EISNAM", [121] = "EREMOTEIO",
+	[122] = "EDQUOT", [123] = "ENOMEDIUM", [124] = "EMEDIUMTYPE", [125] = "ECANCELED",
+	[126] = "ENOKEY", [127] = "EKEYEXPIRED", [128] = "EKEYREVOKED", [129] = "EKEYREJECTED",
+	[130] = "EOWNERDEAD", [131] = "ENOTRECOVERABLE", [132] = "ERFKILL", [133] = "EHWPOISON",
+	[512] = "ERESTARTSYS", [513] = "ERESTARTNOINTR", [514] = "ERESTARTNOHAND", [515] = "ENOIOCTLCMD",
+	[516] = "ERESTART_RESTARTBLOCK", [517] = "EPROBE_DEFER", [518] = "EOPENSTALE", [519] = "ENOPARAM",
+	[521] = "EBADHANDLE", [522] = "ENOTSYNC", [523] = "EBADCOOKIE", [524] = "ENOTSUPP",
+	[525] = "ETOOSMALL", [526] = "ESERVERFAULT", [527] = "EBADTYPE", [528] = "EJUKEBOX",
+	[529] = "EIOCBQUEUED", [530] = "ERECALLCONFLICT",
+};
+
+static int str_to_err(const char *arg)
+{
+	int i;
+
+	/* doesn't matter if it's -Exxx or Exxx */
+	if (arg[0] == '-')
+		arg++;
+
+	for (i = 0; i < ARRAY_SIZE(err_map); i++) {
+		if (!err_map[i])
+			continue;
+
+		if (strcmp(arg, err_map[i]) != 0)
+			continue;
+
+		return i;
+	}
+
+	fprintf(stderr, "Unrecognized error '%s'\n", arg);
+	return -ENOENT;
+}
+
+static const char *err_to_str(long err) {
+
+	if (err < 0)
+		err = -err;
+	if (err < ARRAY_SIZE(err_map))
+		return err_map[err];
+	return NULL;
+}
+
+static void err_mask_set(__u64 *err_mask, int err_value)
+{
+	err_mask[err_value / 64] |= 1ULL << (err_value % 64);
+}
+
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
 	int i, j, err;
@@ -454,6 +540,31 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		err = append_pid(&env.deny_pids, &env.deny_pid_cnt, arg);
 		if (err)
 			return err;
+		break;
+	case 'x':
+		err = str_to_err(arg);
+		if (err < 0)
+			return err;
+		/* we start out with all errors allowed, but as soon as we get
+		 * the first allowed error specified, we need to reset
+		 * all the error to be not allowed by default
+		 */
+		if (env.allow_error_cnt == 0)
+			memset(env.allow_error_mask, 0, sizeof(env.allow_error_mask));
+		env.allow_error_cnt++;
+		env.has_error_filter = true;
+		err_mask_set(env.allow_error_mask, err);
+		break;
+	case 'X':
+		err = str_to_err(arg);
+		if (err < 0)
+			return err;
+		/* we don't need to do anything extra for error blacklist,
+		 * because we start with no errors blacklisted by default
+		 * anyways, which differs from the logic for error whitelist
+		 */
+		env.has_error_filter = true;
+		err_mask_set(env.deny_error_mask, err);
 		break;
 	case 'S':
 		env.emit_success_stacks = true;
@@ -648,6 +759,79 @@ struct fstack_item {
 	bool err_start;
 };
 
+static bool is_err_in_mask(__u64 *err_mask, int err)
+{
+	if (err < 0)
+		err = -err;
+	if (err >= MAX_ERR_CNT)
+		return false;
+	return (err_mask[err / 64] >> (err % 64)) & 1;
+}
+
+static bool should_report_stack(struct ctx *ctx, const struct call_stack *s)
+{
+	struct retsnoop_bpf *skel = ctx->skel;
+	int i, id, flags, res;
+	bool allowed = false;
+
+	if (!env.has_error_filter)
+		return true;
+
+	for (i = 0; i < s->max_depth; i++) {
+		id = s->func_ids[i];
+		flags = skel->bss->func_flags[id];
+
+		if (flags & FUNC_CANT_FAIL)
+			continue;
+
+		res = s->func_res[i];
+		if (flags & FUNC_NEEDS_SIGN_EXT)
+			res = (long)(int)res;
+
+		if (res == 0 && !(flags & FUNC_RET_PTR))
+			continue;
+
+		/* if error is blacklisted, reject immediately */
+		if (is_err_in_mask(env.deny_error_mask, res))
+			return false;
+		/* if error is whitelisted, mark as allowed; but we need to
+		 * still see if any other errors in the stack are blacklisted
+		 */
+		if (is_err_in_mask(env.allow_error_mask, res))
+			allowed = true;
+	}
+
+	/* no stitched together stack */
+	if (s->max_depth + 1 != s->saved_depth)
+		return allowed;
+
+	for (i = s->saved_depth - 1; i < s->saved_max_depth; i++) {
+		id = s->saved_ids[i];
+		flags = skel->bss->func_flags[id];
+
+		if (flags & FUNC_CANT_FAIL)
+			continue;
+
+		res = s->func_res[i];
+		if (flags & FUNC_NEEDS_SIGN_EXT)
+			res = (long)(int)res;
+
+		if (res == 0 && !(flags & FUNC_RET_PTR))
+			continue;
+
+		/* if error is blacklisted, reject immediately */
+		if (is_err_in_mask(env.deny_error_mask, res))
+			return false;
+		/* if error is whitelisted, mark as allowed; but we need to
+		 * still see if any other errors in the stack are blacklisted
+		 */
+		if (is_err_in_mask(env.allow_error_mask, res))
+			allowed = true;
+	}
+
+	return allowed;
+}
+
 static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct call_stack *s)
 {
 	const struct mass_attacher_func_info *finfo;
@@ -822,55 +1006,6 @@ static int filter_kstack(struct ctx *ctx, struct kstack_item *r, const struct ca
 	}
 
 	return p;
-}
-
-static const char *err_to_str(long err) {
-	static const char *err_names[] = {
-		[1] = "EPERM", [2] = "ENOENT", [3] = "ESRCH",
-		[4] = "EINTR", [5] = "EIO", [6] = "ENXIO", [7] = "E2BIG",
-		[8] = "ENOEXEC", [9] = "EBADF", [10] = "ECHILD", [11] = "EAGAIN",
-		[12] = "ENOMEM", [13] = "EACCES", [14] = "EFAULT", [15] = "ENOTBLK",
-		[16] = "EBUSY", [17] = "EEXIST", [18] = "EXDEV", [19] = "ENODEV",
-		[20] = "ENOTDIR", [21] = "EISDIR", [22] = "EINVAL", [23] = "ENFILE",
-		[24] = "EMFILE", [25] = "ENOTTY", [26] = "ETXTBSY", [27] = "EFBIG",
-		[28] = "ENOSPC", [29] = "ESPIPE", [30] = "EROFS", [31] = "EMLINK",
-		[32] = "EPIPE", [33] = "EDOM", [34] = "ERANGE", [35] = "EDEADLK",
-		[36] = "ENAMETOOLONG", [37] = "ENOLCK", [38] = "ENOSYS", [39] = "ENOTEMPTY",
-		[40] = "ELOOP", [42] = "ENOMSG", [43] = "EIDRM", [44] = "ECHRNG",
-		[45] = "EL2NSYNC", [46] = "EL3HLT", [47] = "EL3RST", [48] = "ELNRNG",
-		[49] = "EUNATCH", [50] = "ENOCSI", [51] = "EL2HLT", [52] = "EBADE",
-		[53] = "EBADR", [54] = "EXFULL", [55] = "ENOANO", [56] = "EBADRQC",
-		[57] = "EBADSLT", [59] = "EBFONT", [60] = "ENOSTR", [61] = "ENODATA",
-		[62] = "ETIME", [63] = "ENOSR", [64] = "ENONET", [65] = "ENOPKG",
-		[66] = "EREMOTE", [67] = "ENOLINK", [68] = "EADV", [69] = "ESRMNT",
-		[70] = "ECOMM", [71] = "EPROTO", [72] = "EMULTIHOP", [73] = "EDOTDOT",
-		[74] = "EBADMSG", [75] = "EOVERFLOW", [76] = "ENOTUNIQ", [77] = "EBADFD",
-		[78] = "EREMCHG", [79] = "ELIBACC", [80] = "ELIBBAD", [81] = "ELIBSCN",
-		[82] = "ELIBMAX", [83] = "ELIBEXEC", [84] = "EILSEQ", [85] = "ERESTART",
-		[86] = "ESTRPIPE", [87] = "EUSERS", [88] = "ENOTSOCK", [89] = "EDESTADDRREQ",
-		[90] = "EMSGSIZE", [91] = "EPROTOTYPE", [92] = "ENOPROTOOPT", [93] = "EPROTONOSUPPORT",
-		[94] = "ESOCKTNOSUPPORT", [95] = "EOPNOTSUPP", [96] = "EPFNOSUPPORT", [97] = "EAFNOSUPPORT",
-		[98] = "EADDRINUSE", [99] = "EADDRNOTAVAIL", [100] = "ENETDOWN", [101] = "ENETUNREACH",
-		[102] = "ENETRESET", [103] = "ECONNABORTED", [104] = "ECONNRESET", [105] = "ENOBUFS",
-		[106] = "EISCONN", [107] = "ENOTCONN", [108] = "ESHUTDOWN", [109] = "ETOOMANYREFS",
-		[110] = "ETIMEDOUT", [111] = "ECONNREFUSED", [112] = "EHOSTDOWN", [113] = "EHOSTUNREACH",
-		[114] = "EALREADY", [115] = "EINPROGRESS", [116] = "ESTALE", [117] = "EUCLEAN",
-		[118] = "ENOTNAM", [119] = "ENAVAIL", [120] = "EISNAM", [121] = "EREMOTEIO",
-		[122] = "EDQUOT", [123] = "ENOMEDIUM", [124] = "EMEDIUMTYPE", [125] = "ECANCELED",
-		[126] = "ENOKEY", [127] = "EKEYEXPIRED", [128] = "EKEYREVOKED", [129] = "EKEYREJECTED",
-		[130] = "EOWNERDEAD", [131] = "ENOTRECOVERABLE", [132] = "ERFKILL", [133] = "EHWPOISON",
-		[512] = "ERESTARTSYS", [513] = "ERESTARTNOINTR", [514] = "ERESTARTNOHAND", [515] = "ENOIOCTLCMD",
-		[516] = "ERESTART_RESTARTBLOCK", [517] = "EPROBE_DEFER", [518] = "EOPENSTALE", [519] = "ENOPARAM",
-		[521] = "EBADHANDLE", [522] = "ENOTSYNC", [523] = "EBADCOOKIE", [524] = "ENOTSUPP",
-		[525] = "ETOOSMALL", [526] = "ESERVERFAULT", [527] = "EBADTYPE", [528] = "EJUKEBOX",
-		[529] = "EIOCBQUEUED", [530] = "ERECALLCONFLICT",
-	};
-
-	if (err < 0)
-		err = -err;
-	if (err < ARRAY_SIZE(err_names))
-		return err_names[err];
-	return NULL;
 }
 
 static int detect_linux_src_loc(const char *path)
@@ -1048,6 +1183,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	char timestamp[64];
 
 	if (!s->is_err && !env.emit_success_stacks)
+		return 0;
+
+	if (s->is_err && env.has_error_filter && !should_report_stack(dctx, s))
 		return 0;
 
 	if (env.debug) {
@@ -1369,6 +1507,9 @@ int main(int argc, char **argv)
 
 	if (setvbuf(stdout, NULL, _IOLBF, BUFSIZ))
 		fprintf(stderr, "Failed to set output mode to line-buffered!\n");
+
+	/* set allowed error mask to all 1s (enabled by default) */
+	memset(env.allow_error_mask, 0xFF, sizeof(env.allow_error_mask));
 
 	/* Parse command line arguments */
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
