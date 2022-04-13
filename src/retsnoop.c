@@ -109,7 +109,7 @@ static struct env {
 	.stacks_map_sz = 1024,
 };
 
-const char *argp_program_version = "retsnoop v0.6";
+const char *argp_program_version = "retsnoop v0.7";
 const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
 "retsnoop tool shows kernel call stacks based on specified function filters.\n"
