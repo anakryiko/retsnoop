@@ -17,3 +17,7 @@ findshlibs = "0.10"
 rustc-test = "0.3"
 typed-arena = "2"
 object = { version = "0.27.1", default-features = false, features = ["read"]}
+
+[[bin]]
+name = "addr2line"
+path = "src/main.rs"
