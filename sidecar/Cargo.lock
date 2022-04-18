@@ -4,23 +4,6 @@ version = 3
 
 [[package]]
 name = "addr2line"
-version = "0.1.0"
-dependencies = [
- "addr2line 0.17.0",
- "backtrace",
- "clap",
- "fallible-iterator",
- "findshlibs",
- "gimli",
- "glob",
- "memmap",
- "object",
- "rustc-test",
- "typed-arena",
-]
-
-[[package]]
-name = "addr2line"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9ecd88a8c8378ca913a680cd98f0f13ac67383d35993f86c90a70e3f137816b"
@@ -71,7 +54,7 @@ version = "0.3.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "321629d8ba6513061f26707241fa9bc89524ff1cd7a915a97ef0c62c666ce1b6"
 dependencies = [
- "addr2line 0.17.0",
+ "addr2line",
  "cc",
  "cfg-if",
  "libc",
@@ -302,6 +285,24 @@ name = "semver-parser"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
+
+[[package]]
+name = "sidecar"
+version = "0.1.0"
+dependencies = [
+ "addr2line",
+ "backtrace",
+ "clap",
+ "fallible-iterator",
+ "findshlibs",
+ "gimli",
+ "glob",
+ "libc",
+ "memmap",
+ "object",
+ "rustc-test",
+ "typed-arena",
+]
 
 [[package]]
 name = "smallvec"

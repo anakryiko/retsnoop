@@ -1491,6 +1491,8 @@ static void sig_handler(int sig)
 	exiting = true;
 }
 
+extern void hello_world(void);
+
 int main(int argc, char **argv)
 {
 	long page_size = sysconf(_SC_PAGESIZE);
@@ -1504,6 +1506,9 @@ int main(int argc, char **argv)
 	char vmlinux_path[1024] = {};
 	int err, i, j, n;
 	__u64 ts1, ts2;
+
+	hello_world();
+	return 0;
 
 	if (setvbuf(stdout, NULL, _IOLBF, BUFSIZ))
 		fprintf(stderr, "Failed to set output mode to line-buffered!\n");

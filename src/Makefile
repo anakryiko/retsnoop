@@ -6,11 +6,12 @@ LLVM_STRIP ?= llvm-strip
 BPFTOOL ?= $(abspath ../tools/bpftool)
 LIBBPF_SRC := $(abspath ../libbpf/src)
 LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
+LIBSIDECAR_OBJ := ../sidecar/target/release/libsidecar.a
 # Use our own libbpf API headers and Linux UAPI headers distributed with
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
 INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi
-CFLAGS := -g -Wall -O0
+CFLAGS := -g -Wall -O2
 ARCH := $(shell uname -m | sed 's/x86_64/x86/')
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
@@ -56,7 +57,7 @@ $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPU
 	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1		      \
 		    OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@)		      \
 		    INCLUDEDIR= LIBDIR= UAPIDIR=			      \
-		    EXTRA_CFLAGS="-g -O0" \
+		    EXTRA_CFLAGS="-g -O2" \
 		    install
 
 # Build BPF object files
@@ -80,9 +81,14 @@ $(OUTPUT)/retsnoop.skel.h: $(OUTPUT)/mass_attach.bpf.o
 $(OUTPUT)/retsnoop.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 $(OUTPUT)/mass_attacher.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 
+$(LIBSIDECAR_OBJ): force
+	$(call msg,CARGO,$@)
+	$(Q)RUSTFLAGS='-C target-feature=+crt-static' \
+	    cargo build --manifest-path=../sidecar/Cargo.toml --release --lib
+
 ../sidecar/target/release/addr2line::
 	$(call msg,CARGO,addr2line)
-	$(Q)cargo build --manifest-path=../sidecar/Cargo.toml --release
+	$(Q)cargo build --manifest-path=../sidecar/Cargo.toml --release --bin addr2line
 
 $(OUTPUT)/addr2line.embed.o: ../sidecar/target/release/addr2line
 	$(call msg,LLVM_STRIP,$<)
@@ -107,9 +113,10 @@ retsnoop: $(addprefix $(OUTPUT)/,					\
 		      addr2line.o					\
 		      addr2line.embed.o					\
 		      mass_attacher.o)					\
+	  $(LIBSIDECAR_OBJ)						\
 	  $(LIBBPF_OBJ)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -o $@
+	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -lpthread -ldl -lm -o $@
 
 $(OUTPUT)/tests/simfail.o: $(OUTPUT)/tests/kprobe_bad_kfunc.skel.h	\
 			   $(OUTPUT)/tests/fentry_unsupp_func.skel.h	\
@@ -120,6 +127,9 @@ simfail: $(addprefix $(OUTPUT)/tests/,					\
 	  $(LIBBPF_OBJ)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -o $@
+
+.PHONY: force
+force:
 
 # delete failed targets
 .DELETE_ON_ERROR:
