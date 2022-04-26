@@ -95,7 +95,7 @@ int kentry(struct pt_regs *ctx)
 	if (has_bpf_get_func_ip)
 		ip = bpf_get_func_ip(ctx);
 	else
-		ip = ctx->ip - 1;
+		ip = PT_REGS_IP(ctx) - 1;
 
 	if (has_bpf_cookie) {
 		id = bpf_get_attach_cookie(ctx);
