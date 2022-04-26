@@ -11,7 +11,7 @@ LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
 # outdated
 INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi
 CFLAGS := -g -Wall -O0
-ARCH := $(shell uname -m | sed 's/x86_64/x86/')
+ARCH := $(shell uname -m | sed 's/x86_64/x86/g; s/aarch64/arm64/g')
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
 # to the includes list when compiling with `-target bpf` because otherwise some
