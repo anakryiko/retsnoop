@@ -23,7 +23,8 @@
 #include "mass_attacher.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
-#define MIN(x, y) ((x) < (y) ? (x): (y))
+#define min(x, y) ((x) < (y) ? (x): (y))
+#define max(x, y) ((x) < (y) ? (y): (x))
 
 struct ctx {
 	struct mass_attacher *att;
@@ -61,6 +62,7 @@ static struct env {
 	enum symb_mode symb_mode;
 	bool use_lbr;
 	long lbr_flags;
+	int lbr_max_cnt;
 	const char *vmlinux_path;
 	int pid;
 	int longer_than_ms;
@@ -119,7 +121,8 @@ const char argp_program_doc[] =
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
 #define OPT_LBR 1003
-#define OPT_DRY_RUN 1004
+#define OPT_LBR_MAX_CNT 1004
+#define OPT_DRY_RUN 1005
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
@@ -167,7 +170,14 @@ static const struct argp_option opts[] = {
 
 	/* Misc settings */
 	{ "lbr", OPT_LBR, "SPEC", OPTION_ARG_OPTIONAL,
-	  "Capture and print LBR entries" },
+	  "Capture and print LBR entries. You can also tune which LBR records are captured "
+	  "by specifying raw LBR flags or using their symbolic aliases: "
+	  "any, any_call, any_return, cond, call, ind_call, ind_jump, call_stack, "
+	  "abort_tx, in_tx, no_tx. "
+	  "See enum perf_branch_sample_type in perf_event UAPI (include/uapi/linux/perf_event.h). "
+	  "You can combine multiple of them by using --lbr argument multiple times." },
+	{ "lbr-max-count", OPT_LBR_MAX_CNT, "N", 0,
+	  "Limit number of printed LBRs to N" },
 	{ "kernel", 'k',
 	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
 	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
@@ -404,6 +414,48 @@ static void err_mask_set(__u64 *err_mask, int err_value)
 	err_mask[err_value / 64] |= 1ULL << (err_value % 64);
 }
 
+static int parse_lbr_arg(const char *arg)
+{
+	long flags, i;
+	static struct {
+		const char *alias;
+		long value;
+	} table[] = {
+		{"any", PERF_SAMPLE_BRANCH_ANY},/* any branch types */
+		{"any_call", PERF_SAMPLE_BRANCH_ANY_CALL},/* any call branch */
+		{"any_return", PERF_SAMPLE_BRANCH_ANY_RETURN},/* any return branch */
+		{"cond", PERF_SAMPLE_BRANCH_COND},/* conditional branches */
+		{"call", PERF_SAMPLE_BRANCH_CALL},/* direct call */
+		{"ind_call", PERF_SAMPLE_BRANCH_IND_CALL},/* indirect calls */
+		{"ind_jump", PERF_SAMPLE_BRANCH_IND_JUMP},/* indirect jumps */
+		{"call_stack", PERF_SAMPLE_BRANCH_CALL_STACK},/* call/ret stack */
+
+		{"abort_tx", PERF_SAMPLE_BRANCH_ABORT_TX},/* transaction aborts */
+		{"in_tx", PERF_SAMPLE_BRANCH_IN_TX},/* in transaction */
+		{"no_tx", PERF_SAMPLE_BRANCH_NO_TX},/* not in transaction */
+	};
+
+	for (i = 0; i < ARRAY_SIZE(table); i++) {
+		if (strcmp(table[i].alias, arg) == 0) {
+			env.lbr_flags |= table[i].value;
+			return 0;
+		}
+	}
+
+	if (sscanf(arg, "%li", &flags) == 1) {
+		env.lbr_flags |= flags;
+		return 0;
+	}
+
+	fprintf(stderr, "Unrecognized LBR flags. Should be either integer value or one of:");
+	for (i = 0; i < ARRAY_SIZE(table); i++) {
+		fprintf(stderr, "%s%s", i == 0 ? " " : ", ", table[i].alias);
+	}
+	fprintf(stderr, ".\n");
+
+	return -EINVAL;
+}
+
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
 	int i, j, err;
@@ -600,10 +652,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case OPT_LBR:
 		env.use_lbr = true;
-		if (arg && sscanf(arg, "%li", &env.lbr_flags) != 1) {
-			err = -errno;
-			fprintf(stderr, "Failed to parse LBR flags spec '%s': %d\n",
-				arg, err);
+		if (arg && parse_lbr_arg(arg))
+			return -EINVAL;
+		break;
+	case OPT_LBR_MAX_CNT:
+		errno = 0;
+		env.lbr_max_cnt = strtol(arg, NULL, 10);
+		if (errno || env.lbr_max_cnt < 0) {
+			fprintf(stderr, "Invalid LBR maximum count: %d\n", env.lbr_max_cnt);
 			return -EINVAL;
 		}
 		break;
@@ -1179,14 +1235,10 @@ static void print_stack_items(const struct stack_items_cache *cache)
 
 	/* calculate desired length of each auto-sized part of the output */
 	for (i = 0, s = cache->items; i < cache->cnt; i++, s++) {
-		if (s->dur_len > dur_len)
-			dur_len = s->dur_len;
-		if (s->err_len > err_len)
-			err_len = s->err_len;
-		if (s->sym_len > sym_len)
-			sym_len = s->sym_len;
-		if (s->src_len > src_len)
-			src_len = s->src_len;
+		dur_len = max(dur_len, s->dur_len);
+		err_len = max(err_len, s->err_len);
+		sym_len = max(sym_len, s->sym_len);
+		src_len = max(src_len, s->src_len);
 	}
 
 	/* emit line by line taking into account calculated lengths of each column */
@@ -1250,16 +1302,12 @@ static void print_lbr_items(int lbr_from, int lbr_to,
 
 	/* calculate desired length of each auto-sized part of the output */
 	for (i = 0, s1 = cache1->items; i < cache1->cnt; i++, s1++) {
-		if (s1->sym_len > sym_len1)
-			sym_len1 = s1->sym_len;
-		if (s1->src_len > src_len1)
-			src_len1 = s1->src_len;
+		sym_len1 = max(sym_len1, s1->sym_len);
+		src_len1 = max(src_len1, s1->src_len);
 	}
 	for (j = 0, s2 = cache2->items; j < cache2->cnt; j++, s2++) {
-		if (s2->sym_len > sym_len2)
-			sym_len2 = s2->sym_len;
-		if (s2->src_len > src_len2)
-			src_len2 = s2->src_len;
+		sym_len2 = max(sym_len2, s2->sym_len);
+		src_len2 = max(src_len2, s2->src_len);
 	}
 
 	/* emit each LBR record (which can contain multiple lines) */
@@ -1373,9 +1421,10 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 	if (env.use_lbr) {
 		unsigned long start = 0, end = 0;
-		int lbr_cnt, lbr_to = 0;
+		int lbr_cnt, lbr_from, lbr_to = 0;
 		int rec_cnts1[MAX_LBR_ENTRIES] = {};
 		int rec_cnts2[MAX_LBR_ENTRIES] = {};
+		bool found_useful_lbrs = false;
 
 		if (s->lbrs_sz < 0) {
 			fprintf(stderr, "Failed to capture LBR entries: %ld\n", s->lbrs_sz);
@@ -1391,6 +1440,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		}
 
 		lbr_cnt = s->lbrs_sz / sizeof(struct perf_branch_entry);
+		lbr_from = lbr_cnt - 1;
 
 		if (!env.emit_full_stacks) {
 			/* Filter out last few irrelevant LBRs that captured
@@ -1401,14 +1451,21 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 			 */
 			for (i = 0, lbr_to = 0; i < lbr_cnt; i++, lbr_to++) {
 				if (lbr_matches(s->lbrs[i].from, start, end) ||
-				    lbr_matches(s->lbrs[i].to, start, end))
+				    lbr_matches(s->lbrs[i].to, start, end)) {
+					found_useful_lbrs = true;
 					break;
+				}
 			}
+			if (!found_useful_lbrs)
+				lbr_to = 0;
 		}
+
+		if (env.lbr_max_cnt && lbr_from - lbr_to + 1 > env.lbr_max_cnt)
+			lbr_from = min(lbr_cnt - 1, lbr_to + env.lbr_max_cnt - 1);
 
 		stack_items1.cnt = 0;
 		stack_items2.cnt = 0;
-		for (i = lbr_cnt - 1; i >= (lbr_to == lbr_cnt ? 0 : lbr_to); i--) {
+		for (i = lbr_from; i >= lbr_to; i--) {
 			prepare_lbr_items(dctx, s->lbrs[i].from, &stack_items1);
 			prepare_lbr_items(dctx, s->lbrs[i].to, &stack_items2);
 
@@ -1416,11 +1473,11 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 			rec_cnts2[i] = stack_items2.cnt;
 		}
 
-		print_lbr_items(lbr_cnt - 1, lbr_to == lbr_cnt ? 0 : lbr_to,
+		print_lbr_items(lbr_from, lbr_to,
 				&stack_items1, rec_cnts1,
 				&stack_items2, rec_cnts2);
 
-		if (lbr_to == lbr_cnt)
+		if (!env.emit_full_stacks && !found_useful_lbrs)
 			printf("[LBR] No relevant LBR data were captured, showing unfiltered LBR stack!\n");
 	}
 
