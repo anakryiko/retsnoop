@@ -284,23 +284,20 @@ static int process_cu_globs()
 
 	for (i = 0; i < env.cu_allow_glob_cnt; i++) {
 		err = append_compile_unit(&env.ctx, &env.allow_globs, &env.allow_glob_cnt, env.cu_allow_globs[i]);
-		if (err < 0) {
+		if (err < 0)
 			return err;
-		}
 	}
 
 	for (i = 0; i < env.cu_deny_glob_cnt; i++) {
 		err = append_compile_unit(&env.ctx, &env.deny_globs, &env.deny_glob_cnt, env.cu_deny_globs[i]);
-		if (err < 0) {
+		if (err < 0)
 			return err;
-		}
 	}
 
 	for (i = 0; i < env.cu_entry_glob_cnt; i++) {
 		err = append_compile_unit(&env.ctx, &env.entry_globs, &env.entry_glob_cnt, env.cu_entry_globs[i]);
-		if (err < 0) {
+		if (err < 0)
 			return err;
-		}
 	}
 
 	return err;
@@ -953,8 +950,9 @@ static int filter_kstack(struct ctx *ctx, struct kstack_item *r, const struct ca
 
 		/* Ignore bpf_trampoline frames and fix up stack traces.
 		 * When fexit program happens to be inside the stack trace,
-		 * a following stack trace pattern will be apparent (taking into account inverted order of frames
-		 * which we did few lines above):
+		 * a following stack trace pattern will be apparent (taking
+		 * into account inverted order of frames * which we did few
+		 * lines above):
 		 *     ffffffff8116a3d5 bpf_map_alloc_percpu+0x5
 		 *     ffffffffa16db06d bpf_trampoline_6442494949_0+0x6d
 		 *     ffffffff8116a40f bpf_map_alloc_percpu+0x3f
@@ -1028,15 +1026,80 @@ static int detect_linux_src_loc(const char *path)
 	return 0;
 }
 
-static void print_item(struct ctx *ctx, const struct fstack_item *fitem, const struct kstack_item *kitem)
+/*
+ * Typical output in "default" mode:
+ *                      entry_SYSCALL_64_after_hwframe+0x44  (arch/x86/entry/entry_64.S:112:0)
+ *                      do_syscall_64+0x2d                   (arch/x86/entry/common.c:46:12)
+ *    11us [-ENOENT]    __x64_sys_bpf+0x1c                   (kernel/bpf/syscall.c:4749:1)
+ *    10us [-ENOENT]    __sys_bpf+0x1a42                     (kernel/bpf/syscall.c:4632:9)
+ *                      . map_lookup_elem                    (kernel/bpf/syscall.c:1113:5)
+ * !   0us [-ENOENT]    bpf_map_copy_value
+ *
+ */
+struct stack_item {
+	char marks[2]; /* spaces or '!' and/or '*' */
+
+	char dur[20];  /* duration, e.g. '11us' or '...' for incomplete stack */
+	int dur_len;   /* number of characters used for duration output */
+
+	char err[20];  /* returned error, e.g., '-ENOENT' or '...' for incomplete stack */
+	int err_len;   /* number of characters used for error output */
+
+	/* resolved symbol name, but also can include:
+	 *   - full captured address, if --full-stacks option is enabled;
+	 *   - inline marker, '. ', prepended to symbol name;
+	 *   - offset within function, like '+0x1c'.
+	 * Examples:
+	 *   - 'ffffffff81c00068 entry_SYSCALL_64_after_hwframe+0x44';
+	 *   - '__x64_sys_bpf+0x1c';
+	 *   - '. map_lookup_elem'.
+	 */
+	char sym[124];
+	int sym_len;
+
+	/* source code location of resolved function, e.g.:
+	 *   - 'kernel/bpf/syscall.c:4749:1';
+	 *   - 'arch/x86/entry/entry_64.S:112:0'.
+	 * Could also have prepended original function name if it doesn't
+	 * match resolved kernel symbol, e.g.:
+	 *   'my_actual_func @ arch/x86/entry/entry_64.S:112:0'.
+	 */
+	char src[252];
+	int src_len;
+};
+
+static struct stack_items_cache
 {
-	const int err_width = 12;
-	const int lat_width = 12;
+	struct stack_item items[256];
+	size_t cnt;
+} stack_items1;
+
+static struct stack_item *get_stack_item(struct stack_items_cache *cache)
+{
+	struct stack_item *s;
+
+	s = &cache->items[cache->cnt++];
+
+	s->dur_len = s->err_len = s->sym_len = s->src_len = 0;
+	s->dur[0] = s->err[0] = s->sym[0] = s->src[0] = 0;
+	s->marks[0] = s->marks[1] = ' ';
+
+	return s;
+}
+
+#define snappendf(dst, fmt, args...)							\
+	dst##_len += snprintf(dst + dst##_len,						\
+			      sizeof(dst) < dst##_len ? 0 : sizeof(dst) - dst##_len,	\
+			      fmt, ##args)
+
+static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem,
+				const struct kstack_item *kitem)
+{
 	static struct a2l_resp resps[64];
 	struct a2l_resp *resp = NULL;
-	int symb_cnt = 0, i, line_off, p = 0;
-	const char *fname;
-	int src_print_off = 70, func_print_off;
+	int symb_cnt = 0, i, line_off;
+	const char *fname, *errstr;
+	struct stack_item *s;
 
 	if (env.symb_mode != SYMB_NONE && ctx->a2l && kitem && !kitem->filtered) {
 		long addr = kitem->addr;
@@ -1051,45 +1114,33 @@ static void print_item(struct ctx *ctx, const struct fstack_item *fitem, const s
 			resp = &resps[symb_cnt - 1];
 	}
 
-	/* this should be rare, either a bug or we couldn't get valid kernel
-	 * stack trace
-	 */
-	if (!kitem)
-		p += printf("!");
-	else
-		p += printf(" ");
+	s = get_stack_item(&stack_items1);
 
-	p += printf("%c ", (fitem && fitem->stitched) ? '*' : ' ');
+	/* kitem == NULL should be rare, either a bug or we couldn't get valid kernel stack trace */
+	s->marks[0] = kitem ? ' ' : '!';
+	s->marks[1] = (fitem && fitem->stitched) ? '*' : ' ';
 
 	if (fitem && !fitem->finished) {
-		p += printf("%*s %-*s ", lat_width, "...", err_width, "[...]");
+		snappendf(s->dur, "...");
+		snappendf(s->err, "[...]");
 	} else if (fitem) {
-		p += printf("%*ldus ", lat_width - 2 /* for "us" */, fitem->lat / 1000);
+		snappendf(s->dur, "%ldus", fitem->lat / 1000);
 		if (fitem->res == 0) {
-			p += printf("%-*s ", err_width, "[NULL]");
+			snappendf(s->err, "[NULL]");
 		} else {
-			const char *errstr;
-			int print_cnt;
-
 			errstr = err_to_str(fitem->res);
 			if (errstr)
-				print_cnt = printf("[-%s]", errstr);
+				snappendf(s->err, "[-%s]", errstr);
 			else
-				print_cnt = printf("[%ld]", fitem->res);
-			p += print_cnt;
-			p += printf("%*s ", err_width - print_cnt, "");
+				snappendf(s->err, "[%ld]", fitem->res);
 		}
-	} else {
-		p += printf("%*s ", lat_width + 1 + err_width, "");
 	}
 
 	if (env.emit_full_stacks) {
-		if (kitem && kitem->filtered) 
-			p += printf("~%016lx ", kitem->addr);
-		else if (kitem)
-			p += printf(" %016lx ", kitem->addr);
+		if (kitem)
+			snappendf(s->sym, "%c%016lx ", kitem->filtered ? '~' : ' ',  kitem->addr);
 		else
-			p += printf(" %*s ", 16, "");
+			snappendf(s->sym, " %*s ", 16, "");
 	}
 
 	if (kitem && kitem->ksym)
@@ -1098,31 +1149,52 @@ static void print_item(struct ctx *ctx, const struct fstack_item *fitem, const s
 		fname = fitem->name;
 	else
 		fname = "";
-
-	func_print_off = p;
-	p += printf("%s", fname);
+	snappendf(s->sym, "%s", fname);
 	if (kitem && kitem->ksym)
-		p += printf("+0x%lx", kitem->addr - kitem->ksym->addr);
+		snappendf(s->sym, "+0x%lx", kitem->addr - kitem->ksym->addr);
 	if (symb_cnt) {
-		if (env.emit_full_stacks)
-			src_print_off += 18; /* for extra " %16lx " */
-		p += printf(" %*s(", p < src_print_off ? src_print_off - p : 0, "");
-
-		if (strcmp(fname, resp->fname) != 0)
-			p += printf("%s @ ", resp->fname);
-
 		line_off = detect_linux_src_loc(resp->line);
-		p += printf("%s)", resp->line + line_off);
+
+		snappendf(s->src, "(");
+		if (strcmp(fname, resp->fname) != 0)
+			snappendf(s->src, "%s @ ", resp->fname);
+		snappendf(s->src, "%s)", resp->line + line_off);
 	}
 
-	p += printf("\n");
-
+	/* append inlined calls */
 	for (i = 1, resp--; i < symb_cnt; i++, resp--) {
-		p = printf("%*s. %s", func_print_off, "", resp->fname);
+		s = get_stack_item(&stack_items1);
+
 		line_off = detect_linux_src_loc(resp->line);
-		printf(" %*s(%s)\n",
-		       p < src_print_off ? src_print_off - p : 0, "",
-		       resp->line + line_off);
+
+		snappendf(s->sym, "%*s. %s", env.emit_full_stacks ? 18 : 0, "", resp->fname);
+		snappendf(s->src, "(%s)", resp->line + line_off);
+	}
+}
+
+static void print_stack_items(const struct stack_items_cache *cache)
+{
+	int dur_len = 5, err_len = 0, sym_len = 0, src_len = 0, i;
+	const struct stack_item *s;
+
+	/* calculate desired length of each auto-sized part of the output */
+	for (i = 0, s = cache->items; i < cache->cnt; i++, s++) {
+		if (s->dur_len > dur_len)
+			dur_len = s->dur_len;
+		if (s->err_len > err_len)
+			err_len = s->err_len;
+		if (s->sym_len > sym_len)
+			sym_len = s->sym_len;
+		if (s->src_len > src_len)
+			src_len = s->src_len;
+	}
+
+	/* emit line by line taking into account calculated lengths of each column */
+	for (i = 0, s = cache->items; i < cache->cnt; i++, s++) {
+		printf("%c%c %*s %-*s  %-*s  %-*s\n",
+		       s->marks[0], s->marks[1],
+		       dur_len, s->dur, err_len, s->err,
+		       sym_len, s->sym, src_len, s->src);
 	}
 }
 
@@ -1212,6 +1284,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	ts_to_str(s->emit_ts + ktime_off, timestamp, sizeof(timestamp));
 	printf("%s PID %d (%s):\n", timestamp, s->pid, s->comm);
 
+	stack_items1.cnt = 0;
+
 	i = 0;
 	j = 0;
 	while (i < fstack_n) {
@@ -1222,7 +1296,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 			/* this shouldn't happen unless we got no kernel stack
 			 * or there is some bug
 			 */
-			print_item(dctx, fitem, NULL);
+			prepare_stack_items(dctx, fitem, NULL);
 			i++;
 			continue;
 		}
@@ -1233,21 +1307,23 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		 */
 		if (!kitem->ksym || kitem->filtered
 		    || strcmp(kitem->ksym->name, fitem->name) != 0) {
-			print_item(dctx, NULL, kitem);
+			prepare_stack_items(dctx, NULL, kitem);
 			j++;
 			continue;
 		}
 
 		/* happy case, lots of info, yay */
-		print_item(dctx, fitem, kitem);
+		prepare_stack_items(dctx, fitem, kitem);
 		i++;
 		j++;
 		continue;
 	}
 
 	for (; j < kstack_n; j++) {
-		print_item(dctx, NULL, &kstack[j]);
+		prepare_stack_items(dctx, NULL, &kstack[j]);
 	}
+
+	print_stack_items(&stack_items1);
 
 	if (env.use_lbr) {
 		unsigned long start = 0, end = 0;
