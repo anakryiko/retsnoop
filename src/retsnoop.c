@@ -1072,7 +1072,7 @@ static struct stack_items_cache
 {
 	struct stack_item items[256];
 	size_t cnt;
-} stack_items1;
+} stack_items1, stack_items2;
 
 static struct stack_item *get_stack_item(struct stack_items_cache *cache)
 {
@@ -1198,42 +1198,88 @@ static void print_stack_items(const struct stack_items_cache *cache)
 	}
 }
 
-static void emit_lbr(struct ctx *ctx, const char *pfx, long addr)
+static void prepare_lbr_items(struct ctx *ctx, long addr, struct stack_items_cache *cache)
 {
 	static struct a2l_resp resps[64];
 	struct a2l_resp *resp = NULL;
 	int symb_cnt = 0, line_off, i;
 	const struct ksym *ksym;
+	struct stack_item *s;
+
+	s = get_stack_item(cache);
+
+	if (env.emit_full_stacks)
+		snappendf(s->sym, "%016lx ", addr);
 
 	ksym = ksyms__map_addr(ctx->ksyms, addr);
-	if (ksym) {
-		printf("%s%s+0x%lx", pfx, ksym->name, addr - ksym->addr);
-	} else {
-		printf("%s", pfx);
-	}
+	if (ksym)
+		snappendf(s->sym, "%s+0x%lx", ksym->name, addr - ksym->addr);
 
-	if (!ctx->a2l || env.symb_mode == SYMB_NONE) {
-		printf("\n");
+	if (!ctx->a2l || env.symb_mode == SYMB_NONE)
 		return;
-	}
 
 	symb_cnt = addr2line__symbolize(ctx->a2l, addr, resps);
-	if (symb_cnt <= 0) {
-		printf("\n");
+	if (symb_cnt <= 0)
 		return;
-	}
 
 	resp = &resps[symb_cnt - 1];
-
 	line_off = detect_linux_src_loc(resp->line);
-	printf(" (%s)\n", resp->line + line_off);
+
+	snappendf(s->src, "(");
+	if (strcmp(ksym->name, resp->fname) != 0)
+		snappendf(s->src, "%s @ ", resp->fname);
+	snappendf(s->src, "%s)", resp->line + line_off);
 
 	for (i = 1, resp--; i < symb_cnt; i++, resp--) {
-		printf("\t\t. %s", resp->fname);
 		line_off = detect_linux_src_loc(resp->line);
-		printf(" (%s)\n", resp->line + line_off);
+
+		s = get_stack_item(cache);
+		if (env.emit_full_stacks)
+			snappendf(s->sym, "%*s ", 16, "");
+		snappendf(s->sym, ". %s", resp->fname);
+		snappendf(s->src, "(%s)", resp->line + line_off);
 	}
 }
+
+static void print_lbr_items(int lbr_from, int lbr_to,
+			    const struct stack_items_cache *cache1, int rec_cnts1[MAX_LBR_ENTRIES],
+			    const struct stack_items_cache *cache2, int rec_cnts2[MAX_LBR_ENTRIES])
+{
+	int sym_len1 = 0, sym_len2 = 0, src_len1 = 0, src_len2 = 0, i, j, k;
+	const struct stack_item *s1, *s2;
+
+	/* calculate desired length of each auto-sized part of the output */
+	for (i = 0, s1 = cache1->items; i < cache1->cnt; i++, s1++) {
+		if (s1->sym_len > sym_len1)
+			sym_len1 = s1->sym_len;
+		if (s1->src_len > src_len1)
+			src_len1 = s1->src_len;
+	}
+	for (j = 0, s2 = cache2->items; j < cache2->cnt; j++, s2++) {
+		if (s2->sym_len > sym_len2)
+			sym_len2 = s2->sym_len;
+		if (s2->src_len > src_len2)
+			src_len2 = s2->src_len;
+	}
+
+	/* emit each LBR record (which can contain multiple lines) */
+	for (i = 0, j = 0, k = lbr_from; k >= lbr_to; k--) {
+		printf("\n");
+		while (i < rec_cnts1[k] || j < rec_cnts2[k]) {
+			s1 = i < rec_cnts1[k] ? &cache1->items[i++] : NULL;
+			s2 = j < rec_cnts2[k] ? &cache2->items[j++] : NULL;
+
+			printf("[#%02d] %-*s %-*s  %s  %-*s %-*s\n",
+			       k,
+			       sym_len1, s1 ? s1->sym : "",
+			       src_len1, s1 ? s1->src : "",
+			       s1 && s2 ? "->" : "  ",
+			       sym_len2, s2 ? s2->sym : "",
+			       src_len2, s2 ? s2->src : "");
+		}
+	}
+}
+
 
 static bool lbr_matches(unsigned long addr, unsigned long start, unsigned long end)
 {
@@ -1328,6 +1374,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	if (env.use_lbr) {
 		unsigned long start = 0, end = 0;
 		int lbr_cnt, lbr_to = 0;
+		int rec_cnts1[MAX_LBR_ENTRIES] = {};
+		int rec_cnts2[MAX_LBR_ENTRIES] = {};
 
 		if (s->lbrs_sz < 0) {
 			fprintf(stderr, "Failed to capture LBR entries: %ld\n", s->lbrs_sz);
@@ -1358,14 +1406,19 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 			}
 		}
 
+		stack_items1.cnt = 0;
+		stack_items2.cnt = 0;
 		for (i = lbr_cnt - 1; i >= (lbr_to == lbr_cnt ? 0 : lbr_to); i--) {
+			prepare_lbr_items(dctx, s->lbrs[i].from, &stack_items1);
+			prepare_lbr_items(dctx, s->lbrs[i].to, &stack_items2);
 
-			printf("[LBR #%02d] 0x%016lx -> 0x%016lx\n",
-			       i, (long)s->lbrs[i].from, (long)s->lbrs[i].to);
-
-			emit_lbr(dctx, "<-\t", s->lbrs[i].from);
-			emit_lbr(dctx, "->\t", s->lbrs[i].to);
+			rec_cnts1[i] = stack_items1.cnt;
+			rec_cnts2[i] = stack_items2.cnt;
 		}
+
+		print_lbr_items(lbr_cnt - 1, lbr_to == lbr_cnt ? 0 : lbr_to,
+				&stack_items1, rec_cnts1,
+				&stack_items2, rec_cnts2);
 
 		if (lbr_to == lbr_cnt)
 			printf("[LBR] No relevant LBR data were captured, showing unfiltered LBR stack!\n");
