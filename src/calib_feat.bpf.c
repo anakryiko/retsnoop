@@ -21,6 +21,8 @@ bool has_ringbuf = false;
 bool has_bpf_cookie = false;
 bool has_kprobe_multi = false;
 
+extern volatile bool CONFIG_FPROBE __kconfig __weak;
+
 SEC("kprobe/hrtimer_start_range_ns")
 int calib_entry(struct pt_regs *ctx)
 {
@@ -70,8 +72,10 @@ int calib_entry(struct pt_regs *ctx)
 
 	/* Detect if multi-attach kprobes are supported.
 	 * Added in: 0dcac2725406 ("bpf: Add multi kprobe link")
+	 * Depends on: CONFIG_FPROBE
 	 */
-	has_kprobe_multi = bpf_core_enum_value_exists(enum bpf_attach_type, BPF_TRACE_KPROBE_MULTI);
+	has_kprobe_multi = CONFIG_FPROBE &&
+			   bpf_core_enum_value_exists(enum bpf_attach_type, BPF_TRACE_KPROBE_MULTI);
 
 	return 0;
 }
