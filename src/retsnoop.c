@@ -961,15 +961,32 @@ static bool is_bpf_tramp(const struct kstack_item *item)
 	       && isdigit(item->ksym->name[sizeof(bpf_tramp_pfx)]);
 }
 
+/* recognize stack trace entries representing BPF program, e.g.:
+ * bpf_prog_28efb01f5c962284_my_prog
+ */
 static bool is_bpf_prog(const struct kstack_item *item)
 {
 	static char bpf_prog_pfx[] = "bpf_prog_";
+	const char *s;
+	int i;
+	bool has_digits = false;
 
 	if (!item->ksym)
 		return false;
 
-	return strncmp(item->ksym->name, bpf_prog_pfx, sizeof(bpf_prog_pfx) - 1) == 0
-	       && isxdigit(item->ksym->name[sizeof(bpf_prog_pfx)]);
+	s = item->ksym->name;
+	if (strncmp(s, bpf_prog_pfx, sizeof(bpf_prog_pfx) - 1) != 0)
+		return false;
+
+	for (i = sizeof(bpf_prog_pfx); s[i] && s[i] != '_'; i++ ) {
+		if (!isxdigit(s[i]))
+			return false;
+
+		if (isdigit(s[i]))
+			has_digits = true;
+	}
+
+	return has_digits;
 }
 
 #define FTRACE_OFFSET 0x5
