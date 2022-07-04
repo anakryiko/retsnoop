@@ -228,7 +228,7 @@ void mass_attacher__free(struct mass_attacher *att)
 
 static bool is_valid_glob(const char *glob)
 {
-	int i, n;
+	int n;
 
 	if (!glob) {
 		fprintf(stderr, "NULL glob provided.\n");
@@ -239,15 +239,6 @@ static bool is_valid_glob(const char *glob)
 	if (n == 0) {
 		fprintf(stderr, "Empty glob provided.\n");
 		return false;
-	}
-
-	for (i = 0; i < n; i++) {
-		if (glob[i] == '*' && i != 0 && i != n - 1) {
-			fprintf(stderr,
-				"Unsupported glob '%s': '*' allowed only at the beginning or end of a glob.\n",
-				glob);
-			return false;
-		}
 	}
 
 	if (strcmp(glob, "**") == 0) {
@@ -1068,38 +1059,32 @@ static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t)
 	return true;
 }
 
+/* adapted from libbpf sources */
 bool glob_matches(const char *glob, const char *s)
 {
-	int n = strlen(glob);
-
-	if (n == 1 && glob[0] == '*')
-		return true;
-
-	if (glob[0] == '*' && glob[n - 1] == '*') {
-		const char *subs;
-		/* substring match */
-
-		/* this is hacky, but we don't want to allocate for no good reason */
-		((char *)glob)[n - 1] = '\0';
-		subs = strstr(s, glob + 1);
-		((char *)glob)[n - 1] = '*';
-
-		return subs != NULL;
-	} else if (glob[0] == '*') {
-		size_t nn = strlen(s);
-		/* suffix match */
-
-		/* too short for a given suffix */
-		if (nn < n - 1)
+	while (*s && *glob && *glob != '*') {
+		/* Matches any single character */
+		if (*glob == '?') {
+			s++;
+			glob++;
+			continue;
+		}
+		if (*s != *glob)
 			return false;
-
-		return strcmp(s + nn - (n - 1), glob + 1) == 0;
-	} else if (glob[n - 1] == '*') {
-		/* prefix match */
-		return strncmp(s, glob, n - 1) == 0;
-	} else {
-		/* exact match */
-		return strcmp(glob, s) == 0;
+		s++;
+		glob++;
 	}
+	/* Check wild card */
+	if (*glob == '*') {
+		while (*glob == '*') {
+			glob++;
+		}
+		if (!*glob) /* Tail wild card matches all */
+			return true;
+		while (*s) {
+			if (glob_matches(glob, s++))
+				return true;
+		}
+	}
+	return !*s && !*glob;
 }
-
