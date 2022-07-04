@@ -671,6 +671,9 @@ static int kprobe_by_name(const void *a, const void *b)
 	return strcmp(name, k->name);
 }
 
+#define str_has_pfx(str, pfx) \
+	(strncmp(str, pfx, __builtin_constant_p(pfx) ? sizeof(pfx) - 1 : strlen(pfx)) == 0)
+
 static int load_available_kprobes(struct mass_attacher *att)
 {
 	static char buf[512];
@@ -688,6 +691,10 @@ static int load_available_kprobes(struct mass_attacher *att)
 	}
 
 	while ((cnt = fscanf(f, "%s%[^\n]\n", buf, buf2)) == 1) {
+		/* ignore explicitly fake/invalid kprobe entries */
+		if (str_has_pfx(buf, "__ftrace_invalid_address___"))
+			continue;
+
 		tmp = realloc(att->kprobes, (att->kprobe_cnt + 1) * sizeof(*att->kprobes));
 		if (!tmp)
 			return -ENOMEM;
