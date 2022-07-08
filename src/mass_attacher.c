@@ -668,7 +668,6 @@ static int kprobe_by_name(const void *a, const void *b)
 static int load_available_kprobes(struct mass_attacher *att)
 {
 	static char buf[512];
-	static char buf2[512];
 	const char *fname = "/sys/kernel/tracing/available_filter_functions";
 	int cnt, err;
 	void *tmp, *s;
@@ -681,7 +680,7 @@ static int load_available_kprobes(struct mass_attacher *att)
 		return err;
 	}
 
-	while ((cnt = fscanf(f, "%s%[^\n]\n", buf, buf2)) == 1) {
+	while ((cnt = fscanf(f, "%s%*[^\n]\n", buf)) == 1) {
 		/* ignore explicitly fake/invalid kprobe entries */
 		if (str_has_pfx(buf, "__ftrace_invalid_address___"))
 			continue;
