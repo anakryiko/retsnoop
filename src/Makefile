@@ -3,14 +3,17 @@ OUTPUT := .output
 CLANG ?= clang
 LD ?= ld
 LLVM_STRIP ?= llvm-strip
+CARGO ?= cargo
+DEBUG ?=
 BPFTOOL ?= $(abspath ../tools/bpftool)
 LIBBPF_SRC := $(abspath ../libbpf/src)
 LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
+SIDECAR := ../sidecar/target/$(if $(DEBUG),debug,release)/addr2line
 # Use our own libbpf API headers and Linux UAPI headers distributed with
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
 INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi
-CFLAGS := -g -Wall -O0
+CFLAGS := -g -Wall -O$(if $(DEBUG),0,2)
 ARCH := $(shell uname -m | sed 's/x86_64/x86/g; s/aarch64/arm64/g')
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
@@ -43,7 +46,7 @@ all: retsnoop simfail
 clean:
 	$(call msg,CLEAN)
 	$(Q)rm -rf $(OUTPUT) retsnoop simfail
-	$(Q)cargo clean --manifest-path=../sidecar/Cargo.toml
+	$(Q)$(CARGO) clean --manifest-path=../sidecar/Cargo.toml
 
 $(OUTPUT) $(OUTPUT)/libbpf $(OUTPUT)/tests:
 	$(call msg,MKDIR,$@)
@@ -56,7 +59,7 @@ $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPU
 	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1		      \
 		    OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@)		      \
 		    INCLUDEDIR= LIBDIR= UAPIDIR=			      \
-		    EXTRA_CFLAGS="-g -O0" \
+		    EXTRA_CFLAGS="-g -O$(if $(DEBUG),0,2)" \
 		    install
 
 # Build BPF object files
@@ -80,18 +83,18 @@ $(OUTPUT)/retsnoop.skel.h: $(OUTPUT)/mass_attach.bpf.o
 $(OUTPUT)/retsnoop.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 $(OUTPUT)/mass_attacher.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 
-../sidecar/target/release/addr2line::
+$(SIDECAR)::
 	$(call msg,CARGO,addr2line)
-	$(Q)cargo build --manifest-path=../sidecar/Cargo.toml --release
+	$(Q)$(CARGO) build --manifest-path=../sidecar/Cargo.toml $(if $(DEBUG),,--release)
 
-$(OUTPUT)/addr2line.embed.o: ../sidecar/target/release/addr2line
+$(OUTPUT)/addr2line.embed.o: $(SIDECAR)
 	$(call msg,LLVM_STRIP,$<)
 	$(Q)$(LLVM_STRIP) -g $<
 	$(call msg,LD,$@)
 	$(Q)$(LD) -r -b binary \
-		--defsym __binary_sidecar_start=_binary____sidecar_target_release_addr2line_start \
-		--defsym __binary_sidecar_end=_binary____sidecar_target_release_addr2line_end \
-		--defsym __binary_sidecar_size=_binary____sidecar_target_release_addr2line_size \
+		--defsym __binary_sidecar_start=_binary____sidecar_target_$(if $(DEBUG),debug,release)_addr2line_start \
+		--defsym __binary_sidecar_end=_binary____sidecar_target_$(if $(DEBUG),debug,release)_addr2line_end \
+		--defsym __binary_sidecar_size=_binary____sidecar_target_$(if $(DEBUG),debug,release)_addr2line_size \
 		-o $@ $<
 
 $(OUTPUT)/addr2line.o: $(OUTPUT)/addr2line.embed.o
