@@ -22,6 +22,7 @@
 #include "addr2line.h"
 #include "mass_attacher.h"
 
+#define MAX_ERRNO 4095
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 #define min(x, y) ((x) < (y) ? (x): (y))
 #define max(x, y) ((x) < (y) ? (y): (x))
@@ -804,6 +805,7 @@ static const char *perf_deny_globs[] = {
 /* fexit logical stack trace item */
 struct fstack_item {
 	const struct mass_attacher_func_info *finfo;
+	int flags;
 	const char *name;
 	long res;
 	long lat;
@@ -902,6 +904,7 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 
 		fitem = &r[cnt];
 		fitem->finfo = finfo;
+		fitem->flags = flags;
 		fitem->name = fname;
 		fitem->stitched = false;
 		if (i >= s->depth) {
@@ -930,6 +933,7 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 
 		fitem = &r[cnt];
 		fitem->finfo = finfo;
+		fitem->flags = flags;
 		fitem->name = fname;
 		fitem->stitched = true;
 		fitem->finished = true;
@@ -1115,7 +1119,7 @@ struct stack_item {
 	char dur[20];  /* duration, e.g. '11us' or '...' for incomplete stack */
 	int dur_len;   /* number of characters used for duration output */
 
-	char err[20];  /* returned error, e.g., '-ENOENT' or '...' for incomplete stack */
+	char err[24];  /* returned error, e.g., '-ENOENT' or '...' for incomplete stack */
 	int err_len;   /* number of characters used for error output */
 
 	/* resolved symbol name, but also can include:
@@ -1198,8 +1202,15 @@ static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem
 		snappendf(s->err, "[...]");
 	} else if (fitem) {
 		snappendf(s->dur, "%ldus", fitem->lat / 1000);
-		if (fitem->res == 0) {
-			snappendf(s->err, "[NULL]");
+		if (fitem->res >= 0 || fitem->res < -MAX_ERRNO) {
+			if (fitem->flags & FUNC_RET_PTR)
+				snappendf(s->err, fitem->res == 0 ? "[NULL]" : "[%p]", (const void *)fitem->res);
+			else if (fitem->flags & FUNC_RET_BOOL)
+				snappendf(s->err, fitem->res == 0 ? "[false]" : "[true]");
+			else if (fitem->res >= -1024 * 1024 * 1024  && fitem->res < 1024 * 1024 /* random heuristic */)
+				snappendf(s->err, "[%ld]", fitem->res);
+			else
+				snappendf(s->err, "[0x%lx]", fitem->res);
 		} else {
 			errstr = err_to_str(fitem->res);
 			if (errstr)
@@ -1329,18 +1340,25 @@ static void print_lbr_items(int lbr_from, int lbr_to,
 
 	/* emit each LBR record (which can contain multiple lines) */
 	for (i = 0, j = 0, k = lbr_from; k >= lbr_to; k--) {
+		bool first = true;
+
 		printf("\n");
 		while (i < rec_cnts1[k] || j < rec_cnts2[k]) {
 			s1 = i < rec_cnts1[k] ? &cache1->items[i++] : NULL;
 			s2 = j < rec_cnts2[k] ? &cache2->items[j++] : NULL;
 
-			printf("[#%02d] %-*s %-*s  %s  %-*s %-*s\n",
-			       k,
+			if (first)
+				printf("[#%02d] ", k);
+			else
+				printf("      ");
+			printf("%-*s %-*s  %s  %-*s %-*s\n",
 			       sym_len1, s1 ? s1->sym : "",
 			       src_len1, s1 ? s1->src : "",
-			       s1 && s2 ? "->" : "  ",
+			       first ? "->" : "  ",
 			       sym_len2, s2 ? s2->sym : "",
 			       src_len2, s2 ? s2->src : "");
+
+			first = false;
 		}
 	}
 }
