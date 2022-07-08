@@ -172,7 +172,7 @@ static const struct argp_option opts[] = {
 	{ "lbr", OPT_LBR, "SPEC", OPTION_ARG_OPTIONAL,
 	  "Capture and print LBR entries. You can also tune which LBR records are captured "
 	  "by specifying raw LBR flags or using their symbolic aliases: "
-	  "any, any_call, any_return, cond, call, ind_call, ind_jump, call_stack, "
+	  "any, any_call, any_return (default), cond, call, ind_call, ind_jump, call_stack, "
 	  "abort_tx, in_tx, no_tx. "
 	  "See enum perf_branch_sample_type in perf_event UAPI (include/uapi/linux/perf_event.h). "
 	  "You can combine multiple of them by using --lbr argument multiple times." },
@@ -1660,7 +1660,7 @@ static int create_lbr_perf_events(int *fds, int cpu_cnt)
 	attr.config = PERF_COUNT_HW_CPU_CYCLES;
 	attr.sample_type = PERF_SAMPLE_BRANCH_STACK;
 	attr.branch_sample_type = PERF_SAMPLE_BRANCH_KERNEL |
-				  (env.lbr_flags ?: PERF_SAMPLE_BRANCH_ANY);
+				  (env.lbr_flags ?: PERF_SAMPLE_BRANCH_ANY_RETURN);
 
 	if (env.debug)
 		printf("LBR flags are 0x%lx\n", (long)attr.branch_sample_type);
