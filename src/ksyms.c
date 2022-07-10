@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <ctype.h>
 #include <time.h>
 #include "ksyms.h"
 
@@ -16,16 +17,20 @@ struct ksyms {
 	int strs_cap;
 };
 
-static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, unsigned long addr, char sym_type)
+static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, const char *mod,
+			     unsigned long addr, char sym_type)
 {
-	size_t new_cap, name_len = strlen(name) + 1;
+	size_t new_cap, name_len, mod_len;
 	struct ksym *ksym;
 	void *tmp;
 
-	if (ksyms->strs_sz + name_len > ksyms->strs_cap) {
+	name_len = strlen(name) + 1;
+	mod_len = mod ? strlen(mod) + 1 : 0;
+
+	if (ksyms->strs_sz + name_len + mod_len > ksyms->strs_cap) {
 		new_cap = ksyms->strs_cap * 4 / 3;
-		if (new_cap < ksyms->strs_sz + name_len)
-			new_cap = ksyms->strs_sz + name_len;
+		if (new_cap < ksyms->strs_sz + name_len + mod_len)
+			new_cap = ksyms->strs_sz + name_len + mod_len;
 		if (new_cap < 1024)
 			new_cap = 1024;
 		tmp = realloc(ksyms->strs, new_cap);
@@ -48,12 +53,21 @@ static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, unsigned lon
 	ksym = &ksyms->syms[ksyms->syms_sz];
 	/* while constructing, re-use pointer as just a plain offset */
 	ksym->name = (void *)(unsigned long)ksyms->strs_sz;
+	if (mod)
+		ksym->module = (void *)(unsigned long)(ksyms->strs_sz + name_len);
+	else
+		ksym->module = NULL;
 	ksym->addr = addr;
 	/* mark which symbols are functions for post-processing */
 	ksym->size = (sym_type == 't' || sym_type == 'T') ? (unsigned long)-1 : 0;
 
 	memcpy(ksyms->strs + ksyms->strs_sz, name, name_len);
 	ksyms->strs_sz += name_len;
+	if (mod_len) {
+		memcpy(ksyms->strs + ksyms->strs_sz, mod, mod_len);
+		ksyms->strs_sz += mod_len;
+	}
+
 	ksyms->syms_sz++;
 
 	return 0;
@@ -78,7 +92,7 @@ static int ksym_by_name_cmp(const void *p1, const void *p2)
 
 struct ksyms *ksyms__load(void)
 {
-	char sym_type, sym_name[256];
+	char sym_type, sym_name[256], mod_buf[128], *mod_name;
 	struct ksyms *ksyms;
 	unsigned long sym_addr;
 	int i, ret;
@@ -93,13 +107,23 @@ struct ksyms *ksyms__load(void)
 		goto err_out;
 
 	while (true) {
-		ret = fscanf(f, "%lx %c %s%*[^\n]\n",
-			     &sym_addr, &sym_type, sym_name);
+		ret = fscanf(f, "%lx %c %s%[^\n]\n",
+			     &sym_addr, &sym_type, sym_name, mod_buf);
 		if (ret == EOF && feof(f))
 			break;
-		if (ret != 3)
+		if (ret != 3 && ret != 4)
 			goto err_out;
-		if (ksyms__add_symbol(ksyms, sym_name, sym_addr, sym_type))
+		mod_name = NULL;
+		if (ret == 4) {
+			/* mod_buf will be '    [module]', so we need to
+			 * extract module name from it
+			 */
+			mod_name = mod_buf;
+			while (*mod_name && (isspace(*mod_name) || *mod_name == '['))
+				mod_name++;
+			mod_name[strlen(mod_name) - 1] = '\0';
+		}
+		if (ksyms__add_symbol(ksyms, sym_name, mod_name, sym_addr, sym_type))
 			goto err_out;
 	}
 	fclose(f);
@@ -111,6 +135,8 @@ struct ksyms *ksyms__load(void)
 	/* now when strings are finalized, adjust pointers properly */
 	for (i = 0; i < ksyms->syms_sz; i++) {
 		ksyms->syms[i].name += (unsigned long)ksyms->strs;
+		if (ksyms->syms[i].module)
+			ksyms->syms[i].module += (unsigned long)ksyms->strs;
 		ksyms->syms_by_name[i] = &ksyms->syms[i];
 	}
 

@@ -107,6 +107,7 @@ retsnoop: override CFLAGS += -DSKEL_NAME=retsnoop_bpf			\
 retsnoop: $(addprefix $(OUTPUT)/,					\
 		      retsnoop.o					\
 		      ksyms.o						\
+		      utils.o						\
 		      addr2line.o					\
 		      addr2line.embed.o					\
 		      mass_attacher.o)					\

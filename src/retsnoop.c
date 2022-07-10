@@ -14,13 +14,13 @@
 #include <sys/utsname.h>
 #include <sys/syscall.h>
 #include <time.h>
-#include <unistd.h>
 #include "retsnoop.h"
 #include "retsnoop.skel.h"
 #include "calib_feat.skel.h"
 #include "ksyms.h"
 #include "addr2line.h"
 #include "mass_attacher.h"
+#include "utils.h"
 
 #define MAX_ERRNO 4095
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
@@ -68,9 +68,9 @@ static struct env {
 	int pid;
 	int longer_than_ms;
 
-	char **allow_globs;
-	char **deny_globs;
-	char **entry_globs;
+	struct glob *allow_globs;
+	struct glob *deny_globs;
+	struct glob *entry_globs;
 	int allow_glob_cnt;
 	int deny_glob_cnt;
 	int entry_glob_cnt;
@@ -222,91 +222,25 @@ static inline __u64 now_ns(void)
 	return (__u64)t.tv_sec * 1000000000 + t.tv_nsec;
 }
 
-static int append_str(char ***strs, int *cnt, const char *str)
-{
-	void *tmp;
-	char *s;
-
-	tmp = realloc(*strs, (*cnt + 1) * sizeof(**strs));
-	if (!tmp)
-		return -ENOMEM;
-	*strs = tmp;
-
-	(*strs)[*cnt] = s = strdup(str);
-	if (!s)
-		return -ENOMEM;
-
-	*cnt = *cnt + 1;
-	return 0;
-}
-
-static int append_str_file(char ***strs, int *cnt, const char *file)
-{
-	char buf[256];
-	FILE *f;
-	int err = 0;
-
-	f = fopen(file, "r");
-	if (!f) {
-		err = -errno;
-		fprintf(stderr, "Failed to open '%s': %d\n", file, err);
-		return err;
-	}
-
-	while (fscanf(f, "%s", buf) == 1) {
-		if (append_str(strs, cnt, buf)) {
-			err = -ENOMEM;
-			goto cleanup;
-		}
-	}
-
-cleanup:
-	fclose(f);
-	return err;
-}
-
-static int append_compile_unit(struct ctx *ctx, char ***strs, int *cnt, const char *compile_unit)
-{
-	int err = 0;
-	struct a2l_cu_resp *cu_resps = NULL;
-	int resp_cnt;
-	int i;
-
-	resp_cnt = addr2line__query_symbols(ctx->a2l, compile_unit, &cu_resps);
-	if (resp_cnt < 0) {
-		return resp_cnt;
-	}
-
-	for (i = 0; i < resp_cnt; i++) {
-		if (append_str(strs, cnt, cu_resps[i].fname)) {
-			err = -ENOMEM;
-			break;
-		}
-	}
-
-	free(cu_resps);
-	return err;
-}
-
 static int process_cu_globs()
 {
 	int err = 0;
 	int i;
 
 	for (i = 0; i < env.cu_allow_glob_cnt; i++) {
-		err = append_compile_unit(&env.ctx, &env.allow_globs, &env.allow_glob_cnt, env.cu_allow_globs[i]);
+		err = append_compile_unit(env.ctx.a2l, &env.allow_globs, &env.allow_glob_cnt, env.cu_allow_globs[i]);
 		if (err < 0)
 			return err;
 	}
 
 	for (i = 0; i < env.cu_deny_glob_cnt; i++) {
-		err = append_compile_unit(&env.ctx, &env.deny_globs, &env.deny_glob_cnt, env.cu_deny_globs[i]);
+		err = append_compile_unit(env.ctx.a2l, &env.deny_globs, &env.deny_glob_cnt, env.cu_deny_globs[i]);
 		if (err < 0)
 			return err;
 	}
 
 	for (i = 0; i < env.cu_entry_glob_cnt; i++) {
-		err = append_compile_unit(&env.ctx, &env.entry_globs, &env.entry_glob_cnt, env.cu_entry_globs[i]);
+		err = append_compile_unit(env.ctx.a2l, &env.entry_globs, &env.entry_glob_cnt, env.cu_entry_globs[i]);
 		if (err < 0)
 			return err;
 	}
@@ -494,17 +428,17 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 
 			for (j = 0; p->entry_globs[j]; j++) {
 				glob = p->entry_globs[j];
-				if (append_str(&env.entry_globs, &env.entry_glob_cnt, glob))
+				if (append_glob(&env.entry_globs, &env.entry_glob_cnt, glob))
 					return -ENOMEM;
 			}
 			for (j = 0; p->allow_globs[j]; j++) {
 				glob = p->allow_globs[j];
-				if (append_str(&env.allow_globs, &env.allow_glob_cnt, glob))
+				if (append_glob(&env.allow_globs, &env.allow_glob_cnt, glob))
 					return -ENOMEM;
 			}
 			for (j = 0; p->deny_globs[j]; j++) {
 				glob = p->deny_globs[j];
-				if (append_str(&env.deny_globs, &env.deny_glob_cnt, glob))
+				if (append_glob(&env.deny_globs, &env.deny_glob_cnt, glob))
 					return -ENOMEM;
 			}
 
@@ -514,33 +448,33 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'a':
 		if (arg[0] == '@') {
-			err = append_str_file(&env.allow_globs, &env.allow_glob_cnt, arg + 1);
+			err = append_glob_file(&env.allow_globs, &env.allow_glob_cnt, arg + 1);
 		} else if (arg[0] == ':') {
 			err = append_str(&env.cu_allow_globs, &env.cu_allow_glob_cnt, arg + 1);
 		} else {
-			err = append_str(&env.allow_globs, &env.allow_glob_cnt, arg);
+			err = append_glob(&env.allow_globs, &env.allow_glob_cnt, arg);
 		}
 		if (err)
 			return err;
 		break;
 	case 'd':
 		if (arg[0] == '@') {
-			err = append_str_file(&env.deny_globs, &env.deny_glob_cnt, arg + 1);
+			err = append_glob_file(&env.deny_globs, &env.deny_glob_cnt, arg + 1);
 		} else if (arg[0] == ':') {
 			err = append_str(&env.cu_deny_globs, &env.cu_deny_glob_cnt, arg + 1);
 		} else {
-			err = append_str(&env.deny_globs, &env.deny_glob_cnt, arg);
+			err = append_glob(&env.deny_globs, &env.deny_glob_cnt, arg);
 		}
 		if (err)
 			return err;
 		break;
 	case 'e':
 		if (arg[0] == '@') {
-			err = append_str_file(&env.entry_globs, &env.entry_glob_cnt, arg + 1);
+			err = append_glob_file(&env.entry_globs, &env.entry_glob_cnt, arg + 1);
 		} else if (arg[0] == ':') {
 			err = append_str(&env.cu_entry_globs, &env.cu_entry_glob_cnt, arg + 1);
 		} else {
-			err = append_str(&env.entry_globs, &env.entry_glob_cnt, arg);
+			err = append_glob(&env.entry_globs, &env.entry_glob_cnt, arg);
 		}
 		if (err)
 			return err;
@@ -1897,17 +1831,23 @@ int main(int argc, char **argv)
 
 	/* entry globs are allow globs as well */
 	for (i = 0; i < env.entry_glob_cnt; i++) {
-		err = mass_attacher__allow_glob(att, env.entry_globs[i]);
+		struct glob *g = &env.entry_globs[i];
+
+		err = mass_attacher__allow_glob(att, g->name, g->mod);
 		if (err)
 			goto cleanup;
 	}
 	for (i = 0; i < env.allow_glob_cnt; i++) {
-		err = mass_attacher__allow_glob(att, env.allow_globs[i]);
+		struct glob *g = &env.allow_globs[i];
+
+		err = mass_attacher__allow_glob(att, g->name, g->mod);
 		if (err)
 			goto cleanup;
 	}
 	for (i = 0; i < env.deny_glob_cnt; i++) {
-		err = mass_attacher__deny_glob(att, env.deny_globs[i]);
+		struct glob *g = &env.deny_globs[i];
+
+		err = mass_attacher__deny_glob(att, g->name, g->mod);
 		if (err)
 			goto cleanup;
 	}
@@ -1928,15 +1868,15 @@ int main(int argc, char **argv)
 	vmlinux_btf = mass_attacher__btf(att);
 	for (i = 0; i < n; i++) {
 		const struct mass_attacher_func_info *finfo;
-		const char *glob;
+		const struct glob *glob;
 		__u32 flags;
 
 		finfo = mass_attacher__func(att, i);
 		flags = func_flags(finfo->name, vmlinux_btf, finfo->btf_id);
 
 		for (j = 0; j < env.entry_glob_cnt; j++) {
-			glob = env.entry_globs[j];
-			if (!glob_matches(glob, finfo->name))
+			glob = &env.entry_globs[j];
+			if (!full_glob_matches(glob->name, glob->mod, finfo->name, finfo->module))
 				continue;
 
 			flags |= FUNC_IS_ENTRY;
@@ -1954,13 +1894,13 @@ int main(int argc, char **argv)
 	}
 
 	for (i = 0; i < env.entry_glob_cnt; i++) {
-		const char *glob = env.entry_globs[i];
+		const struct glob *glob = &env.entry_globs[i];
 		bool matched = false;
 
 		for (j = 0, n = mass_attacher__func_cnt(att); j < n; j++) {
 			const struct mass_attacher_func_info *finfo = mass_attacher__func(att, j);
 
-			if (glob_matches(glob, finfo->name)) {
+			if (full_glob_matches(glob->name, glob->mod, finfo->name, finfo->module)) {
 				matched = true;
 				break;
 			}
@@ -1968,7 +1908,13 @@ int main(int argc, char **argv)
 
 		if (!matched) {
 			err = -ENOENT;
-			fprintf(stderr, "Entry glob '%s' doesn't match any kernel function!\n", glob);
+			if (glob->mod) {
+				fprintf(stderr, "Entry glob '%s[%s]' doesn't match any kernel function!\n",
+					glob->name, glob->mod);
+			} else {
+				fprintf(stderr, "Entry glob '%s' doesn't match any kernel function!\n",
+					glob->name);
+			}
 			goto cleanup;
 		}
 	}
@@ -2111,14 +2057,20 @@ cleanup_silent:
 	}
 	free(lbr_perf_fds);
 
-	for (i = 0; i < env.allow_glob_cnt; i++)
-		free(env.allow_globs[i]);
+	for (i = 0; i < env.allow_glob_cnt; i++) {
+		free(env.allow_globs[i].name);
+		free(env.allow_globs[i].mod);
+	}
 	free(env.allow_globs);
-	for (i = 0; i < env.deny_glob_cnt; i++)
-		free(env.deny_globs[i]);
+	for (i = 0; i < env.deny_glob_cnt; i++) {
+		free(env.deny_globs[i].name);
+		free(env.deny_globs[i].mod);
+	}
 	free(env.deny_globs);
-	for (i = 0; i < env.entry_glob_cnt; i++)
-		free(env.entry_globs[i]);
+	for (i = 0; i < env.entry_glob_cnt; i++) {
+		free(env.entry_globs[i].name);
+		free(env.entry_globs[i].mod);
+	}
 	free(env.entry_globs);
 
 	for (i = 0; i < env.allow_comm_cnt; i++)

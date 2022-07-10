@@ -12,6 +12,7 @@
 #include "mass_attacher.h"
 #include "ksyms.h"
 #include "calib_feat.skel.h"
+#include "utils.h"
 
 #ifndef SKEL_NAME
 #error "Please define -DSKEL_NAME=<BPF skeleton name> for mass_attacher"
@@ -136,6 +137,7 @@ struct mass_attacher {
 	int deny_glob_cnt;
 	struct {
 		char *glob;
+		char *mod_glob;
 		int matches;
 	} *allow_globs, *deny_globs;
 };
@@ -170,7 +172,7 @@ struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_att
 	att->func_filter = opts->func_filter;
 
 	for (i = 0; i < ARRAY_SIZE(enforced_deny_globs); i++) {
-		err = mass_attacher__deny_glob(att, enforced_deny_globs[i]);
+		err = mass_attacher__deny_glob(att, enforced_deny_globs[i], NULL);
 		if (err) {
 			fprintf(stderr, "Failed to add enforced deny glob '%s': %d\n",
 				enforced_deny_globs[i], err);
@@ -249,11 +251,13 @@ static bool is_valid_glob(const char *glob)
 	return true;
 }
 
-int mass_attacher__allow_glob(struct mass_attacher *att, const char *glob)
+int mass_attacher__allow_glob(struct mass_attacher *att, const char *glob, const char *mod_glob)
 {
-	void *tmp, *s;
+	void *tmp, *s1, *s2 = NULL;
 
 	if (!is_valid_glob(glob))
+		return -EINVAL;
+	if (mod_glob && !is_valid_glob(mod_glob))
 		return -EINVAL;
 
 	tmp = realloc(att->allow_globs, (att->allow_glob_cnt + 1) * sizeof(*att->allow_globs));
@@ -261,22 +265,32 @@ int mass_attacher__allow_glob(struct mass_attacher *att, const char *glob)
 		return -ENOMEM;
 	att->allow_globs = tmp;
 
-	s = strdup(glob);
-	if (!s)
+	s1 = strdup(glob);
+	if (!s1)
 		return -ENOMEM;
+	if (mod_glob) {
+		s2 = strdup(mod_glob);
+		if (!s2) {
+			free(s1);
+			return -ENOMEM;
+		}
+	}
 
-	att->allow_globs[att->allow_glob_cnt].glob = s;
+	att->allow_globs[att->allow_glob_cnt].glob = s1;
+	att->allow_globs[att->allow_glob_cnt].mod_glob = s2;
 	att->allow_globs[att->allow_glob_cnt].matches = 0;
 	att->allow_glob_cnt++;
 
 	return 0;
 }
 
-int mass_attacher__deny_glob(struct mass_attacher *att, const char *glob)
+int mass_attacher__deny_glob(struct mass_attacher *att, const char *glob, const char *mod_glob)
 {
-	void *tmp, *s;
+	void *tmp, *s1, *s2 = NULL;
 
 	if (!is_valid_glob(glob))
+		return -EINVAL;
+	if (mod_glob && !is_valid_glob(mod_glob))
 		return -EINVAL;
 
 	tmp = realloc(att->deny_globs, (att->deny_glob_cnt + 1) * sizeof(*att->deny_globs));
@@ -284,14 +298,21 @@ int mass_attacher__deny_glob(struct mass_attacher *att, const char *glob)
 		return -ENOMEM;
 	att->deny_globs = tmp;
 
-	s = strdup(glob);
-	if (!s)
+	s1 = strdup(glob);
+	if (!s1)
 		return -ENOMEM;
+	if (mod_glob) {
+		s2 = strdup(mod_glob);
+		if (!s2) {
+			free(s1);
+			return -ENOMEM;
+		}
+	}
 
-	att->deny_globs[att->deny_glob_cnt].glob = s;
+	att->deny_globs[att->deny_glob_cnt].glob = s1;
+	att->deny_globs[att->deny_glob_cnt].mod_glob = s2;
 	att->deny_globs[att->deny_glob_cnt].matches = 0;
 	att->deny_glob_cnt++;
-
 
 	return 0;
 }
@@ -343,7 +364,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 
 	if (att->use_fentries && !att->has_fexit_sleep_fix) {
 		for (i = 0; i < ARRAY_SIZE(sleepable_deny_globs); i++) {
-			err = mass_attacher__deny_glob(att, sleepable_deny_globs[i]);
+			err = mass_attacher__deny_glob(att, sleepable_deny_globs[i], NULL);
 			if (err) {
 				fprintf(stderr, "Failed to add enforced deny glob '%s': %d\n",
 					sleepable_deny_globs[i], err);
@@ -537,7 +558,8 @@ static int prepare_func(struct mass_attacher *att, const char *func_name,
 
 	/* any deny glob forces skipping a function */
 	for (i = 0; i < att->deny_glob_cnt; i++) {
-		if (!glob_matches(att->deny_globs[i].glob, func_name))
+		if (!full_glob_matches(att->deny_globs[i].glob, att->deny_globs[i].mod_glob,
+				       func_name, ksym->module))
 			continue;
 
 		att->deny_globs[i].matches++;
@@ -554,7 +576,8 @@ static int prepare_func(struct mass_attacher *att, const char *func_name,
 		bool found = false;
 
 		for (i = 0; i < att->allow_glob_cnt; i++) {
-			if (!glob_matches(att->allow_globs[i].glob, func_name))
+			if (!full_glob_matches(att->allow_globs[i].glob, att->allow_globs[i].mod_glob,
+					       func_name, ksym->module))
 				continue;
 
 			att->allow_globs[i].matches++;
@@ -617,6 +640,7 @@ static int prepare_func(struct mass_attacher *att, const char *func_name,
 	finfo->addr = ksym->addr;
 	finfo->size = ksym->size;
 	finfo->name = ksym->name;
+	finfo->module = ksym->module;
 	finfo->arg_cnt = arg_cnt;
 	finfo->btf_id = btf_id;
 
@@ -814,8 +838,14 @@ int mass_attacher__attach(struct mass_attacher *att)
 
 	for (i = 0; i < att->func_cnt; i++) {
 		struct mass_attacher_func_info *finfo = &att->func_infos[i];
-		const char *func_name = finfo->name;
+		const char *func_name = finfo->name, *func_desc = finfo->name;
+		char buf[256];
 		long func_addr = finfo->addr;
+
+		if (finfo->module) {
+			snprintf(buf, sizeof(buf), "%s [%s]", finfo->name, finfo->module);
+			func_desc = buf;
+		}
 
 		if (att->dry_run)
 			goto skip_attach;
@@ -827,7 +857,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 			err = bpf_raw_tracepoint_open(NULL, prog_fd);
 			if (err < 0) {
 				fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
-					prog_fd, i + 1, func_name, func_addr, -errno);
+					prog_fd, i + 1, func_desc, func_addr, -errno);
 				goto err_out;
 			}
 			att->func_infos[i].fentry_link_fd = err;
@@ -836,7 +866,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 			err = bpf_raw_tracepoint_open(NULL, prog_fd);
 			if (err < 0) {
 				fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
-					prog_fd, i + 1, func_name, func_addr, -errno);
+					prog_fd, i + 1, func_desc, func_addr, -errno);
 				goto err_out;
 			}
 			att->func_infos[i].fexit_link_fd = err;
@@ -856,7 +886,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 			err = libbpf_get_error(finfo->kentry_link);
 			if (err) {
 				fprintf(stderr, "Failed to attach KPROBE prog for func #%d (%s) at addr %lx: %d\n",
-					i + 1, func_name, func_addr, err);
+					i + 1, func_desc, func_addr, err);
 				goto err_out;
 			}
 
@@ -868,7 +898,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 			err = libbpf_get_error(finfo->kexit_link);
 			if (err) {
 				fprintf(stderr, "Failed to attach KRETPROBE prog for func #%d (%s) at addr %lx: %d\n",
-					i + 1, func_name, func_addr, err);
+					i + 1, func_desc, func_addr, err);
 				goto err_out;
 			}
 		}
@@ -877,10 +907,10 @@ skip_attach:
 		if (att->debug) {
 			printf("Attached%s to function #%d '%s' (addr %lx, btf id %d).\n",
 			       att->dry_run ? " (dry run)" : "", i + 1,
-			       func_name, func_addr, finfo->btf_id);
+			       func_desc, func_addr, finfo->btf_id);
 		} else if (att->verbose) {
 			printf("Attached%s to function #%d '%s'.\n",
-			att->dry_run ? " (dry run)" : "", i + 1, func_name);
+			att->dry_run ? " (dry run)" : "", i + 1, func_desc);
 		}
 	}
 
@@ -1056,34 +1086,4 @@ static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t)
 	}
 
 	return true;
-}
-
-/* adapted from libbpf sources */
-bool glob_matches(const char *glob, const char *s)
-{
-	while (*s && *glob && *glob != '*') {
-		/* Matches any single character */
-		if (*glob == '?') {
-			s++;
-			glob++;
-			continue;
-		}
-		if (*s != *glob)
-			return false;
-		s++;
-		glob++;
-	}
-	/* Check wild card */
-	if (*glob == '*') {
-		while (*glob == '*') {
-			glob++;
-		}
-		if (!*glob) /* Tail wild card matches all */
-			return true;
-		while (*s) {
-			if (glob_matches(glob, s++))
-				return true;
-		}
-	}
-	return !*s && !*glob;
 }

@@ -17,6 +17,7 @@ typedef bool (*func_filter_fn)(const struct mass_attacher *att,
 
 struct mass_attacher_func_info {
 	const char *name;
+	const char *module;
 	long addr;
 	long size;
 	int arg_cnt;
@@ -51,8 +52,8 @@ struct mass_attacher_opts {
 struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_attacher_opts *opts);
 void mass_attacher__free(struct mass_attacher *att);
 
-int mass_attacher__allow_glob(struct mass_attacher *att, const char *glob);
-int mass_attacher__deny_glob(struct mass_attacher *att, const char *glob);
+int mass_attacher__allow_glob(struct mass_attacher *att, const char *glob, const char *mod_glob);
+int mass_attacher__deny_glob(struct mass_attacher *att, const char *glob, const char *mod_glob);
 
 int mass_attacher__prepare(struct mass_attacher *att);
 int mass_attacher__load(struct mass_attacher *att);
@@ -62,8 +63,5 @@ void mass_attacher__activate(struct mass_attacher *att);
 size_t mass_attacher__func_cnt(const struct mass_attacher *att);
 const struct mass_attacher_func_info * mass_attacher__func(const struct mass_attacher *att, int id);
 const struct btf *mass_attacher__btf(const struct mass_attacher *att);
-
-/* Probably should be in some utils.h */
-bool glob_matches(const char *glob, const char *s);
 
 #endif /* __MASS_ATTACHER_H */

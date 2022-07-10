@@ -4,6 +4,7 @@
 
 struct ksym {
 	const char *name;
+	const char *module;
 	unsigned long addr;
 	unsigned long size;
 };
