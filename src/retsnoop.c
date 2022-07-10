@@ -22,11 +22,6 @@
 #include "mass_attacher.h"
 #include "utils.h"
 
-#define MAX_ERRNO 4095
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
-#define min(x, y) ((x) < (y) ? (x): (y))
-#define max(x, y) ((x) < (y) ? (y): (x))
-
 struct ctx {
 	struct mass_attacher *att;
 	struct retsnoop_bpf *skel;
@@ -213,15 +208,6 @@ static const struct preset presets[] = {
 	{"perf", perf_entry_globs, perf_allow_globs, perf_deny_globs},
 };
 
-static inline __u64 now_ns(void)
-{
-	struct timespec t;
-
-	clock_gettime(CLOCK_MONOTONIC, &t);
-
-	return (__u64)t.tv_sec * 1000000000 + t.tv_nsec;
-}
-
 static int process_cu_globs()
 {
 	int err = 0;
@@ -246,102 +232,6 @@ static int process_cu_globs()
 	}
 
 	return err;
-}
-
-static int append_pid(int **pids, int *cnt, const char *arg)
-{
-	void *tmp;
-	int pid;
-
-	errno = 0;
-	pid = strtol(arg, NULL, 10);
-	if (errno || pid < 0) {
-		fprintf(stderr, "Invalid PID: %d\n", pid);
-		return -EINVAL;
-	}
-
-	tmp = realloc(*pids, (*cnt + 1) * sizeof(**pids));
-	if (!tmp)
-		return -ENOMEM;
-	*pids = tmp;
-
-	(*pids)[*cnt] = pid;
-	*cnt = *cnt + 1;
-
-	return 0;
-}
-
-static const char *err_map[] = {
-	[0] = "NULL",
-	[1] = "EPERM", [2] = "ENOENT", [3] = "ESRCH",
-	[4] = "EINTR", [5] = "EIO", [6] = "ENXIO", [7] = "E2BIG",
-	[8] = "ENOEXEC", [9] = "EBADF", [10] = "ECHILD", [11] = "EAGAIN",
-	[12] = "ENOMEM", [13] = "EACCES", [14] = "EFAULT", [15] = "ENOTBLK",
-	[16] = "EBUSY", [17] = "EEXIST", [18] = "EXDEV", [19] = "ENODEV",
-	[20] = "ENOTDIR", [21] = "EISDIR", [22] = "EINVAL", [23] = "ENFILE",
-	[24] = "EMFILE", [25] = "ENOTTY", [26] = "ETXTBSY", [27] = "EFBIG",
-	[28] = "ENOSPC", [29] = "ESPIPE", [30] = "EROFS", [31] = "EMLINK",
-	[32] = "EPIPE", [33] = "EDOM", [34] = "ERANGE", [35] = "EDEADLK",
-	[36] = "ENAMETOOLONG", [37] = "ENOLCK", [38] = "ENOSYS", [39] = "ENOTEMPTY",
-	[40] = "ELOOP", [42] = "ENOMSG", [43] = "EIDRM", [44] = "ECHRNG",
-	[45] = "EL2NSYNC", [46] = "EL3HLT", [47] = "EL3RST", [48] = "ELNRNG",
-	[49] = "EUNATCH", [50] = "ENOCSI", [51] = "EL2HLT", [52] = "EBADE",
-	[53] = "EBADR", [54] = "EXFULL", [55] = "ENOANO", [56] = "EBADRQC",
-	[57] = "EBADSLT", [59] = "EBFONT", [60] = "ENOSTR", [61] = "ENODATA",
-	[62] = "ETIME", [63] = "ENOSR", [64] = "ENONET", [65] = "ENOPKG",
-	[66] = "EREMOTE", [67] = "ENOLINK", [68] = "EADV", [69] = "ESRMNT",
-	[70] = "ECOMM", [71] = "EPROTO", [72] = "EMULTIHOP", [73] = "EDOTDOT",
-	[74] = "EBADMSG", [75] = "EOVERFLOW", [76] = "ENOTUNIQ", [77] = "EBADFD",
-	[78] = "EREMCHG", [79] = "ELIBACC", [80] = "ELIBBAD", [81] = "ELIBSCN",
-	[82] = "ELIBMAX", [83] = "ELIBEXEC", [84] = "EILSEQ", [85] = "ERESTART",
-	[86] = "ESTRPIPE", [87] = "EUSERS", [88] = "ENOTSOCK", [89] = "EDESTADDRREQ",
-	[90] = "EMSGSIZE", [91] = "EPROTOTYPE", [92] = "ENOPROTOOPT", [93] = "EPROTONOSUPPORT",
-	[94] = "ESOCKTNOSUPPORT", [95] = "EOPNOTSUPP", [96] = "EPFNOSUPPORT", [97] = "EAFNOSUPPORT",
-	[98] = "EADDRINUSE", [99] = "EADDRNOTAVAIL", [100] = "ENETDOWN", [101] = "ENETUNREACH",
-	[102] = "ENETRESET", [103] = "ECONNABORTED", [104] = "ECONNRESET", [105] = "ENOBUFS",
-	[106] = "EISCONN", [107] = "ENOTCONN", [108] = "ESHUTDOWN", [109] = "ETOOMANYREFS",
-	[110] = "ETIMEDOUT", [111] = "ECONNREFUSED", [112] = "EHOSTDOWN", [113] = "EHOSTUNREACH",
-	[114] = "EALREADY", [115] = "EINPROGRESS", [116] = "ESTALE", [117] = "EUCLEAN",
-	[118] = "ENOTNAM", [119] = "ENAVAIL", [120] = "EISNAM", [121] = "EREMOTEIO",
-	[122] = "EDQUOT", [123] = "ENOMEDIUM", [124] = "EMEDIUMTYPE", [125] = "ECANCELED",
-	[126] = "ENOKEY", [127] = "EKEYEXPIRED", [128] = "EKEYREVOKED", [129] = "EKEYREJECTED",
-	[130] = "EOWNERDEAD", [131] = "ENOTRECOVERABLE", [132] = "ERFKILL", [133] = "EHWPOISON",
-	[512] = "ERESTARTSYS", [513] = "ERESTARTNOINTR", [514] = "ERESTARTNOHAND", [515] = "ENOIOCTLCMD",
-	[516] = "ERESTART_RESTARTBLOCK", [517] = "EPROBE_DEFER", [518] = "EOPENSTALE", [519] = "ENOPARAM",
-	[521] = "EBADHANDLE", [522] = "ENOTSYNC", [523] = "EBADCOOKIE", [524] = "ENOTSUPP",
-	[525] = "ETOOSMALL", [526] = "ESERVERFAULT", [527] = "EBADTYPE", [528] = "EJUKEBOX",
-	[529] = "EIOCBQUEUED", [530] = "ERECALLCONFLICT",
-};
-
-static int str_to_err(const char *arg)
-{
-	int i;
-
-	/* doesn't matter if it's -Exxx or Exxx */
-	if (arg[0] == '-')
-		arg++;
-
-	for (i = 0; i < ARRAY_SIZE(err_map); i++) {
-		if (!err_map[i])
-			continue;
-
-		if (strcmp(arg, err_map[i]) != 0)
-			continue;
-
-		return i;
-	}
-
-	fprintf(stderr, "Unrecognized error '%s'\n", arg);
-	return -ENOENT;
-}
-
-static const char *err_to_str(long err) {
-
-	if (err < 0)
-		err = -err;
-	if (err < ARRAY_SIZE(err_map))
-		return err_map[err];
-	return NULL;
 }
 
 static void err_mask_set(__u64 *err_mask, int err_value)
@@ -629,11 +519,6 @@ static const struct argp argp = {
 
 static __u64 ktime_off;
 
-static __u64 timespec_to_ns(struct timespec *ts)
-{
-	return ts->tv_sec * 1000000000ULL + ts->tv_nsec;
-}
-
 static void calibrate_ktime(void)
 {
 	int i;
@@ -653,18 +538,6 @@ static void calibrate_ktime(void)
 			ktime_off = ts - timespec_to_ns(&t2);
 		}
 	}
-}
-
-static void ts_to_str(__u64 ts, char buf[], size_t buf_sz)
-{
-	char tmp[32];
-	time_t t = ts / 1000000000;
-	struct tm tm;
-
-	localtime_r(&t, &tm);
-	strftime(tmp, sizeof(tmp), "%H:%M:%S", &tm);
-
-	snprintf(buf, buf_sz, "%s.%03lld", tmp, ts / 1000000 % 1000);
 }
 
 /* PRESETS */
