@@ -37,7 +37,6 @@ extern const volatile bool use_lbr;
 static long lbr_szs[MAX_CPU_CNT];
 static struct perf_branch_entry lbrs[MAX_CPU_CNT][MAX_LBR_ENTRIES];
 
-
 /* has to be called from entry-point BPF program if not using
  * bpf_get_func_ip()
  */
@@ -82,7 +81,7 @@ __hidden int copy_lbrs(void *dst, size_t dst_sz)
 }
 
 
-SEC("kprobe/xxx")
+SEC("kprobe")
 int kentry(struct pt_regs *ctx)
 {
 	const char *name;
@@ -115,7 +114,7 @@ int kentry(struct pt_regs *ctx)
 	return 0;
 }
 
-SEC("kretprobe/xxx")
+SEC("kretprobe")
 int kexit(struct pt_regs *ctx)
 {
 	const char *name;
@@ -250,12 +249,12 @@ out:
 }
 
 #define DEF_PROGS(arg_cnt) \
-SEC("fentry/__x64_sys_read") \
+SEC("fentry") \
 int fentry ## arg_cnt(void *ctx) \
 { \
 	return handle_fentry(ctx, arg_cnt); \
 } \
-SEC("fexit/__x64_sys_read") \
+SEC("fexit") \
 int fexit ## arg_cnt(void *ctx) \
 { \
 	return handle_fexit(ctx, arg_cnt); \
