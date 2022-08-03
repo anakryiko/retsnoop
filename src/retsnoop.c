@@ -1218,7 +1218,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	}
 
 	ts_to_str(s->emit_ts + ktime_off, timestamp, sizeof(timestamp));
-	printf("%s PID %d (%s):\n", timestamp, s->pid, s->comm);
+	printf("%s TID/PID %d/%d (%s/%s):\n", timestamp, s->pid, s->tgid,  s->task_comm, s->proc_comm);
 
 	stack_items1.cnt = 0;
 

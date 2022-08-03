@@ -144,12 +144,15 @@ static struct call_stack empty_stack;
 
 static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 {
-	u32 pid = (u32)bpf_get_current_pid_tgid();
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	u32 pid = (u32)pid_tgid;
 	struct call_stack *stack;
 	u64 d;
 
 	stack = bpf_map_lookup_elem(&stacks, &pid);
 	if (!stack) {
+		struct task_struct *tsk;
+
 		if (!(func_flags[id & MAX_FUNC_MASK] & FUNC_IS_ENTRY))
 			return false;
 
@@ -159,7 +162,10 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 			return false;
 
 		stack->pid = pid;
-		bpf_get_current_comm(&stack->comm, sizeof(stack->comm));
+		stack->tgid = (u32)(pid_tgid >> 32);
+		bpf_get_current_comm(&stack->task_comm, sizeof(stack->task_comm));
+		tsk = (void *)bpf_get_current_task();
+		BPF_CORE_READ_INTO(&stack->proc_comm, tsk, group_leader, comm);
 	}
 
 	d = stack->depth;
@@ -182,12 +188,12 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 		if (printk_is_sane) {
 			if (d == 0)
 				bpf_printk("=== STARTING TRACING %s [COMM %s PID %d] ===",
-					   func_name, stack->comm, pid);
+					   func_name, stack->task_comm, pid);
 			bpf_printk("    ENTER %s%s [...]", spaces + 2 *((255 - d) & 0xFF), func_name);
 		} else {
 			if (d == 0) {
 				bpf_printk("=== STARTING TRACING %s [PID %d] ===", func_name, pid);
-				bpf_printk("=== ...      TRACING [PID %d COMM %s] ===", pid, stack->comm);
+				bpf_printk("=== ...      TRACING [PID %d COMM %s] ===", pid, stack->task_comm);
 			}
 			bpf_printk("    ENTER [%d] %s [...]", d + 1, func_name);
 		}
