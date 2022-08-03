@@ -48,6 +48,11 @@ clean:
 	$(Q)rm -rf $(OUTPUT) retsnoop simfail
 	$(Q)$(CARGO) clean --manifest-path=../sidecar/Cargo.toml
 
+.PHONY: cscope
+cscope:
+	$(Q)ls *.c *.h > cscope.files
+	$(Q)cscope -b -q $(INCLUDES) -f cscope.out
+
 $(OUTPUT) $(OUTPUT)/libbpf $(OUTPUT)/tests:
 	$(call msg,MKDIR,$@)
 	$(Q)mkdir -p $@
