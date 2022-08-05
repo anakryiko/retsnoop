@@ -408,13 +408,6 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	}
 	stack->depth = d;
 
-	if (emit_success_stacks && !stack->is_err && d > 0 && d + 1 == stack->max_depth) {
-		if (extra_verbose) {
-			bpf_printk("EMIT DEEPEST SUCCESS STACK DEPTH %d\n", stack->max_depth);
-		}
-		output_stack(ctx, &rb, stack);
-	}
-
 	/* emit last complete stack trace */
 	if (d == 0) {
 		if (stack->is_err) {
