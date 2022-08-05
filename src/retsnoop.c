@@ -116,11 +116,11 @@ const char argp_program_doc[] =
 
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
-#define OPT_LBR 1003
-#define OPT_LBR_MAX_CNT 1004
-#define OPT_DRY_RUN 1005
+#define OPT_LBR_MAX_CNT 1003
+#define OPT_DRY_RUN 1004
 
 static const struct argp_option opts[] = {
+	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
 	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
 	  "Verbose output (use -vv for debug-level verbosity, -vvv for libbpf debug log)" },
 	{ "version", 'V', NULL, 0,
@@ -148,6 +148,17 @@ static const struct argp_option opts[] = {
 	{ "deny", 'd', "GLOB", 0,
 	  "Glob for denied functions ignored during error stack trace collection" },
 
+	/* LBR mode settings */
+	{ "lbr", 'R', "SPEC", OPTION_ARG_OPTIONAL,
+	  "Capture and print LBR entries. You can also tune which LBR records are captured "
+	  "by specifying raw LBR flags or using their symbolic aliases: "
+	  "any, any_call, any_return (default), cond, call, ind_call, ind_jump, call_stack, "
+	  "abort_tx, in_tx, no_tx. "
+	  "See enum perf_branch_sample_type in perf_event UAPI (include/uapi/linux/perf_event.h). "
+	  "You can combine multiple of them by using --lbr argument multiple times." },
+	{ "lbr-max-count", OPT_LBR_MAX_CNT, "N", 0,
+	  "Limit number of printed LBRs to N" },
+
 	/* Stack filtering specification */
 	{ "pid", 'p', "PID", 0,
 	  "Only trace given PID. Can be specified multiple times" },
@@ -165,15 +176,6 @@ static const struct argp_option opts[] = {
 	{ "deny-errors", 'X', "ERROR", 0, "Ignore stacks that have specified errors" },
 
 	/* Misc settings */
-	{ "lbr", OPT_LBR, "SPEC", OPTION_ARG_OPTIONAL,
-	  "Capture and print LBR entries. You can also tune which LBR records are captured "
-	  "by specifying raw LBR flags or using their symbolic aliases: "
-	  "any, any_call, any_return (default), cond, call, ind_call, ind_jump, call_stack, "
-	  "abort_tx, in_tx, no_tx. "
-	  "See enum perf_branch_sample_type in perf_event UAPI (include/uapi/linux/perf_event.h). "
-	  "You can combine multiple of them by using --lbr argument multiple times." },
-	{ "lbr-max-count", OPT_LBR_MAX_CNT, "N", 0,
-	  "Limit number of printed LBRs to N" },
 	{ "kernel", 'k',
 	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
 	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
@@ -286,6 +288,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	int i, j, err;
 
 	switch (key) {
+	case 'h':
+		argp_state_help(state, stderr, ARGP_HELP_STD_HELP);
+		break;
 	case 'V':
 		env.show_version = true;
 		break;
@@ -475,7 +480,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return -EINVAL;
 		}
 		break;
-	case OPT_LBR:
+	case 'R':
 		env.use_lbr = true;
 		if (arg && parse_lbr_arg(arg))
 			return -EINVAL;

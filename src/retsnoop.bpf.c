@@ -118,7 +118,8 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 		bpf_probe_read(stack->saved_lat + d, len * sizeof(stack->saved_lat[0]), stack->func_lat + d);
 		stack->saved_depth = stack->depth + 1;
 		if (extra_verbose)
-			bpf_printk("STITCHED STACK %d..%d to ..%d\n", stack->depth + 1, stack->max_depth, stack->saved_max_depth);
+			bpf_printk("STITCHED STACK %d..%d to ..%d\n",
+				   stack->depth + 1, stack->max_depth, stack->saved_max_depth);
 		return;
 	}
 
@@ -140,7 +141,7 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 	stack->saved_max_depth = stack->max_depth;
 }
 
-static struct call_stack empty_stack;
+static const struct call_stack empty_stack;
 
 static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 {
@@ -189,7 +190,7 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 			if (d == 0)
 				bpf_printk("=== STARTING TRACING %s [COMM %s PID %d] ===",
 					   func_name, stack->task_comm, pid);
-			bpf_printk("    ENTER %s%s [...]", spaces + 2 *((255 - d) & 0xFF), func_name);
+			bpf_printk("    ENTER %s%s [...]", spaces + 2 * ((255 - d) & 0xFF), func_name);
 		} else {
 			if (d == 0) {
 				bpf_printk("=== STARTING TRACING %s [PID %d] ===", func_name, pid);
@@ -377,9 +378,12 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 			exp_ip = 0;
 
 		if (verbose) {
-			bpf_printk("POP(0) UNEXPECTED PID %d DEPTH %d MAX DEPTH %d", pid, stack->depth, stack->max_depth);
-			bpf_printk("POP(1) UNEXPECTED GOT  ID %d ADDR %lx NAME %s", id, ip, func_name);
-			bpf_printk("POP(2) UNEXPECTED WANT ID %u ADDR %lx NAME %s", exp_id, exp_ip, exp_func_name);
+			bpf_printk("POP(0) UNEXPECTED PID %d DEPTH %d MAX DEPTH %d",
+				   pid, stack->depth, stack->max_depth);
+			bpf_printk("POP(1) UNEXPECTED GOT  ID %d ADDR %lx NAME %s",
+				   id, ip, func_name);
+			bpf_printk("POP(2) UNEXPECTED WANT ID %u ADDR %lx NAME %s",
+				   exp_id, exp_ip, exp_func_name);
 		}
 
 		stack->depth = 0;
