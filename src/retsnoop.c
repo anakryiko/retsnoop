@@ -21,6 +21,7 @@
 #include "addr2line.h"
 #include "mass_attacher.h"
 #include "utils.h"
+#include "hashmap.h"
 
 struct ctx {
 	struct mass_attacher *att;
@@ -54,6 +55,7 @@ static struct env {
 	bool emit_success_stacks;
 	bool emit_full_stacks;
 	bool emit_intermediate_stacks;
+	bool emit_func_trace;
 	enum attach_mode attach_mode;
 	enum symb_mode symb_mode;
 	bool use_lbr;
@@ -147,6 +149,9 @@ static const struct argp_option opts[] = {
 	  "Glob for allowed functions captured in error stack trace collection" },
 	{ "deny", 'd', "GLOB", 0,
 	  "Glob for denied functions ignored during error stack trace collection" },
+
+	/* Function calls trace mode settings */
+	{ "trace", 'T', NULL, 0, "Capture and emit function call traces" },
 
 	/* LBR mode settings */
 	{ "lbr", 'R', "SPEC", OPTION_ARG_OPTIONAL,
@@ -312,6 +317,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'l':
 		env.bpf_logs = true;
+		break;
+	case 'T':
+		env.emit_func_trace = true;
 		break;
 	case 'c':
 		for (i = 0; i < ARRAY_SIZE(presets); i++) {
@@ -984,13 +992,279 @@ static struct stack_item *get_stack_item(struct stack_items_cache *cache)
 			      sizeof(dst) < dst##_len ? 0 : sizeof(dst) - dst##_len,	\
 			      fmt, ##args)
 
+struct func_trace_item {
+	long ts;
+	long func_lat;
+	int func_id;
+	int depth; /* 1-based, negative means exit from function */
+	int seq_id;
+	long func_res;
+};
+
+struct func_trace {
+	int pid;
+	int cnt;
+	struct func_trace_item *entries;
+};
+
+static struct hashmap *func_traces_hash;
+
+static size_t func_traces_hasher(const void *key, void *ctx)
+{
+	return (size_t)key;
+}
+
+static bool func_traces_equal(const void *key1, const void *key2, void *ctx)
+{
+	return key1 == key2;
+}
+
+static int init_func_traces(void)
+{
+	func_traces_hash = hashmap__new(func_traces_hasher, func_traces_equal, NULL);
+	if (!func_traces_hash)
+		return -ENOMEM;
+
+	return 0;
+}
+
+static void free_func_trace(struct func_trace *ft)
+{
+	if (!ft)
+		return;
+
+	free(ft->entries);
+	free(ft);
+}
+
+static void free_func_traces(void)
+{
+	struct hashmap_entry *e;
+	int bkt;
+
+	if (!func_traces_hash)
+		return;
+
+	hashmap__for_each_entry(func_traces_hash, e, bkt) {
+		free_func_trace(e->value);
+	}
+
+	hashmap__free(func_traces_hash);
+}
+
+static void purge_func_trace(struct ctx *ctx, int pid)
+{
+	const void *k = (const void *)(uintptr_t)pid;
+	struct func_trace *ft;
+
+	if (!env.emit_func_trace)
+		return;
+
+	if (hashmap__delete(func_traces_hash, k, NULL, (void **)&ft))
+		free_func_trace(ft);
+}
+
+static int handle_func_trace_start(struct ctx *ctx, const struct func_trace_start *r)
+{
+	purge_func_trace(ctx, r->pid);
+
+	return 0;
+}
+
+static int handle_func_trace_entry(struct ctx *ctx, const struct func_trace_entry *r)
+{
+	const void *k = (const void *)(uintptr_t)r->pid;
+	struct func_trace *ft;
+	struct func_trace_item *fti;
+	void *tmp;
+
+	if (!hashmap__find(func_traces_hash, k, (void **)&ft)) {
+		ft = calloc(1, sizeof(*ft));
+		if (!ft || hashmap__add(func_traces_hash, k, ft)) {
+			fprintf(stderr, "Failed to allocate memory for new function trace entry!\n");
+			return -ENOMEM;
+		}
+
+		ft->pid = r->pid;
+	}
+
+	tmp = realloc(ft->entries, (ft->cnt + 1) * sizeof(ft->entries[0]));
+	if (!tmp)
+		return -ENOMEM;
+	ft->entries = tmp;
+
+	fti = &ft->entries[ft->cnt];
+	fti->ts = r->ts;
+	fti->func_id = r->func_id;
+	fti->depth = r->type == REC_FUNC_TRACE_ENTRY ? r->depth : -r->depth;
+	fti->seq_id = r->seq_id;
+	fti->func_lat = r->func_lat;
+	fti->func_res = r->func_res;
+
+	ft->cnt++;
+
+	return 0;
+}
+
+static void prepare_func_res(struct stack_item *s, long res, int func_flags);
+
+static char underline[512]; /* fill be filled with header underline char */
+static char spaces[512]; /* fill be filled with spaces */
+
+static void add_missing_records_msg(struct stack_items_cache *cache, int miss_cnt)
+{
+	struct stack_item *s;
+
+	s = get_stack_item(cache);
+	if (!s) {
+		fprintf(stderr, "Ran out of formatting space, some data will be omitted!\n");
+		return;
+	}
+
+	snappendf(s->src, "\u203C ... missing %d record%s ...",
+		  miss_cnt, miss_cnt == 1 ? "" : "s");
+	snappendf(s->dur, "...");
+	snappendf(s->err, "...");
+}
+
+static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
+			     const struct call_stack *cs)
+{
+	const void *k = (const void *)(uintptr_t)cs->pid;
+	const struct mass_attacher_func_info *finfo;
+	const char *sp, *mark;
+	struct stack_item *s;
+	struct func_trace *ft;
+	struct func_trace_item *f, *fn;
+	int i, d, last_seq_id = -1;
+
+	if (!hashmap__find(func_traces_hash, k, (void **)&ft))
+		return;
+
+	cache->cnt = 0;
+
+	for (i = 0; i < ft->cnt; last_seq_id = f->seq_id, i++) {
+		f = &ft->entries[i];
+		finfo = mass_attacher__func(ctx->att, f->func_id);
+		d = f->depth > 0 ? f->depth : -f->depth;
+		sp = spaces + sizeof(spaces) - 1 - 4 * min(d - 1, 30);
+
+		if (f->seq_id > last_seq_id + 1)
+			add_missing_records_msg(cache, f->seq_id - last_seq_id - 1);
+
+		s = get_stack_item(cache);
+		if (!s) {
+			fprintf(stderr, "Ran out of formatting space, some data will be omitted!\n");
+			break;
+		}
+
+		/* see if we can collapse leaf function entry/exit into one */
+		fn = &ft->entries[i + 1];
+		if (i + 1 < ft->cnt &&
+		    fn->seq_id == f->seq_id + 1 && /* consecutive items */
+		    fn->func_id == f->func_id && /* same function */
+		    f->depth > 0 && f->depth == -fn->depth /* matching entry and exit */) {
+			f = fn; /* use exit item as main data source */
+			i += 1; /* skip exit entry */
+		}
+
+		if (f == fn)		  /* collapsed leaf */
+			mark = "\u2194 "; /* unicode <-> character */
+		else if (f->depth > 0)	  /* entry */
+			mark = "\u2192 "; /* unicode -> character */
+		else			  /* exit */
+			mark = "\u2190 "; /* unicode <- character */
+
+		/* store function name and space indentation in src, as we
+		 * might need a bunch of extra space due to deep nestedness
+		 */
+		snappendf(s->src, "%s%s%s", sp, mark, finfo->name);
+
+		if (f->depth < 0) {
+			snappendf(s->dur, "%.3fus", f->func_lat / 1000.0);
+			prepare_func_res(s, f->func_res, ctx->skel->bss->func_flags[f->func_id]);
+		}
+	}
+
+	if (cs->next_seq_id != last_seq_id + 1)
+		add_missing_records_msg(cache, cs->next_seq_id - last_seq_id - 1);
+
+	purge_func_trace(ctx, ft->pid);
+}
+
+static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cache)
+{
+	int dur_len = 5, res_len = 0, src_len = 0, i;
+	const struct stack_item *s;
+
+	printf("\n");
+
+	/* calculate desired length of each auto-sized part of the output */
+	for (i = 0, s = cache->items; i < cache->cnt; i++, s++) {
+		dur_len = max(dur_len, s->dur_len);
+		res_len = max(res_len, s->err_len);
+		src_len = max(src_len, s->src_len);
+	}
+	/* the whole +2 and -2 business is due to the use of unicode characters */
+	src_len = max(src_len, 2 + sizeof("FUNCTION CALLS TRACE") - 1);
+	res_len = max(res_len, sizeof("RESULT") - 1);
+	dur_len = max(dur_len, sizeof("DURATION") - 1);
+
+	printf("%-*s   %-*s  %*s\n",
+	       src_len - 2, "FUNCTION CALLS TRACE",
+	       res_len, "RESULT", dur_len, "DURATION");
+	printf("%-.*s   %-.*s  %.*s\n",
+	       src_len - 2, underline,
+	       res_len, underline,
+	       dur_len, underline);
+
+	/* emit line by line taking into account calculated lengths of each column */
+	for (i = 0, s = cache->items; i < cache->cnt; i++, s++) {
+		printf("%-*s   %-*s  %*s\n",
+		       src_len, s->src,
+		       res_len, s->err,
+		       dur_len, s->dur);
+	}
+
+}
+
+static void prepare_func_res(struct stack_item *s, long res, int func_flags)
+{
+	const char *errstr;
+
+	if (func_flags & FUNC_RET_VOID) {
+		snappendf(s->err, "[void]");
+		return;
+	}
+
+	if (func_flags & FUNC_NEEDS_SIGN_EXT)
+		res = (long)(int)res;
+
+	if (res >= 0 || res < -MAX_ERRNO) {
+		if (func_flags & FUNC_RET_PTR)
+			snappendf(s->err, res == 0 ? "[NULL]" : "[%p]", (const void *)res);
+		else if (func_flags & FUNC_RET_BOOL)
+			snappendf(s->err, res == 0 ? "[false]" : "[true]");
+		else if (res >= -1024 * 1024 * 1024  && res < 1024 * 1024 /* random heuristic */)
+			snappendf(s->err, "[%ld]", res);
+		else
+			snappendf(s->err, "[0x%lx]", res);
+	} else {
+		errstr = err_to_str(res);
+		if (errstr)
+			snappendf(s->err, "[-%s]", errstr);
+		else
+			snappendf(s->err, "[%ld]", res);
+	}
+}
+
 static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem,
 				const struct kstack_item *kitem)
 {
 	static struct a2l_resp resps[64];
 	struct a2l_resp *resp = NULL;
 	int symb_cnt = 0, i, line_off;
-	const char *fname, *errstr;
+	const char *fname;
 	struct stack_item *s;
 
 	if (env.symb_mode != SYMB_NONE && ctx->a2l && kitem && !kitem->filtered) {
@@ -1021,22 +1295,7 @@ static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem
 		snappendf(s->err, "[...]");
 	} else if (fitem) {
 		snappendf(s->dur, "%ldus", fitem->lat / 1000);
-		if (fitem->res >= 0 || fitem->res < -MAX_ERRNO) {
-			if (fitem->flags & FUNC_RET_PTR)
-				snappendf(s->err, fitem->res == 0 ? "[NULL]" : "[%p]", (const void *)fitem->res);
-			else if (fitem->flags & FUNC_RET_BOOL)
-				snappendf(s->err, fitem->res == 0 ? "[false]" : "[true]");
-			else if (fitem->res >= -1024 * 1024 * 1024  && fitem->res < 1024 * 1024 /* random heuristic */)
-				snappendf(s->err, "[%ld]", fitem->res);
-			else
-				snappendf(s->err, "[0x%lx]", fitem->res);
-		} else {
-			errstr = err_to_str(fitem->res);
-			if (errstr)
-				snappendf(s->err, "[-%s]", errstr);
-			else
-				snappendf(s->err, "[%ld]", fitem->res);
-		}
+		prepare_func_res(s, fitem->res, fitem->flags);
 	}
 
 	if (env.emit_full_stacks) {
@@ -1206,22 +1465,24 @@ static bool lbr_matches(unsigned long addr, unsigned long start, unsigned long e
 	return start <= addr && addr < end;
 }
 
-static int handle_event(void *ctx, void *data, size_t data_sz)
+static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 {
 	static struct fstack_item fstack[MAX_FSTACK_DEPTH];
 	static struct kstack_item kstack[MAX_KSTACK_DEPTH];
 	const struct fstack_item *fitem;
 	const struct kstack_item *kitem;
-	struct ctx *dctx = ctx;
-	const struct call_stack *s = data;
 	int i, j, fstack_n, kstack_n;
 	char ts1[64], ts2[64];
 
-	if (!s->is_err && !env.emit_success_stacks)
+	if (!s->is_err && !env.emit_success_stacks) {
+		purge_func_trace(dctx, s->pid);
 		return 0;
+	}
 
-	if (s->is_err && env.has_error_filter && !should_report_stack(dctx, s))
+	if (s->is_err && env.has_error_filter && !should_report_stack(dctx, s)) {
+		purge_func_trace(dctx, s->pid);
 		return 0;
+	}
 
 	if (env.debug) {
 		printf("GOT %s STACK (depth %u):\n", s->is_err ? "ERROR" : "SUCCESS", s->max_depth);
@@ -1232,11 +1493,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	fstack_n = filter_fstack(dctx, fstack, s);
 	if (fstack_n < 0) {
 		fprintf(stderr, "FAILURE DURING FILTERING FUNCTION STACK!!! %d\n", fstack_n);
+		purge_func_trace(dctx, s->pid);
 		return -1;
 	}
 	kstack_n = filter_kstack(dctx, kstack, s);
 	if (kstack_n < 0) {
 		fprintf(stderr, "FAILURE DURING FILTERING KERNEL STACK!!! %d\n", kstack_n);
+		purge_func_trace(dctx, s->pid);
 		return -1;
 	}
 	if (env.debug) {
@@ -1252,6 +1515,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	 * Func trace goes first, then LBR, then (error) stack trace, each
 	 * conditional on being enabled to be collected and output
 	 */
+
+	/* Emit detailed function calls trace, but only if we have completed
+	 * call stack trace (depth == 0)
+	 */
+	if (env.emit_func_trace && s->depth == 0) {
+		prepare_ft_items(dctx, &stack_items1, s);
+		print_ft_items(dctx, &stack_items1);
+	}
 
 	/* LBR output */
 	if (env.use_lbr) {
@@ -1362,6 +1633,24 @@ out:
 	printf("\n\n");
 
 	return 0;
+}
+
+static int handle_event(void *ctx, void *data, size_t data_sz)
+{
+	enum rec_type type = *(enum rec_type *)data;
+
+	switch (type) {
+	case REC_CALL_STACK:
+		return handle_call_stack(ctx, data);
+	case REC_FUNC_TRACE_START:
+		return handle_func_trace_start(ctx, data);
+	case REC_FUNC_TRACE_ENTRY:
+	case REC_FUNC_TRACE_EXIT:
+		return handle_func_trace_entry(ctx, data);
+	default:
+		fprintf(stderr, "Unrecognized record type %d\n", type);
+		return -ENOTSUP;
+	}
 }
 
 static void handle_event_pb(void *ctx, int cpu, void *data, unsigned data_sz)
@@ -1574,6 +1863,9 @@ int main(int argc, char **argv)
 	/* set allowed error mask to all 1s (enabled by default) */
 	memset(env.allow_error_mask, 0xFF, sizeof(env.allow_error_mask));
 
+	memset(underline, '-', sizeof(underline) - 1);
+	memset(spaces, ' ', sizeof(spaces) - 1);
+
 	/* Parse command line arguments */
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
@@ -1672,7 +1964,7 @@ int main(int argc, char **argv)
 	skel->rodata->emit_intermediate_stacks = env.emit_intermediate_stacks;
 	skel->rodata->duration_ns = env.longer_than_ms * 1000000ULL;
 
-	memset(skel->rodata->spaces, ' ', 511);
+	memset(skel->rodata->spaces, ' ', sizeof(skel->rodata->spaces) - 1);
 
 	skel->rodata->use_ringbuf = env.has_ringbuf;
 	if (env.has_ringbuf) {
@@ -1711,6 +2003,16 @@ int main(int argc, char **argv)
 	skel->rodata->use_lbr = env.use_lbr;
 	if (env.use_lbr && env.verbose)
 		printf("LBR capture enabled.\n");
+
+	if (env.emit_func_trace) {
+		skel->rodata->emit_func_trace = true;
+
+		err = init_func_traces();
+		if (err) {
+			fprintf(stderr, "Failed to initialize func traces state: %d\n", err);
+			goto cleanup;
+		}
+	}
 
 	att_opts.verbose = env.verbose;
 	att_opts.debug = env.debug;
@@ -1990,6 +2292,8 @@ cleanup_silent:
 
 	free(env.allow_pids);
 	free(env.deny_pids);
+
+	free_func_traces();
 
 	ts2 = now_ns();
 	printf("DONE in %ld ms.\n", (long)((ts2 - ts1) / 1000000));

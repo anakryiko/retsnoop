@@ -42,6 +42,7 @@ const volatile bool use_lbr = false;
 const volatile int targ_tgid = 0;
 const volatile bool emit_success_stacks = false;
 const volatile bool emit_intermediate_stacks = false;
+const volatile bool emit_func_trace = false;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -162,11 +163,25 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 		if (!stack)
 			return false;
 
+		stack->type = REC_CALL_STACK;
+		stack->start_ts = bpf_ktime_get_ns();
 		stack->pid = pid;
 		stack->tgid = (u32)(pid_tgid >> 32);
 		bpf_get_current_comm(&stack->task_comm, sizeof(stack->task_comm));
 		tsk = (void *)bpf_get_current_task();
 		BPF_CORE_READ_INTO(&stack->proc_comm, tsk, group_leader, comm);
+
+		if (emit_func_trace) {
+			struct func_trace_start *r;
+
+			r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
+			if (r) {
+				r->type = REC_FUNC_TRACE_START;
+				r->pid = stack->pid;
+
+				bpf_ringbuf_submit(r, 0);
+			}
+		}
 	}
 
 	d = stack->depth;
@@ -182,6 +197,27 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 	stack->depth = d + 1;
 	stack->max_depth = d + 1;
 	stack->func_lat[d] = bpf_ktime_get_ns();
+	stack->next_seq_id++;
+
+	if (emit_func_trace) {
+		struct func_trace_entry *fe;
+
+		fe = bpf_ringbuf_reserve(&rb, sizeof(*fe), 0);
+		if (!fe)
+			goto skip_ft_entry;
+
+		fe->type = REC_FUNC_TRACE_ENTRY;
+		fe->ts = bpf_ktime_get_ns();
+		fe->pid = pid;
+		fe->seq_id = stack->next_seq_id - 1;
+		fe->depth = d + 1;
+		fe->func_id = id;
+		fe->func_lat = 0;
+		fe->func_res = 0;
+
+		bpf_ringbuf_submit(fe, 0);
+skip_ft_entry:;
+	}
 
 	if (verbose) {
 		const char *func_name = func_names[id & MAX_FUNC_MASK];
@@ -337,12 +373,14 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	u32 pid, exp_id, flags, fmt_sz;
 	const char *fmt;
 	bool failed;
-	u64 d;
+	u64 d, lat;
 
 	pid = (u32)bpf_get_current_pid_tgid();
 	stack = bpf_map_lookup_elem(&stacks, &pid);
 	if (!stack)
 		return false;
+
+	stack->next_seq_id++;
 
 	d = stack->depth;
 	if (d == 0)
@@ -364,6 +402,27 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	else
 		failed = IS_ERR_VALUE(res);
 
+	lat = bpf_ktime_get_ns() - stack->func_lat[d];
+
+	if (emit_func_trace) {
+		struct func_trace_entry *fe;
+
+		fe = bpf_ringbuf_reserve(&rb, sizeof(*fe), 0);
+		if (!fe)
+			goto skip_ft_exit;
+
+		fe->type = REC_FUNC_TRACE_EXIT;
+		fe->ts = bpf_ktime_get_ns();
+		fe->pid = pid;
+		fe->seq_id = stack->next_seq_id - 1;
+		fe->depth = d + 1;
+		fe->func_id = id;
+		fe->func_lat = lat;
+		fe->func_res = res;
+
+		bpf_ringbuf_submit(fe, 0);
+skip_ft_exit:;
+	}
 	if (verbose)
 		print_exit(ctx, d, id, res);
 
@@ -398,7 +457,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	}
 
 	stack->func_res[d] = res;
-	stack->func_lat[d] = bpf_ktime_get_ns() - stack->func_lat[d];
+	stack->func_lat[d] = lat;
 
 	if (failed && !stack->is_err) {
 		stack->is_err = true;

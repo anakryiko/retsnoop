@@ -21,17 +21,25 @@
  */
 #define MAX_ERR_CNT 4096
 
+enum rec_type {
+	REC_CALL_STACK,
+	REC_FUNC_TRACE_START,
+	REC_FUNC_TRACE_ENTRY,
+	REC_FUNC_TRACE_EXIT,
+};
+
 struct call_stack {
+	/* REC_CALL_STACK */
+	enum rec_type type;
+
 	unsigned short func_ids[MAX_FSTACK_DEPTH];
 	long func_res[MAX_FSTACK_DEPTH];
 	long func_lat[MAX_FSTACK_DEPTH];
 	unsigned depth;
 	unsigned max_depth;
-	int pid;
-	int tgid;
+	int pid, tgid;
 	long start_ts, emit_ts;
-	char task_comm[16];
-	char proc_comm[16];
+	char task_comm[16], proc_comm[16];
 	bool is_err;
 
 	unsigned short saved_ids[MAX_FSTACK_DEPTH];
@@ -45,6 +53,29 @@ struct call_stack {
 
 	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
 	long lbrs_sz;
+
+	int next_seq_id;
+};
+
+struct func_trace_start {
+	/* REC_FUNC_TRACE_START */
+	enum rec_type type;
+	int pid;
+};
+
+struct func_trace_entry {
+	/* REC_FUNC_TRACE_ENTRY or REC_FUNC_TRACE_EXIT */
+	enum rec_type type;
+
+	int pid;
+	long ts;
+
+	int seq_id;
+	short depth;
+	unsigned short func_id;
+
+	long func_lat;
+	long func_res;
 };
 
 #define FUNC_IS_ENTRY 0x1
