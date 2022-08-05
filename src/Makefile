@@ -113,6 +113,7 @@ retsnoop: $(addprefix $(OUTPUT)/,					\
 		      retsnoop.o					\
 		      ksyms.o						\
 		      utils.o						\
+		      hashmap.o						\
 		      addr2line.o					\
 		      addr2line.embed.o					\
 		      mass_attacher.o)					\
