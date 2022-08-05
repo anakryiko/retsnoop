@@ -959,13 +959,16 @@ struct stack_item {
 
 static struct stack_items_cache
 {
-	struct stack_item items[256];
+	struct stack_item items[1024];
 	size_t cnt;
 } stack_items1, stack_items2;
 
 static struct stack_item *get_stack_item(struct stack_items_cache *cache)
 {
 	struct stack_item *s;
+
+	if (cache->cnt == ARRAY_SIZE(cache->items))
+		return NULL;
 
 	s = &cache->items[cache->cnt++];
 
@@ -1004,6 +1007,10 @@ static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem
 	}
 
 	s = get_stack_item(&stack_items1);
+	if (!s) {
+		fprintf(stderr, "Ran out of formatting space, some data will be omitted!\n");
+		return;
+	}
 
 	/* kitem == NULL should be rare, either a bug or we couldn't get valid kernel stack trace */
 	s->marks[0] = kitem ? ' ' : '!';
@@ -1060,6 +1067,10 @@ static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem
 	/* append inlined calls */
 	for (i = 1, resp--; i < symb_cnt; i++, resp--) {
 		s = get_stack_item(&stack_items1);
+		if (!s) {
+			fprintf(stderr, "Ran out of formatting space, some data will be omitted!\n");
+			return;
+		}
 
 		line_off = detect_linux_src_loc(resp->line);
 
@@ -1081,6 +1092,8 @@ static void print_stack_items(const struct stack_items_cache *cache)
 		src_len = max(src_len, s->src_len);
 	}
 
+	printf("\n");
+
 	/* emit line by line taking into account calculated lengths of each column */
 	for (i = 0, s = cache->items; i < cache->cnt; i++, s++) {
 		printf("%c%c %*s %-*s  %-*s  %-*s\n",
@@ -1099,6 +1112,10 @@ static void prepare_lbr_items(struct ctx *ctx, long addr, struct stack_items_cac
 	struct stack_item *s;
 
 	s = get_stack_item(cache);
+	if (!s) {
+		fprintf(stderr, "Ran out of formatting space, some data will be omitted!\n");
+		return;
+	}
 
 	if (env.emit_full_stacks)
 		snappendf(s->sym, "%016lx ", addr);
@@ -1126,6 +1143,10 @@ static void prepare_lbr_items(struct ctx *ctx, long addr, struct stack_items_cac
 		line_off = detect_linux_src_loc(resp->line);
 
 		s = get_stack_item(cache);
+		if (!s) {
+			fprintf(stderr, "Ran out of formatting space, some data will be omitted!\n");
+			return;
+		}
 		if (env.emit_full_stacks)
 			snappendf(s->sym, "%*s ", 16, "");
 		snappendf(s->sym, ". %s", resp->fname);
@@ -1150,11 +1171,12 @@ static void print_lbr_items(int lbr_from, int lbr_to,
 		src_len2 = max(src_len2, s2->src_len);
 	}
 
+	printf("\n");
+
 	/* emit each LBR record (which can contain multiple lines) */
 	for (i = 0, j = 0, k = lbr_from; k >= lbr_to; k--) {
 		bool first = true;
 
-		printf("\n");
 		while (i < rec_cnts1[k] || j < rec_cnts2[k]) {
 			s1 = i < rec_cnts1[k] ? &cache1->items[i++] : NULL;
 			s2 = j < rec_cnts2[k] ? &cache2->items[j++] : NULL;
@@ -1193,7 +1215,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	struct ctx *dctx = ctx;
 	const struct call_stack *s = data;
 	int i, j, fstack_n, kstack_n;
-	char timestamp[64];
+	char ts1[64], ts2[64];
 
 	if (!s->is_err && !env.emit_success_stacks)
 		return 0;
@@ -1222,50 +1244,16 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		printf("KSTACK (%d items out of original %ld):\n", kstack_n, s->kstack_sz / 8);
 	}
 
-	ts_to_str(s->emit_ts + ktime_off, timestamp, sizeof(timestamp));
-	printf("%s TID/PID %d/%d (%s/%s):\n", timestamp, s->pid, s->tgid,  s->task_comm, s->proc_comm);
+	ts_to_str(s->start_ts + ktime_off, ts1, sizeof(ts1));
+	ts_to_str(s->emit_ts + ktime_off, ts2, sizeof(ts2));
+	printf("%s -> %s TID/PID %d/%d (%s/%s):\n", ts1, ts2, s->pid, s->tgid,  s->task_comm, s->proc_comm);
 
-	stack_items1.cnt = 0;
+	/* Emit more verbose outputs before more succinct and high signal output.
+	 * Func trace goes first, then LBR, then (error) stack trace, each
+	 * conditional on being enabled to be collected and output
+	 */
 
-	i = 0;
-	j = 0;
-	while (i < fstack_n) {
-		fitem = &fstack[i];
-		kitem = j < kstack_n ? &kstack[j] : NULL;
-
-		if (!kitem) {
-			/* this shouldn't happen unless we got no kernel stack
-			 * or there is some bug
-			 */
-			prepare_stack_items(dctx, fitem, NULL);
-			i++;
-			continue;
-		}
-
-		/* exhaust unknown kernel stack items, assuming we should find
-		 * kstack_item matching current fstack_item eventually, which
-		 * should be the case when kernel stack trace is correct
-		 */
-		if (!kitem->ksym || kitem->filtered
-		    || strcmp(kitem->ksym->name, fitem->name) != 0) {
-			prepare_stack_items(dctx, NULL, kitem);
-			j++;
-			continue;
-		}
-
-		/* happy case, lots of info, yay */
-		prepare_stack_items(dctx, fitem, kitem);
-		i++;
-		j++;
-		continue;
-	}
-
-	for (; j < kstack_n; j++) {
-		prepare_stack_items(dctx, NULL, &kstack[j]);
-	}
-
-	print_stack_items(&stack_items1);
-
+	/* LBR output */
 	if (env.use_lbr) {
 		unsigned long start = 0, end = 0;
 		int lbr_cnt, lbr_from, lbr_to = 0;
@@ -1327,6 +1315,48 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		if (!env.emit_full_stacks && !found_useful_lbrs)
 			printf("[LBR] No relevant LBR data were captured, showing unfiltered LBR stack!\n");
 	}
+
+	/* Emit combined fstack/kstack + errors stack trace */
+	stack_items1.cnt = 0;
+
+	i = 0;
+	j = 0;
+	while (i < fstack_n) {
+		fitem = &fstack[i];
+		kitem = j < kstack_n ? &kstack[j] : NULL;
+
+		if (!kitem) {
+			/* this shouldn't happen unless we got no kernel stack
+			 * or there is some bug
+			 */
+			prepare_stack_items(dctx, fitem, NULL);
+			i++;
+			continue;
+		}
+
+		/* exhaust unknown kernel stack items, assuming we should find
+		 * kstack_item matching current fstack_item eventually, which
+		 * should be the case when kernel stack trace is correct
+		 */
+		if (!kitem->ksym || kitem->filtered
+		    || strcmp(kitem->ksym->name, fitem->name) != 0) {
+			prepare_stack_items(dctx, NULL, kitem);
+			j++;
+			continue;
+		}
+
+		/* happy case, lots of info, yay */
+		prepare_stack_items(dctx, fitem, kitem);
+		i++;
+		j++;
+		continue;
+	}
+
+	for (; j < kstack_n; j++) {
+		prepare_stack_items(dctx, NULL, &kstack[j]);
+	}
+
+	print_stack_items(&stack_items1);
 
 out:
 	printf("\n\n");

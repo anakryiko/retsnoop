@@ -29,7 +29,7 @@ struct call_stack {
 	unsigned max_depth;
 	int pid;
 	int tgid;
-	long emit_ts;
+	long start_ts, emit_ts;
 	char task_comm[16];
 	char proc_comm[16];
 	bool is_err;

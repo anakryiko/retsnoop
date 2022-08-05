@@ -91,7 +91,7 @@ void ts_to_str(uint64_t ts, char buf[], size_t buf_sz)
 	localtime_r(&t, &tm);
 	strftime(tmp, sizeof(tmp), "%H:%M:%S", &tm);
 
-	snprintf(buf, buf_sz, "%s.%03lu", tmp, ts / 1000000 % 1000);
+	snprintf(buf, buf_sz, "%s.%06lu", tmp, ts / 1000 % 1000000);
 }
 
 /* adapted from libbpf sources */
