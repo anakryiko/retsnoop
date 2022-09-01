@@ -2254,6 +2254,7 @@ int main(int argc, char **argv)
 
 cleanup:
 	printf("\nDetaching... ");
+	fflush(stdout);
 	ts1 = now_ns();
 cleanup_silent:
 	mass_attacher__free(att);
