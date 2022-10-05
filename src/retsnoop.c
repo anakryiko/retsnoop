@@ -104,9 +104,9 @@ static struct env {
 	bool has_lbr;
 	bool has_ringbuf;
 } env = {
-	.ringbuf_sz = 4 * 1024 * 1024,
+	.ringbuf_sz = 8 * 1024 * 1024,
 	.perfbuf_percpu_sz = 256 * 1024,
-	.stacks_map_sz = 1024,
+	.stacks_map_sz = 4096,
 };
 
 const char *argp_program_version = "retsnoop v0.9";
@@ -965,18 +965,34 @@ struct stack_item {
 	int src_len;
 };
 
-static struct stack_items_cache
+struct stack_items_cache
 {
-	struct stack_item items[1024];
+	struct stack_item *items;
 	size_t cnt;
-} stack_items1, stack_items2;
+	size_t cap;
+};
+
+static struct stack_items_cache stack_items1, stack_items2;
 
 static struct stack_item *get_stack_item(struct stack_items_cache *cache)
 {
 	struct stack_item *s;
 
-	if (cache->cnt == ARRAY_SIZE(cache->items))
-		return NULL;
+	if (cache->cnt == cache->cap) {
+		size_t new_cap = cache->cap * 3 / 2;
+		void *tmp;
+
+		if (new_cap < 32)
+			new_cap = 32;
+
+		tmp = realloc(cache->items, new_cap * sizeof(*s));
+		if (!tmp)
+			return NULL;
+
+		cache->items = tmp;
+		memset(cache->items + cache->cap, 0, (new_cap - cache->cap) * sizeof(*s));
+		cache->cap = new_cap;
+	}
 
 	s = &cache->items[cache->cnt++];
 
@@ -2313,6 +2329,9 @@ cleanup_silent:
 	free(env.deny_pids);
 
 	free_func_traces();
+
+	free(stack_items1.items);
+	free(stack_items2.items);
 
 	ts2 = now_ns();
 	printf("DONE in %ld ms.\n", (long)((ts2 - ts1) / 1000000));
