@@ -1776,7 +1776,7 @@ static int detect_kernel_features(void)
 	usleep(1);
 
 	if (env.debug) {
-		printf("Feature detection results:\n"
+		printf("Feature detection:\n"
 		       "\tBPF ringbuf map supported: %s\n"
 		       "\tbpf_get_func_ip() supported: %s\n"
 		       "\tbpf_get_branch_snapshot() supported: %s\n"
@@ -1787,6 +1787,13 @@ static int detect_kernel_features(void)
 		       skel->bss->has_branch_snapshot ? "yes" : "no",
 		       skel->bss->has_bpf_cookie ? "yes" : "no",
 		       skel->bss->has_kprobe_multi ? "yes" : "no");
+		printf("Feature calibration:\n"
+		       "\tkretprobe IP offset: %d\n"
+		       "\tfexit sleep fix: %s\n"
+		       "\tfentry re-entry protection: %s\n",
+		       skel->bss->kret_ip_off,
+		       skel->bss->has_fexit_sleep_fix ? "yes" : "no",
+		       skel->bss->has_fentry_protection ? "yes" : "no");
 	}
 
 	env.has_ringbuf = skel->bss->has_ringbuf;
@@ -1836,6 +1843,11 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 	return vfprintf(stderr, format, args);
 }
 
+static int libbpf_noop_print_fn(enum libbpf_print_level level, const char *format, va_list args)
+{
+	return 0;
+}
+
 static volatile sig_atomic_t exiting;
 
 static void sig_handler(int sig)
@@ -1873,6 +1885,14 @@ int main(int argc, char **argv)
 
 	if (env.show_version) {
 		printf("%s\n", argp_program_version);
+		if (env.verbose) {
+			libbpf_set_print(libbpf_noop_print_fn);
+			env.debug = true;
+			if (detect_kernel_features()) {
+				printf("Failed to do feature detection, please run retsnoop as root!\n");
+				return 1;
+			}
+		}
 		return 0;
 	}
 
