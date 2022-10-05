@@ -1914,8 +1914,6 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
-	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
-
 	/* determine mapping from bpf_ktime_get_ns() to real clock */
 	calibrate_ktime();
 
