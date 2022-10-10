@@ -247,3 +247,10 @@ You'll get `retsnoop` binary under `src/` folder. You can copy it to
 a production server and run it. There are no extra files that need to be
 distributed.
 
+## Distro availability
+
+Retsnoop started to be packaged by distros. Table below will point out which
+distros package retsnoop and at which verison.
+
+[![retsnoop distro status](https://repology.org/badge/vertical-allrepos/retsnoop.svg)](https://repology.org/project/retsnoop/versions)
+
