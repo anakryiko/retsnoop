@@ -1222,12 +1222,12 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 		src_len = max(src_len, s->src_len);
 	}
 	/* the whole +2 and -2 business is due to the use of unicode characters */
-	src_len = max(src_len, 2 + sizeof("FUNCTION CALLS TRACE") - 1);
+	src_len = max(src_len, 2 + sizeof("FUNCTION CALL TRACE") - 1);
 	res_len = max(res_len, sizeof("RESULT") - 1);
 	dur_len = max(dur_len, sizeof("DURATION") - 1);
 
 	printf("%-*s   %-*s  %*s\n",
-	       src_len - 2, "FUNCTION CALLS TRACE",
+	       src_len - 2, "FUNCTION CALL TRACE",
 	       res_len, "RESULT", dur_len, "DURATION");
 	printf("%-.*s   %-.*s  %.*s\n",
 	       src_len - 2, underline,
