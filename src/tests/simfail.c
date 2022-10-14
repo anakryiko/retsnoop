@@ -11,6 +11,7 @@
 
 #include "tests/kprobe_bad_kfunc.skel.h"
 #include "tests/fentry_unsupp_func.skel.h"
+#include "tests/simple_obj.skel.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
@@ -98,6 +99,7 @@ enum {
 	BAD_MAP_LOOKUP_KEY,
 	BAD_MAP_LOOKUP_VALUE,
 	BAD_MAP_LOOKUP_FLAGS,
+	GOOD_SIMPLE_PROG,
 };
 
 static int PAGE_SIZE;
@@ -167,7 +169,7 @@ static void fail_bpf_bad_map(long arg)
 	close(fd);
 }
 
-void fail_bpf_kprobe_bad_kfunc(long arg)
+static void fail_bpf_kprobe_bad_kfunc(long arg)
 {
 	struct kprobe_bad_kfunc_bpf *skel;
 
@@ -180,7 +182,7 @@ void fail_bpf_kprobe_bad_kfunc(long arg)
 	kprobe_bad_kfunc_bpf__destroy(skel);
 }
 
-void fail_bpf_fentry_unsupp_func(long arg)
+static void fail_bpf_fentry_unsupp_func(long arg)
 {
 	struct fentry_unsupp_func_bpf *skel;
 
@@ -193,7 +195,21 @@ void fail_bpf_fentry_unsupp_func(long arg)
 	fentry_unsupp_func_bpf__destroy(skel);
 }
 
-void syscall_long_sleep(long ms)
+static void load_bpf_obj_func(long arg)
+{
+	struct simple_obj_bpf *skel;
+
+	skel = simple_obj_bpf__open_and_load();
+	if (!skel) {
+		fprintf(stderr, "Failed to open/load simple_obj_bpf skeleton!\n");
+		return;
+	}
+
+	simple_obj_bpf__destroy(skel);
+}
+
+
+static void syscall_long_sleep(long ms)
 {
 	usleep(1000 * ms);
 }
@@ -231,6 +247,8 @@ struct case_desc {
 	{ "bpf", "bpf-fentry-unsupp-func", fail_bpf_fentry_unsupp_func, 0,
 	  "Attempt to attach fentry BPF program to unsupported function" },
 
+	{ "bpf", "bpf-simple-obj", load_bpf_obj_func, 0,
+	  "Load and verify a simple BPF object file" },
 	{ "syscall", "syscall-long-sleep", syscall_long_sleep, 1000,
 	  "Trigger a long sleep (> 1000 ms)" },
 };
