@@ -297,7 +297,7 @@ in the companion blog post for more details.
 
 Here we'll just note that LBR mode allows customizing what kind of records the
 CPU is instructed to record. It can be one of the following values: `any`,
-`any_call`, `any_return` (default), `cond, `call`, `ind_call`, `ind_jump`,
+`any_call`, `any_return` (default), `cond`, `call`, `ind_call`, `ind_jump`,
 `call_stack`, `abort_tx`, `in_tx`, `no_tx`. See Linux's
 [perf_event.h](https://github.com/torvalds/linux/blob/master/include/uapi/linux/perf_event.h#L180-L208)
 UAPI header and its `enum perf_branch_sample_type_shift`'s comments for brief
