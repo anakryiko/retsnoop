@@ -1914,7 +1914,7 @@ int main(int argc, char **argv)
 
 	if (env.entry_glob_cnt == 0) {
 		fprintf(stderr, "No entry point globs specified. "
-				"Please provide entry glob(s) ('-e GLOB') and/or any preset ('-p PRESET').\n");
+				"Please provide entry glob(s) ('-e GLOB') and/or any preset ('-c PRESET').\n");
 		return -1;
 	}
 
