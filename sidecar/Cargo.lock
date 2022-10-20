@@ -6,7 +6,7 @@ version = 3
 name = "addr2line"
 version = "0.1.0"
 dependencies = [
- "addr2line 0.17.0",
+ "addr2line 0.18.0",
  "backtrace",
  "clap",
  "fallible-iterator",
@@ -14,7 +14,7 @@ dependencies = [
  "gimli",
  "glob",
  "memmap",
- "object",
+ "object 0.29.0",
  "rustc-test",
  "typed-arena",
 ]
@@ -25,10 +25,19 @@ version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9ecd88a8c8378ca913a680cd98f0f13ac67383d35993f86c90a70e3f137816b"
 dependencies = [
+ "gimli",
+]
+
+[[package]]
+name = "addr2line"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ca9b76e919fd83ccfb509f51b28c333c0e03f2221616e347a129215cec4e4a9"
+dependencies = [
  "cpp_demangle",
  "fallible-iterator",
  "gimli",
- "object",
+ "object 0.29.0",
  "rustc-demangle",
  "smallvec",
 ]
@@ -76,7 +85,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "miniz_oxide",
- "object",
+ "object 0.27.1",
  "rustc-demangle",
 ]
 
@@ -248,6 +257,15 @@ name = "object"
 version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67ac1d3f9a1d3616fd9a60c8d74296f22406a238b6a72f5cc1e6f314df4ffbf9"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "object"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21158b2c33aa6d4561f1c0a6ea283ca92bc54802a93b263e910746d679a7eb53"
 dependencies = [
  "flate2",
  "memchr",
