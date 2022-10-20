@@ -16,6 +16,11 @@ INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi
 CFLAGS := -g -Wall -O$(if $(DEBUG),0,2)
 ARCH := $(shell uname -m | sed 's/x86_64/x86/g; s/aarch64/arm64/g')
 
+# for installation
+INSTALL := install
+prefix := /usr/local
+bindir := $(prefix)/bin
+
 # Get Clang's default includes on this system. We'll explicitly add these dirs
 # to the includes list when compiling with `-target bpf` because otherwise some
 # architecture-specific dirs will be "missing" on some architectures/distros -
@@ -52,6 +57,10 @@ clean:
 cscope:
 	$(Q)ls *.c *.h > cscope.files
 	$(Q)cscope -b -q $(INCLUDES) -f cscope.out
+
+install: all
+	mkdir -p $(DESTDIR)$(bindir)/
+	$(INSTALL) -pt $(DESTDIR)$(bindir)/ retsnoop simfail
 
 $(OUTPUT) $(OUTPUT)/libbpf $(OUTPUT)/tests:
 	$(call msg,MKDIR,$@)
