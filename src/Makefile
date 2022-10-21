@@ -5,7 +5,11 @@ LD ?= ld
 LLVM_STRIP ?= llvm-strip
 CARGO ?= cargo
 DEBUG ?=
-BPFTOOL ?= $(abspath ../tools/bpftool)
+
+BPFTOOL_SRC := $(abspath ../bpftool/src)
+BPFTOOL_OUTPUT ?= $(abspath $(OUTPUT)/bpftool)
+BPFTOOL ?= $(BPFTOOL_OUTPUT)/bootstrap/bpftool
+
 LIBBPF_SRC := $(abspath ../libbpf/src)
 LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
 SIDECAR := ../sidecar/target/$(if $(DEBUG),debug,release)/addr2line
@@ -50,7 +54,7 @@ all: retsnoop simfail
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT) retsnoop simfail
+	$(Q)rm -rf $(OUTPUT) retsnoop simfail bpftool
 	$(Q)$(CARGO) clean --manifest-path=../sidecar/Cargo.toml
 
 .PHONY: cscope
@@ -62,19 +66,30 @@ install: all
 	mkdir -p $(DESTDIR)$(bindir)/
 	$(INSTALL) -pt $(DESTDIR)$(bindir)/ retsnoop simfail
 
-$(OUTPUT) $(OUTPUT)/libbpf $(OUTPUT)/tests:
+$(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT) $(OUTPUT)/tests:
 	$(call msg,MKDIR,$@)
 	$(Q)mkdir -p $@
 
 # Build libbpf
 $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
 	$(call msg,LIB,$@)
-	$(Q) [ -d ../libbpf/src ] || git submodule update --init --recursive
+	$(Q) [ -d ../libbpf/src ] || git submodule update --init
 	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1		      \
 		    OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@)		      \
 		    INCLUDEDIR= LIBDIR= UAPIDIR=			      \
 		    EXTRA_CFLAGS="-g -O$(if $(DEBUG),0,2)" \
 		    install
+
+# Build bpftool
+$(BPFTOOL): $(LIBBPF_OBJ) | $(BPFTOOL_OUTPUT)
+	$(call msg,BPFTOOL,$@)
+	$(Q) [ -d ../bpftool/src ] || git submodule update --init
+	$(Q)$(MAKE) ARCH= CROSS_COMPILE=				      \
+		    BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT)/	      \
+		    -C $(BPFTOOL_SRC) bootstrap
+
+bpftool: $(BPFTOOL)
+	$(Q)ln -s $(BPFTOOL) bpftool
 
 # Build BPF object files
 $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard *.h) vmlinux.h | $(OUTPUT) $(OUTPUT)/tests
@@ -82,7 +97,7 @@ $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard *.h) vmlinux.h | $(OUTPUT) $
 	$(Q)$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -c $(filter %.c,$^) -o $@
 
 # Link together BPF object files and generate BPF skeleton
-$(OUTPUT)/%.skel.h: $(OUTPUT)/%.bpf.o
+$(OUTPUT)/%.skel.h: $(OUTPUT)/%.bpf.o | $(OUTPUT) $(BPFTOOL)
 	$(call msg,GEN-LINK,$@)
 	$(Q)$(BPFTOOL) gen object $(@:.skel.h=.bpfo) $^
 	$(call msg,GEN-SKEL,$@)
