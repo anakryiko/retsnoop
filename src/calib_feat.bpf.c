@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
-/* Copyright (c) 2021 Sartura */
-#include "vmlinux.h"
+/* Copyright (c) 2021 Facebook */
+#include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
@@ -24,7 +24,6 @@ bool has_kprobe_multi = false;
 SEC("kprobe/hrtimer_start_range_ns")
 int calib_entry(struct pt_regs *ctx)
 {
-	static struct bpf_prog *bpf_prog = NULL;
 	pid_t tid;
 
 	tid = (__u32)bpf_get_current_pid_tgid();
@@ -45,7 +44,7 @@ int calib_entry(struct pt_regs *ctx)
 	/* Detect if fentry/fexit re-entry protection is implemented.
 	 * Added in: ca06f55b9002 ("bpf: Add per-program recursion prevention mechanism")
 	 */
-	has_fentry_protection = bpf_core_field_exists(bpf_prog->active);
+	has_fentry_protection = bpf_core_field_exists(struct bpf_prog, active);
 
 	/* Detect if fexit is safe to use for long-running and sleepable
 	 * kernel functions.
