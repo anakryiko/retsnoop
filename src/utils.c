@@ -179,7 +179,7 @@ cleanup:
 	return err;
 }
 
-int append_glob(struct glob **globs, int *cnt, const char *str)
+int append_glob(struct glob **globs, int *cnt, const char *str, bool mandatory)
 {
 	struct glob *g;
 	char name[128], mod[128];
@@ -194,6 +194,7 @@ int append_glob(struct glob **globs, int *cnt, const char *str)
 	if (sscanf(str, "%127[^[ ] [%127[^]]]", name, mod) == 2) {
 		g->name = strdup(name);
 		g->mod = strdup(mod);
+		g->mandatory = mandatory;
 		if (!g->name || !g->mod) {
 			free(g->name);
 			free(g->mod);
@@ -202,6 +203,7 @@ int append_glob(struct glob **globs, int *cnt, const char *str)
 	} else {
 		g->name = strdup(str);
 		g->mod = NULL;
+		g->mandatory = mandatory;
 		if (!g->name)
 			return -ENOMEM;
 	}
@@ -210,7 +212,7 @@ int append_glob(struct glob **globs, int *cnt, const char *str)
 	return 0;
 }
 
-int append_glob_file(struct glob **globs, int *cnt, const char *file)
+int append_glob_file(struct glob **globs, int *cnt, const char *file, bool mandatory)
 {
 	char buf[256];
 	FILE *f;
@@ -224,7 +226,7 @@ int append_glob_file(struct glob **globs, int *cnt, const char *file)
 	}
 
 	while (fscanf(f, "%s", buf) == 1) {
-		if (append_glob(globs, cnt, buf)) {
+		if (append_glob(globs, cnt, buf, mandatory)) {
 			err = -ENOMEM;
 			goto cleanup;
 		}
@@ -235,7 +237,8 @@ cleanup:
 	return err;
 }
 
-int append_compile_unit(struct addr2line *a2l, struct glob **globs, int *cnt, const char *cu)
+int append_compile_unit(struct addr2line *a2l, struct glob **globs, int *cnt,
+			const char *cu, bool mandatory)
 {
 	int err = 0;
 	struct a2l_cu_resp *cu_resps = NULL;
@@ -248,7 +251,7 @@ int append_compile_unit(struct addr2line *a2l, struct glob **globs, int *cnt, co
 	}
 
 	for (i = 0; i < resp_cnt; i++) {
-		if (append_glob(globs, cnt, cu_resps[i].fname)) {
+		if (append_glob(globs, cnt, cu_resps[i].fname, mandatory)) {
 			err = -ENOMEM;
 			break;
 		}
