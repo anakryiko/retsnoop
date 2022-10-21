@@ -18,7 +18,19 @@ SIDECAR := ../sidecar/target/$(if $(DEBUG),debug,release)/addr2line
 # outdated
 INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi
 CFLAGS := -g -Wall -O$(if $(DEBUG),0,2)
-ARCH := $(shell uname -m | sed 's/x86_64/x86/g; s/aarch64/arm64/g')
+
+ARCH ?= $(shell uname -m						\
+		| sed 's/x86_64/x86/'					\
+		| sed 's/i686/x86/'					\
+		| sed 's/aarch64/arm64/'				\
+		| sed 's/ppc64le/powerpc/'				\
+		| sed 's/riscv64/riscv/'				\
+		| sed 's/s390x/s390/'					\
+	)
+
+ifeq ($(wildcard $(ARCH)/),)
+$(error Architecture $(ARCH) is not supported yet.)
+endif
 
 # for installation
 INSTALL := install
@@ -59,7 +71,7 @@ clean:
 
 .PHONY: cscope
 cscope:
-	$(Q)ls *.c *.h > cscope.files
+	$(Q)ls *.c *.h $(ARCH)/vmlinux.h > cscope.files
 	$(Q)cscope -b -q $(INCLUDES) -f cscope.out
 
 install: all
@@ -92,9 +104,11 @@ bpftool: $(BPFTOOL)
 	$(Q)ln -s $(BPFTOOL) bpftool
 
 # Build BPF object files
-$(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard *.h) vmlinux.h | $(OUTPUT) $(OUTPUT)/tests
+$(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard *.h) $(ARCH)/vmlinux.h    \
+		 | $(OUTPUT) $(OUTPUT)/tests
 	$(call msg,BPF,$@)
-	$(Q)$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -c $(filter %.c,$^) -o $@
+	$(Q)$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -I$(ARCH)     \
+		     $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -c $(filter %.c,$^) -o $@
 
 # Link together BPF object files and generate BPF skeleton
 $(OUTPUT)/%.skel.h: $(OUTPUT)/%.bpf.o | $(OUTPUT) $(BPFTOOL)
