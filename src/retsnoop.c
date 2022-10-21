@@ -109,12 +109,12 @@ static struct env {
 	.stacks_map_sz = 4096,
 };
 
-const char *argp_program_version = "retsnoop v0.9.1";
+const char *argp_program_version = "retsnoop v0.9.2";
 const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
 "retsnoop tool shows kernel call stacks based on specified function filters.\n"
 "\n"
-"USAGE: retsnoop [-v] [-ss] [-F|-K] [-c CASE]* [-a GLOB]* [-d GLOB]* [-e GLOB]*\n";
+"USAGE: retsnoop [-v] [-F|-K|-M] [-T] [--lbr] [-c CASE]* [-a GLOB]* [-d GLOB]* [-e GLOB]*\n";
 
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
@@ -191,7 +191,7 @@ static const struct argp_option opts[] = {
 	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
 	  "Emit non-filtered full stack traces" },
 	{ "stacks-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
-	  "Stacks map size (default 1024)" },
+	  "Stacks map size (default 4096)" },
 	{},
 };
 
