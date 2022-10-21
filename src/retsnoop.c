@@ -1912,12 +1912,6 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
-	if (env.entry_glob_cnt == 0) {
-		fprintf(stderr, "No entry point globs specified. "
-				"Please provide entry glob(s) ('-e GLOB') and/or any preset ('-c PRESET').\n");
-		return -1;
-	}
-
 	if (geteuid() != 0)
 		fprintf(stderr, "You are not running as root! Expect failures. Please use sudo or run as root.\n");
 
@@ -1947,6 +1941,12 @@ int main(int argc, char **argv)
 
 	if (process_cu_globs()) {
 		fprintf(stderr, "Failed to process file paths.\n");
+		return -1;
+	}
+
+	if (env.entry_glob_cnt == 0) {
+		fprintf(stderr, "No entry point globs specified. "
+				"Please provide entry glob(s) ('-e GLOB') and/or any preset ('-c PRESET').\n");
 		return -1;
 	}
 
