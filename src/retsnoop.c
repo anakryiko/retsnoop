@@ -221,19 +221,22 @@ static int process_cu_globs()
 	int i;
 
 	for (i = 0; i < env.cu_allow_glob_cnt; i++) {
-		err = append_compile_unit(env.ctx.a2l, &env.allow_globs, &env.allow_glob_cnt, env.cu_allow_globs[i]);
+		err = append_compile_unit(env.ctx.a2l, &env.allow_globs, &env.allow_glob_cnt,
+					  env.cu_allow_globs[i], false /*mandatory*/);
 		if (err < 0)
 			return err;
 	}
 
 	for (i = 0; i < env.cu_deny_glob_cnt; i++) {
-		err = append_compile_unit(env.ctx.a2l, &env.deny_globs, &env.deny_glob_cnt, env.cu_deny_globs[i]);
+		err = append_compile_unit(env.ctx.a2l, &env.deny_globs, &env.deny_glob_cnt,
+					  env.cu_deny_globs[i], false /*mandatory*/);
 		if (err < 0)
 			return err;
 	}
 
 	for (i = 0; i < env.cu_entry_glob_cnt; i++) {
-		err = append_compile_unit(env.ctx.a2l, &env.entry_globs, &env.entry_glob_cnt, env.cu_entry_globs[i]);
+		err = append_compile_unit(env.ctx.a2l, &env.entry_globs, &env.entry_glob_cnt,
+					  env.cu_entry_globs[i], false /*mandatory*/);
 		if (err < 0)
 			return err;
 	}
@@ -331,17 +334,20 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 
 			for (j = 0; p->entry_globs[j]; j++) {
 				glob = p->entry_globs[j];
-				if (append_glob(&env.entry_globs, &env.entry_glob_cnt, glob))
+				if (append_glob(&env.entry_globs, &env.entry_glob_cnt,
+						glob, true /*mandatory*/))
 					return -ENOMEM;
 			}
 			for (j = 0; p->allow_globs[j]; j++) {
 				glob = p->allow_globs[j];
-				if (append_glob(&env.allow_globs, &env.allow_glob_cnt, glob))
+				if (append_glob(&env.allow_globs, &env.allow_glob_cnt,
+						glob, false /*mandatory*/))
 					return -ENOMEM;
 			}
 			for (j = 0; p->deny_globs[j]; j++) {
 				glob = p->deny_globs[j];
-				if (append_glob(&env.deny_globs, &env.deny_glob_cnt, glob))
+				if (append_glob(&env.deny_globs, &env.deny_glob_cnt,
+						glob, false /*mandatory*/))
 					return -ENOMEM;
 			}
 
@@ -351,33 +357,39 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'a':
 		if (arg[0] == '@') {
-			err = append_glob_file(&env.allow_globs, &env.allow_glob_cnt, arg + 1);
+			err = append_glob_file(&env.allow_globs, &env.allow_glob_cnt,
+					       arg + 1, false /*mandatory*/);
 		} else if (arg[0] == ':') {
 			err = append_str(&env.cu_allow_globs, &env.cu_allow_glob_cnt, arg + 1);
 		} else {
-			err = append_glob(&env.allow_globs, &env.allow_glob_cnt, arg);
+			err = append_glob(&env.allow_globs, &env.allow_glob_cnt,
+					  arg, false /*mandatory*/);
 		}
 		if (err)
 			return err;
 		break;
 	case 'd':
 		if (arg[0] == '@') {
-			err = append_glob_file(&env.deny_globs, &env.deny_glob_cnt, arg + 1);
+			err = append_glob_file(&env.deny_globs, &env.deny_glob_cnt,
+					       arg + 1, false /*mandatory*/);
 		} else if (arg[0] == ':') {
 			err = append_str(&env.cu_deny_globs, &env.cu_deny_glob_cnt, arg + 1);
 		} else {
-			err = append_glob(&env.deny_globs, &env.deny_glob_cnt, arg);
+			err = append_glob(&env.deny_globs, &env.deny_glob_cnt,
+					  arg, false /*mandatory*/);
 		}
 		if (err)
 			return err;
 		break;
 	case 'e':
 		if (arg[0] == '@') {
-			err = append_glob_file(&env.entry_globs, &env.entry_glob_cnt, arg + 1);
+			err = append_glob_file(&env.entry_globs, &env.entry_glob_cnt,
+					       arg + 1, true /*mandatory*/);
 		} else if (arg[0] == ':') {
 			err = append_str(&env.cu_entry_globs, &env.cu_entry_glob_cnt, arg + 1);
 		} else {
-			err = append_glob(&env.entry_globs, &env.entry_glob_cnt, arg);
+			err = append_glob(&env.entry_globs, &env.entry_glob_cnt,
+					  arg, true /*mandatory*/);
 		}
 		if (err)
 			return err;
@@ -2150,7 +2162,7 @@ int main(int argc, char **argv)
 			}
 		}
 
-		if (!matched) {
+		if (!matched && glob->mandatory) {
 			err = -ENOENT;
 			if (glob->mod) {
 				fprintf(stderr, "Entry glob '%s[%s]' doesn't match any kernel function!\n",

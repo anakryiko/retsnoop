@@ -49,6 +49,7 @@ void ts_to_str(uint64_t ts, char buf[], size_t buf_sz);
 struct glob {
 	char *name;
 	char *mod;
+	bool mandatory;
 };
 
 bool glob_matches(const char *glob, const char *s);
@@ -58,10 +59,10 @@ bool full_glob_matches(const char *name_glob, const char *mod_glob,
 int append_str(char ***strs, int *cnt, const char *str);
 int append_str_file(char ***strs, int *cnt, const char *file);
 
-int append_glob(struct glob **globs, int *cnt, const char *str);
-int append_glob_file(struct glob **globs, int *cnt, const char *file);
+int append_glob(struct glob **globs, int *cnt, const char *str, bool mandatory);
+int append_glob_file(struct glob **globs, int *cnt, const char *file, bool mandatory);
 
-int append_compile_unit(struct addr2line *a2l, struct glob **globs, int *cnt, const char *cu);
+int append_compile_unit(struct addr2line *a2l, struct glob **globs, int *cnt, const char *cu, bool mandatory);
 
 int append_pid(int **pids, int *cnt, const char *arg);
 
