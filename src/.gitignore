@@ -1,4 +1,5 @@
 /.output
+/bpftool
 /retsnoop
 /simfail
 /.gdb_history
