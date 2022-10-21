@@ -98,10 +98,10 @@ struct mass_attacher {
 
 	struct bpf_program *fentries[MAX_FUNC_ARG_CNT + 1];
 	struct bpf_program *fexits[MAX_FUNC_ARG_CNT + 1];
+	struct bpf_program *fexit_voids[MAX_FUNC_ARG_CNT + 1];
 	struct bpf_insn *fentries_insns[MAX_FUNC_ARG_CNT + 1];
 	struct bpf_insn *fexits_insns[MAX_FUNC_ARG_CNT + 1];
-	size_t fentries_insn_cnts[MAX_FUNC_ARG_CNT + 1];
-	size_t fexits_insn_cnts[MAX_FUNC_ARG_CNT + 1];
+	struct bpf_insn *fexit_voids_insns[MAX_FUNC_ARG_CNT + 1];
 
 	enum mass_attacher_mode attach_mode;
 	bool use_fentries;
@@ -221,6 +221,7 @@ void mass_attacher__free(struct mass_attacher *att)
 	for (i = 0; i <= MAX_FUNC_ARG_CNT; i++) {
 		free(att->fentries_insns[i]);
 		free(att->fexits_insns[i]);
+		free(att->fexit_voids_insns[i]);
 	}
 
 	SKEL_DESTROY(att->skel);
@@ -400,6 +401,13 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	att->fexits[4] = att->skel->progs.fexit4;
 	att->fexits[5] = att->skel->progs.fexit5;
 	att->fexits[6] = att->skel->progs.fexit6;
+	att->fexit_voids[0] = att->skel->progs.fexit_void0;
+	att->fexit_voids[1] = att->skel->progs.fexit_void1;
+	att->fexit_voids[2] = att->skel->progs.fexit_void2;
+	att->fexit_voids[3] = att->skel->progs.fexit_void3;
+	att->fexit_voids[4] = att->skel->progs.fexit_void4;
+	att->fexit_voids[5] = att->skel->progs.fexit_void5;
+	att->fexit_voids[6] = att->skel->progs.fexit_void6;
 
 	att->vmlinux_btf = libbpf_find_kernel_btf();
 	err = libbpf_get_error(att->vmlinux_btf);
@@ -449,18 +457,21 @@ int mass_attacher__prepare(struct mass_attacher *att)
 				finfo = &att->func_infos[att->func_info_id_for_arg_cnt[i]];
 				bpf_program__set_attach_target(att->fentries[i], 0, finfo->name);
 				bpf_program__set_attach_target(att->fexits[i], 0, finfo->name);
+				bpf_program__set_attach_target(att->fexit_voids[i], 0, finfo->name);
 
 				if (att->debug)
 					printf("Found total %d functions with %d arguments.\n", att->func_info_cnts[i], i);
 			} else {
 				bpf_program__set_autoload(att->fentries[i], false);
 				bpf_program__set_autoload(att->fexits[i], false);
+				bpf_program__set_autoload(att->fexit_voids[i], false);
 			}
 		}
 	} else {
 		for (i = 0; i <= MAX_FUNC_ARG_CNT; i++) {
 			bpf_program__set_autoload(att->fentries[i], false);
 			bpf_program__set_autoload(att->fexits[i], false);
+			bpf_program__set_autoload(att->fexit_voids[i], false);
 		}
 		if (att->use_kprobe_multi) {
 			bpf_program__set_expected_attach_type(att->skel->progs.kentry, BPF_TRACE_KPROBE_MULTI);
@@ -732,6 +743,7 @@ static int load_available_kprobes(struct mass_attacher *att)
 }
 
 static int clone_prog(const struct bpf_program *prog, int attach_btf_id);
+static bool is_ret_void(const struct btf *btf, int btf_id);
 
 int mass_attacher__load(struct mass_attacher *att)
 {
@@ -787,7 +799,10 @@ int mass_attacher__load(struct mass_attacher *att)
 			}
 			finfo->fentry_prog_fd = err;
 
-			err = clone_prog(att->fexits[finfo->arg_cnt], finfo->btf_id);
+			if (is_ret_void(att->vmlinux_btf, finfo->btf_id))
+				err = clone_prog(att->fexit_voids[finfo->arg_cnt], finfo->btf_id);
+			else
+				err = clone_prog(att->fexits[finfo->arg_cnt], finfo->btf_id);
 			if (err < 0) {
 				fprintf(stderr, "Failed to clone FEXIT BPF program for function '%s': %d\n", func_name, err);
 				return err;
@@ -1058,6 +1073,15 @@ static bool is_ret_type_ok(const struct btf *btf, const struct btf_type *t)
 	return true;
 }
 
+static bool is_ret_void(const struct btf *btf, int btf_id)
+{
+	const struct btf_type *t;
+
+	t = btf__type_by_id(btf, btf_id);
+	t = btf__type_by_id(btf, t->type);
+	return t->type == 0;
+}
+
 static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t)
 {
 	const struct btf_param *p;
@@ -1068,8 +1092,10 @@ static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t)
 		return false;
 
 	/* IGNORE VOID FUNCTIONS, THIS SHOULDN'T BE DONE IN GENERAL!!! */
+	/*
 	if (!t->type)
 		return false;
+	*/
 
 	if (t->type && !is_ret_type_ok(btf, btf__type_by_id(btf, t->type)))
 		return false;

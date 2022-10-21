@@ -217,7 +217,7 @@ out:
 }
 
 /* we need arg_cnt * sizeof(__u64) to be a constant, so need to inline */
-static __always_inline int handle_fexit(void *ctx, int arg_cnt)
+static __always_inline int handle_fexit(void *ctx, int arg_cnt, bool is_void_ret)
 {
 	u32 *id_ptr, cpu;
 	const char *name;
@@ -240,7 +240,7 @@ static __always_inline int handle_fexit(void *ctx, int arg_cnt)
 		goto out;
 	}
 
-	res = *(u64 *)(ctx + sizeof(u64) * arg_cnt);
+	res = is_void_ret ? 0 : *(u64 *)(ctx + sizeof(u64) * arg_cnt);
 	handle_func_exit(ctx, *id_ptr, ip, res);
 
 out:
@@ -257,7 +257,12 @@ int fentry ## arg_cnt(void *ctx) \
 SEC("fexit") \
 int fexit ## arg_cnt(void *ctx) \
 { \
-	return handle_fexit(ctx, arg_cnt); \
+	return handle_fexit(ctx, arg_cnt, false /*is_void_ret*/); \
+} \
+SEC("fexit") \
+int fexit_void ## arg_cnt(void *ctx) \
+{ \
+	return handle_fexit(ctx, arg_cnt, true /*is_void_ret*/); \
 }
 
 DEF_PROGS(0)
