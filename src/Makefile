@@ -17,7 +17,7 @@ SIDECAR := ../sidecar/target/$(if $(DEBUG),debug,release)/addr2line
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
 INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi
-CFLAGS := -g -Wall -O$(if $(DEBUG),0,2)
+CFLAGS ?= -g -Wall -O$(if $(DEBUG),0,2)
 
 ARCH ?= $(shell uname -m						\
 		| sed 's/x86_64/x86/'					\
