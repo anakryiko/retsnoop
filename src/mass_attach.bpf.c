@@ -11,7 +11,7 @@ extern int handle_func_exit(void *ctx, u32 func_id, u64 func_ip, u64 ret);
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, long);
+	__type(key, __u64);
 	__type(value, unsigned);
 } ip_to_id SEC(".maps");
 
@@ -34,7 +34,7 @@ const volatile bool has_fentry_protection = false;
 
 extern const volatile bool use_lbr;
 
-static long lbr_szs[MAX_CPU_CNT];
+static __u64 lbr_szs[MAX_CPU_CNT];
 static struct perf_branch_entry lbrs[MAX_CPU_CNT][MAX_LBR_ENTRIES];
 
 /* has to be called from entry-point BPF program if not using

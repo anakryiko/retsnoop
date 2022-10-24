@@ -67,7 +67,7 @@ const volatile __u32 comm_deny_cnt = 0;
 const volatile __u64 duration_ns = 0;
 
 char func_names[MAX_FUNC_CNT][MAX_FUNC_NAME_LEN] = {};
-long func_ips[MAX_FUNC_CNT] = {};
+__u64 func_ips[MAX_FUNC_CNT] = {};
 int func_flags[MAX_FUNC_CNT] = {};
 
 const volatile char spaces[512] = {};

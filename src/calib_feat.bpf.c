@@ -10,7 +10,7 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 #define MAX_ATTEMPTS 50
 
 int my_tid = 0;
-long entry_ip = 0;
+__u64 entry_ip = 0;
 int kret_ip_off = 0;
 
 bool has_bpf_get_func_ip = false;
