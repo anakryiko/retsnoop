@@ -8,6 +8,7 @@
 
 struct btf;
 struct bpf_link;
+struct ksyms;
 struct mass_attacher;
 struct SKEL_NAME;
 
@@ -49,7 +50,8 @@ struct mass_attacher_opts {
 	func_filter_fn func_filter;
 };
 
-struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_attacher_opts *opts);
+struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct ksyms *ksyms,
+					 struct mass_attacher_opts *opts);
 void mass_attacher__free(struct mass_attacher *att);
 
 int mass_attacher__allow_glob(struct mass_attacher *att, const char *glob, const char *mod_glob);

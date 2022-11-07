@@ -11,6 +11,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <libelf.h>
+#include <gelf.h>
 
 #include "addr2line.h"
  
@@ -21,7 +23,14 @@ struct addr2line {
 	FILE *read_pipe;
 	FILE *write_pipe;
 	bool inlines;
+	bool verbose;
+	long kaslr_offset;
 };
+
+long addr2line__kaslr_offset(const struct addr2line *a2l)
+{
+	return a2l->kaslr_offset;
+}
 
 void addr2line__free(struct addr2line *a2l)
 {
@@ -98,7 +107,7 @@ static void child_driver(int fd1[2], int fd2[2], const char *vmlinux, bool inlin
 	a2l_rwfd = fileno(a2l_bin);
 
 	snprintf(buf, sizeof(buf), "/proc/self/fd/%d", a2l_rwfd);
-	a2l_rofd = open(buf, O_RDONLY, O_CLOEXEC);
+	a2l_rofd = open(buf, O_RDONLY | O_CLOEXEC);
 	if (a2l_rofd < 0) {
 		fprintf(stderr, "CHILD: failed to re-open() addr2line as R/O: %d\n", -errno);
 		goto kill_parent;
@@ -123,15 +132,99 @@ kill_parent:
 	exit(1);
 }
 
-struct addr2line *addr2line__init(const char *vmlinux, bool inlines)
+/* Find the start of .text section (which should correspond to _stext ksym)
+ * in provided vmlinux ELF binary. This will be used to calculate correct
+ * KASLR offset.
+ */
+static int find_stext_elf_addr(const char *vmlinux, long *addr)
+{
+	size_t shstr_sec_idx, sec_cnt;
+	Elf_Scn *scn;
+	Elf *elf;
+	int fd, err;
+
+	if (elf_version(EV_CURRENT) == EV_NONE) {
+		fprintf(stderr, "Failed to initialize libelf: %s\n", elf_errmsg(-1));
+		return -EINVAL;
+	}
+
+	fd = open(vmlinux, O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		fprintf(stderr, "Failed to open '%s': %d\n", vmlinux, -errno);
+		return -EIO;
+	}
+
+	elf = elf_begin(fd, ELF_C_READ_MMAP, NULL);
+	if (!elf) {
+		fprintf(stderr, "Failed to open '%s' as ELF file: %s\n", vmlinux, elf_errmsg(-1));
+		err = -EIO;
+		goto cleanup;
+	}
+
+	if (elf_getshdrstrndx(elf, &shstr_sec_idx) || elf_getshdrnum(elf, &sec_cnt)) {
+		fprintf(stderr, "Failed to query '%s' as ELF file: %s\n", vmlinux, elf_errmsg(-1));
+		err = -EIO;
+		goto cleanup;
+	}
+
+	scn = NULL;
+	while ((scn = elf_nextscn(elf, scn)) != NULL) {
+		GElf_Shdr shdr;
+		const char *sec_name;
+
+		if (!gelf_getshdr(scn, &shdr)) {
+			fprintf(stderr, "Failed to fetch section header #%zu from '%s': %s\n",
+				elf_ndxscn(scn), vmlinux, elf_errmsg(-1));
+			err = -EIO;
+			goto cleanup;
+		}
+
+		/* Looking for .text section is faster than looking for _stext
+		 * symbol in symbol table. They are supposed to be pointing to
+		 * the same base load address. So we cut corner here.
+		 */
+		sec_name = elf_strptr(elf, shstr_sec_idx, shdr.sh_name);
+		if (sec_name && strcmp(sec_name, ".text") == 0) {
+			*addr = shdr.sh_addr;
+			err = 0; /* success */
+			goto cleanup;
+		}
+	}
+
+	err = -ESRCH;
+cleanup:
+	if (elf)
+		elf_end(elf);
+	close(fd);
+	return err;
+}
+
+/* stext_addr is real address of `_stext` symbol, which represents the start
+ * of kernel .text section. This is used to calculate KASLR offset to
+ * compensate for during matching real (potentially randomized) kernel
+ * addresses against non-randomized addresses recorded in ELF and DWARF data.
+ */
+struct addr2line *addr2line__init(const char *vmlinux, long stext_addr, bool verbose, bool inlines)
 {
 	struct addr2line *a2l;
-	int fd1[2], fd2[2];
-	int pid;
+	int fd1[2], fd2[2], pid;
+	long stext_elf_addr = 0;
 
 	a2l = calloc(1, sizeof(*a2l));
 	if (!a2l)
 		return NULL;
+
+	a2l->verbose = verbose;
+
+	if (find_stext_elf_addr(vmlinux, &stext_elf_addr)) {
+		fprintf(stderr, "Failed to determine kernel image address (KASLR) from '%s'! Zero is assumed.\n",
+			vmlinux);
+		a2l->kaslr_offset = 0;
+	} else {
+		a2l->kaslr_offset = stext_addr - stext_elf_addr;
+		if (a2l->verbose)
+			printf("KASLR offset is 0x%lx.\n", a2l->kaslr_offset);
+	}
 
 	if (signal(SIGPIPE, sig_pipe) == SIG_ERR) {
 		fprintf(stderr, "Failed to install SIGPIPE handler: %d\n", -errno);
@@ -154,6 +247,9 @@ struct addr2line *addr2line__init(const char *vmlinux, bool inlines)
 		child_driver(fd1, fd2, vmlinux, inlines);
 		exit(2); /* should never reach this */
 	}
+
+	if (a2l->verbose)
+		printf("Sidecar PID is %d.\n", pid);
 
 	close(fd1[0]);
 	close(fd2[1]);
@@ -180,10 +276,11 @@ int addr2line__symbolize(const struct addr2line *a2l, long addr, struct a2l_resp
 {
 	int err, cnt = 0;
 
-	err = fprintf(a2l->write_pipe, "symbolize %lx\n", addr);
+	err = fprintf(a2l->write_pipe, "symbolize %lx\n", addr - a2l->kaslr_offset);
 	if (err <= 0) {
 		err = -errno;
-		fprintf(stderr, "Failed to symbolize %lx: %d\n", addr, err);
+		fprintf(stderr, "Failed to symbolize %lx (%lx): %d\n",
+			addr, addr - a2l->kaslr_offset, err);
 		return err;
 	}
 	fflush(a2l->write_pipe);
@@ -298,6 +395,8 @@ int addr2line__query_symbols(const struct addr2line *a2l, const char *compile_un
 		}
 		addr_str += 2;
 		resp->address = (void *)(uintptr_t)strtoul(addr_str, NULL, 16);
+		/* compensate for KASLR */
+		resp->address += a2l->kaslr_offset;
 
 		cnt++;
 	}
