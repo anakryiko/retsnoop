@@ -1888,12 +1888,14 @@ int main(int argc, char **argv)
 	long page_size = sysconf(_SC_PAGESIZE);
 	struct mass_attacher_opts att_opts = {};
 	const struct btf *vmlinux_btf = NULL;
+	struct ksyms *ksyms = NULL;
 	struct mass_attacher *att = NULL;
 	struct retsnoop_bpf *skel = NULL;
 	struct ring_buffer *rb = NULL;
 	struct perf_buffer *pb = NULL;
 	int *lbr_perf_fds = NULL;
 	char vmlinux_path[1024] = {};
+	const struct ksym *stext_sym = 0;
 	int err, i, j, n;
 	__u64 ts1, ts2;
 
@@ -1927,6 +1929,21 @@ int main(int argc, char **argv)
 	if (geteuid() != 0)
 		fprintf(stderr, "You are not running as root! Expect failures. Please use sudo or run as root.\n");
 
+	/* Load and cache /proc/kallsyms for IP <-> kfunc mapping */
+	env.ctx.ksyms = ksyms = ksyms__load();
+	if (!ksyms) {
+		fprintf(stderr, "Failed to load /proc/kallsyms\n");
+		err = -EINVAL;
+		goto cleanup_silent;
+	}
+
+	stext_sym = ksyms__get_symbol(ksyms, "_stext");
+	if (!stext_sym) {
+		fprintf(stderr, "Failed to determine _stext address from /proc/kallsyms\n");
+		err = -EINVAL;
+		goto cleanup_silent;
+	}
+
 	if (env.symb_mode == SYMB_DEFAULT && !env.vmlinux_path) {
 		if (find_vmlinux(vmlinux_path, sizeof(vmlinux_path), true /* soft */))
 			env.symb_mode = SYMB_NONE;
@@ -1937,29 +1954,35 @@ int main(int argc, char **argv)
 
 		if (!env.vmlinux_path &&
 		    vmlinux_path[0] == '\0' &&
-		    find_vmlinux(vmlinux_path, sizeof(vmlinux_path), false /* hard error */))
-			return -1;
+		    find_vmlinux(vmlinux_path, sizeof(vmlinux_path), false /* hard error */)) {
+			err = -EINVAL;
+			goto cleanup_silent;
+		}
 
 		if (env.symb_mode == SYMB_DEFAULT || (env.symb_mode & SYMB_INLINES))
 			symb_inlines = true;
 
-		env.ctx.a2l = addr2line__init(env.vmlinux_path ?: vmlinux_path, symb_inlines);
+		env.ctx.a2l = addr2line__init(env.vmlinux_path ?: vmlinux_path, stext_sym->addr,
+					      env.verbose, symb_inlines);
 		if (!env.ctx.a2l) {
 			fprintf(stderr, "Failed to start addr2line for vmlinux image at %s!\n",
 				env.vmlinux_path ?: vmlinux_path);
-			return -1;
+			err = -EINVAL;
+			goto cleanup_silent;
 		}
 	}
 
 	if (process_cu_globs()) {
 		fprintf(stderr, "Failed to process file paths.\n");
-		return -1;
+		err = -EINVAL;
+		goto cleanup_silent;
 	}
 
 	if (env.entry_glob_cnt == 0) {
 		fprintf(stderr, "No entry point globs specified. "
 				"Please provide entry glob(s) ('-e GLOB') and/or any preset ('-c PRESET').\n");
-		return -1;
+		err = -EINVAL;
+		goto cleanup_silent;
 	}
 
 	/* determine mapping from bpf_ktime_get_ns() to real clock */
@@ -1970,20 +1993,23 @@ int main(int argc, char **argv)
 
 	if (detect_kernel_features()) {
 		fprintf(stderr, "Kernel feature detection failed.\n");
-		return -1;
+		err = -1;
+		goto cleanup_silent;
 	}
 
 	env.cpu_cnt = libbpf_num_possible_cpus();
 	if (env.cpu_cnt <= 0) {
 		fprintf(stderr, "Failed to determine number of CPUs: %d\n", env.cpu_cnt);
-		return -1;
+		err = -EINVAL;
+		goto cleanup_silent;
 	}
 
 	/* Open BPF skeleton */
 	env.ctx.skel = skel = retsnoop_bpf__open();
 	if (!skel) {
 		fprintf(stderr, "Failed to open BPF skeleton.\n");
-		return -1;
+		err = -EINVAL;
+		goto cleanup_silent;
 	}
 
 	bpf_map__set_max_entries(skel->maps.stacks, env.stacks_map_sz);
@@ -2030,7 +2056,7 @@ int main(int argc, char **argv)
 		lbr_perf_fds = malloc(sizeof(int) * env.cpu_cnt);
 		if (!lbr_perf_fds) {
 			err = -ENOMEM;
-			goto cleanup;
+			goto cleanup_silent;
 		}
 		for (i = 0; i < env.cpu_cnt; i++) {
 			lbr_perf_fds[i] = -1;
@@ -2078,12 +2104,12 @@ int main(int argc, char **argv)
 	default:
 		fprintf(stderr, "Unrecognized attach mode: %d.\n", env.attach_mode);
 		err = -EINVAL;
-		goto cleanup;
+		goto cleanup_silent;
 	}
 	att_opts.func_filter = func_filter;
-	att = mass_attacher__new(skel, &att_opts);
+	att = mass_attacher__new(skel, ksyms, &att_opts);
 	if (!att)
-		goto cleanup;
+		goto cleanup_silent;
 
 	/* entry globs are allow globs as well */
 	for (i = 0; i < env.entry_glob_cnt; i++) {
@@ -2091,26 +2117,26 @@ int main(int argc, char **argv)
 
 		err = mass_attacher__allow_glob(att, g->name, g->mod);
 		if (err)
-			goto cleanup;
+			goto cleanup_silent;
 	}
 	for (i = 0; i < env.allow_glob_cnt; i++) {
 		struct glob *g = &env.allow_globs[i];
 
 		err = mass_attacher__allow_glob(att, g->name, g->mod);
 		if (err)
-			goto cleanup;
+			goto cleanup_silent;
 	}
 	for (i = 0; i < env.deny_glob_cnt; i++) {
 		struct glob *g = &env.deny_globs[i];
 
 		err = mass_attacher__deny_glob(att, g->name, g->mod);
 		if (err)
-			goto cleanup;
+			goto cleanup_silent;
 	}
 
 	err = mass_attacher__prepare(att);
 	if (err)
-		goto cleanup;
+		goto cleanup_silent;
 
 	n = mass_attacher__func_cnt(att);
 	if (n > MAX_FUNC_CNT) {
@@ -2118,7 +2144,7 @@ int main(int argc, char **argv)
 			"Number of requested functions %d is too big, only up to %d functions are supported\n",
 			n, MAX_FUNC_CNT);
 		err = -E2BIG;
-		goto cleanup;
+		goto cleanup_silent;
 	}
 
 	vmlinux_btf = mass_attacher__btf(att);
@@ -2171,7 +2197,7 @@ int main(int argc, char **argv)
 				fprintf(stderr, "Entry glob '%s' doesn't match any kernel function!\n",
 					glob->name);
 			}
-			goto cleanup;
+			goto cleanup_silent;
 		}
 	}
 
@@ -2300,9 +2326,11 @@ int main(int argc, char **argv)
 
 cleanup:
 	printf("\nDetaching... ");
-	fflush(stdout);
-	ts1 = now_ns();
 cleanup_silent:
+	fflush(stdout);
+
+	ts1 = now_ns();
+
 	mass_attacher__free(att);
 
 	addr2line__free(env.ctx.a2l);

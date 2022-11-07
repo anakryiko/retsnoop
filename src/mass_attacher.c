@@ -142,7 +142,8 @@ struct mass_attacher {
 	} *allow_globs, *deny_globs;
 };
 
-struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_attacher_opts *opts)
+struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct ksyms *ksyms,
+					 struct mass_attacher_opts *opts)
 {
 	struct mass_attacher *att;
 	int i, err;
@@ -155,6 +156,7 @@ struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct mass_att
 		return NULL;
 
 	att->skel = skel;
+	att->ksyms = ksyms;
 
 	if (!opts)
 		return att;
@@ -194,7 +196,6 @@ void mass_attacher__free(struct mass_attacher *att)
 	if (att->skel)
 		att->skel->bss->ready = false;
 
-	ksyms__free(att->ksyms);
 	btf__free(att->vmlinux_btf);
 
 	bpf_link__destroy(att->kentry_multi_link);
