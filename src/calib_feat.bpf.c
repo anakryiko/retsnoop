@@ -33,7 +33,14 @@ int calib_entry(struct pt_regs *ctx)
 	/* Used for kretprobe function entry IP discovery, before
 	 * bpf_get_func_ip() helper was added.
 	 */
+#ifdef bpf_target_x86
+	/* for x86 the IP is off by one at hardware level,
+	 * see https://github.com/anakryiko/retsnoop/issues/32
+	 */
 	entry_ip = PT_REGS_IP(ctx) - 1;
+#else
+	entry_ip = PT_REGS_IP(ctx);
+#endif
 
 	/* Detect if bpf_get_func_ip() helper is supported by the kernel.
 	 * Added in: 9b99edcae5c8 ("bpf: Add bpf_get_func_ip helper for tracing programs")

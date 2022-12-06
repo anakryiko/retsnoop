@@ -91,10 +91,18 @@ int kentry(struct pt_regs *ctx)
 	if (!ready)
 		return 0;
 
-	if (has_bpf_get_func_ip)
+	if (has_bpf_get_func_ip) {
 		ip = bpf_get_func_ip(ctx);
-	else
+	} else {
+#ifdef bpf_target_x86
+		/* for x86 the IP is off by one at hardware level,
+		 * see https://github.com/anakryiko/retsnoop/issues/32
+		 */
 		ip = PT_REGS_IP(ctx) - 1;
+#else
+		ip = PT_REGS_IP(ctx);
+#endif
+	}
 
 	if (has_bpf_cookie) {
 		id = bpf_get_attach_cookie(ctx);
