@@ -1788,17 +1788,23 @@ static int detect_kernel_features(void)
 
 	skel = calib_feat_bpf__open_and_load();
 	if (!skel) {
-		fprintf(stderr, "Failed to load feature detection skeleton\n");
-		return -EFAULT;
+		err = -errno;
+		fprintf(stderr, "Failed to load feature detection skeleton.\n");
+		return err;
+	}
+
+	if (!skel->bss) {
+		fprintf(stderr, "Kernel doesn't support memory mapping BPF global vars, you might need newer Linux kernel.\n");
+		err = -EOPNOTSUPP;
+		goto out;
 	}
 
 	skel->bss->my_tid = syscall(SYS_gettid);
 
 	err = calib_feat_bpf__attach(skel);
 	if (err) {
-		fprintf(stderr, "Failed to attach feature detection skeleton\n");
-		calib_feat_bpf__destroy(skel);
-		return -EFAULT;
+		fprintf(stderr, "Failed to attach feature detection skeleton.\n");
+		goto out;
 	}
 
 	usleep(1);
@@ -1827,8 +1833,9 @@ static int detect_kernel_features(void)
 	env.has_ringbuf = skel->bss->has_ringbuf;
 	env.has_branch_snapshot = skel->bss->has_branch_snapshot;
 
+out:
 	calib_feat_bpf__destroy(skel);
-	return 0;
+	return err;
 }
 
 #define INTEL_FIXED_VLBR_EVENT        0x1b00
@@ -2373,8 +2380,10 @@ cleanup_silent:
 	free(stack_items1.items);
 	free(stack_items2.items);
 
-	ts2 = now_ns();
-	printf("DONE in %ld ms.\n", (long)((ts2 - ts1) / 1000000));
+	if (err == 0) {
+		ts2 = now_ns();
+		printf("DONE in %ld ms.\n", (long)((ts2 - ts1) / 1000000));
+	}
 
 	return -err;
 }
