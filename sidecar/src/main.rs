@@ -13,9 +13,9 @@ use std::path::Path;
 
 use clap::{App, Arg, ArgMatches, Values};
 use fallible_iterator::FallibleIterator;
+use glob;
 use object::{Object, ObjectSection, SymbolMap, SymbolMapName};
 use typed_arena::Arena;
-use glob;
 
 use addr2line::{Context, Location};
 
@@ -42,16 +42,33 @@ enum Addrs<'a> {
 
 fn conv_linux_src_loc<'a>(path: &'a str) -> &'a str {
     let linux_dirs = [
-	"arch/", "kernel/", "include/", "block/", "fs/", "net/",
-	"drivers/", "mm/", "ipc/", "security/", "lib/", "crypto/",
-	"certs/", "init/", "lib/", "scripts/", "sound/", "tools/",
-	"usr/", "virt/",
+        "arch/",
+        "block/",
+        "certs/",
+        "crypto/",
+        "drivers/",
+        "fs/",
+        "include/",
+        "init/",
+        "io_uring/",
+        "ipc/",
+        "kernel/",
+        "lib/",
+        "mm/",
+        "net/",
+        "rust/",
+        "scripts/",
+        "security/",
+        "sound/",
+        "tools/",
+        "usr/",
+        "virt/",
     ];
 
     for cur_dir in linux_dirs {
         match path.find(cur_dir) {
             Some(pos) => return &path[pos..],
-            _ => ()
+            _ => (),
         }
     }
     path
