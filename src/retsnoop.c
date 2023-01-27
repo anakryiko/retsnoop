@@ -918,10 +918,10 @@ static int filter_kstack(struct ctx *ctx, struct kstack_item *r, const struct ca
 static int detect_linux_src_loc(const char *path)
 {
 	static const char *linux_dirs[] = {
-		"arch/", "kernel/", "include/", "block/", "fs/", "net/",
-		"drivers/", "mm/", "ipc/", "security/", "lib/", "crypto/",
-		"certs/", "init/", "lib/", "scripts/", "sound/", "tools/",
-		"usr/", "virt/", 
+		"arch/", "block/", "certs/", "crypto/", "drivers/", "fs/",
+		"include/", "init/", "io_uring/", "ipc/", "kernel/", "lib/",
+		"mm/", "net/", "rust/", "scripts/", "security/", "sound/",
+		"tools/", "usr/", "virt/",
 	};
 	int i;
 	char *p;
