@@ -1106,6 +1106,9 @@ static int handle_func_trace_entry(struct ctx *ctx, const struct func_trace_entr
 	struct func_trace_item *fti;
 	void *tmp;
 
+	if (!env.emit_func_trace)
+		return -EPERM;
+
 	if (!hashmap__find(func_traces_hash, k, (void **)&ft)) {
 		ft = calloc(1, sizeof(*ft));
 		if (!ft || hashmap__add(func_traces_hash, k, ft)) {
