@@ -9,6 +9,7 @@
 #include <sys/syscall.h>
 #include <linux/perf_event.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include "mass_attacher.h"
 #include "ksyms.h"
 #include "calib_feat.skel.h"
@@ -701,10 +702,28 @@ static int kprobe_by_name(const void *a, const void *b)
 #define str_has_pfx(str, pfx) \
 	(strncmp(str, pfx, __builtin_constant_p(pfx) ? sizeof(pfx) - 1 : strlen(pfx)) == 0)
 
+#define DEBUGFS "/sys/kernel/debug/tracing"
+#define TRACEFS "/sys/kernel/tracing"
+
+static bool use_debugfs(void)
+{
+	static int has_debugfs = -1;
+
+	if (has_debugfs < 0)
+		has_debugfs = faccessat(AT_FDCWD, DEBUGFS, F_OK, AT_EACCESS) == 0;
+
+	return has_debugfs == 1;
+}
+
+static const char *tracefs_available_filter_functions(void)
+{
+	return use_debugfs() ? DEBUGFS"/available_filter_functions" : TRACEFS"/available_filter_functions";
+}
+
 static int load_available_kprobes(struct mass_attacher *att)
 {
 	static char buf[512];
-	const char *fname = "/sys/kernel/tracing/available_filter_functions";
+	const char *fname = tracefs_available_filter_functions();
 	int cnt, err;
 	void *tmp, *s;
 	FILE *f;
