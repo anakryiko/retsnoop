@@ -563,7 +563,7 @@ static int prepare_func(struct mass_attacher *att, const char *func_name,
 	int i, arg_cnt, kprobe_idx;
 	void *tmp;
 
-	ksym = ksyms__get_symbol(att->ksyms, func_name);
+	ksym = ksyms__get_symbol(att->ksyms, func_name, KSYM_FUNC);
 	if (!ksym) {
 		if (att->verbose)
 			printf("Function '%s' not found in /proc/kallsyms! Skipping.\n", func_name);
