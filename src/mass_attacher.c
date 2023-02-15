@@ -2,6 +2,7 @@
 /* Copyright (c) 2021 Facebook */
 #include <errno.h>
 #include <stdbool.h>
+#include <ctype.h>
 #include <bpf/btf.h>
 #include <bpf/bpf.h>
 #include <stdlib.h>
@@ -87,6 +88,7 @@ static _Thread_local struct mass_attacher *cur_attacher;
 
 struct kprobe_info {
 	char *name;
+	char *mod;
 	bool used;
 };
 
@@ -217,8 +219,10 @@ void mass_attacher__free(struct mass_attacher *att)
 	free(att->func_infos);
 
 	if (att->kprobes) {
-		for (i = 0; i < att->kprobe_cnt; i++)
+		for (i = 0; i < att->kprobe_cnt; i++) {
 			free(att->kprobes[i].name);
+			free(att->kprobes[i].mod);
+		}
 		free(att->kprobes);
 	}
 
@@ -326,9 +330,10 @@ static int bump_rlimit(int resource, rlim_t max);
 static int load_available_kprobes(struct mass_attacher *attacher);
 
 static int func_arg_cnt(const struct btf *btf, int id);
-static int find_kprobe(const struct mass_attacher *att, const char *name);
+static int find_kprobe(const struct mass_attacher *att, const char *name, const char *module);
 static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t);
-static int prepare_func(struct mass_attacher *att, const char *func_name,
+static int prepare_func(struct mass_attacher *att,
+			const char *func_name, const char *module,
 			const struct btf_type *t, int btf_id);
 static int calibrate_features(struct mass_attacher *att);
 
@@ -430,7 +435,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 
 		func_name = btf__str_by_offset(att->vmlinux_btf, t->name_off);
 
-		err = prepare_func(att, func_name, t, i);
+		err = prepare_func(att, func_name, NULL, t, i);
 		if (err)
 			return err;
 	}
@@ -439,7 +444,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 			if (att->kprobes[i].used)
 				continue;
 
-			err = prepare_func(att, att->kprobes[i].name, NULL, 0);
+			err = prepare_func(att, att->kprobes[i].name, att->kprobes[i].mod, NULL, 0);
 			if (err)
 				return err;
 		}
@@ -463,8 +468,10 @@ int mass_attacher__prepare(struct mass_attacher *att)
 				bpf_program__set_attach_target(att->fexits[i], 0, finfo->name);
 				bpf_program__set_attach_target(att->fexit_voids[i], 0, finfo->name);
 
-				if (att->debug)
-					printf("Found total %d functions with %d arguments.\n", att->func_info_cnts[i], i);
+				if (att->debug) {
+					printf("Found total %d functions with %d arguments.\n",
+					       att->func_info_cnts[i], i);
+				}
 			} else {
 				bpf_program__set_autoload(att->fentries[i], false);
 				bpf_program__set_autoload(att->fexits[i], false);
@@ -555,7 +562,8 @@ static int calibrate_features(struct mass_attacher *att)
 	return 0;
 }
 
-static int prepare_func(struct mass_attacher *att, const char *func_name,
+static int prepare_func(struct mass_attacher *att,
+			const char *func_name, const char *module,
 			const struct btf_type *t, int btf_id)
 {
 	const struct ksym *ksym;
@@ -574,7 +582,7 @@ static int prepare_func(struct mass_attacher *att, const char *func_name,
 	/* any deny glob forces skipping a function */
 	for (i = 0; i < att->deny_glob_cnt; i++) {
 		if (!full_glob_matches(att->deny_globs[i].glob, att->deny_globs[i].mod_glob,
-				       func_name, ksym->module))
+				       func_name, module))
 			continue;
 
 		att->deny_globs[i].matches++;
@@ -612,7 +620,7 @@ static int prepare_func(struct mass_attacher *att, const char *func_name,
 		}
 	}
 
-	kprobe_idx = find_kprobe(att, func_name);
+	kprobe_idx = find_kprobe(att, func_name, module);
 	if (kprobe_idx < 0) {
 		if (att->debug_extra)
 			printf("Function '%s' is not attachable kprobe, skipping.\n", func_name);
@@ -686,19 +694,21 @@ static int bump_rlimit(int resource, rlim_t max)
 	return 0;
 }
 
-static int kprobe_order(const void *a, const void *b)
+static int kprobe_by_mod_name_cmp(const void *a, const void *b)
 {
 	const struct kprobe_info *k1 = a, *k2 = b;
+	int ret;
+
+	if (!!k1->mod != !!k2->mod)
+		return k2->mod ? -1 : 1;
+
+	if (k1->mod) {
+		ret = strcmp(k1->mod, k2->mod);
+		if (ret != 0)
+			return ret;
+	}
 
 	return strcmp(k1->name, k2->name);
-}
-
-static int kprobe_by_name(const void *a, const void *b)
-{
-	const char *name = a;
-	const struct kprobe_info *k = b;
-
-	return strcmp(name, k->name);
 }
 
 #define str_has_pfx(str, pfx) \
@@ -724,10 +734,11 @@ static const char *tracefs_available_filter_functions(void)
 
 static int load_available_kprobes(struct mass_attacher *att)
 {
-	static char buf[512];
+	static char sym_buf[256], mod_buf[128], *mod;
 	const char *fname = tracefs_available_filter_functions();
+	struct kprobe_info *k;
 	int cnt, err;
-	void *tmp, *s;
+	void *tmp;
 	FILE *f;
 
 	f = fopen(fname, "r");
@@ -737,9 +748,9 @@ static int load_available_kprobes(struct mass_attacher *att)
 		return err;
 	}
 
-	while ((cnt = fscanf(f, "%s%*[^\n]\n", buf)) == 1) {
+	while ((cnt = fscanf(f, "%s%[^\n]\n", sym_buf, mod_buf)) >= 1) {
 		/* ignore explicitly fake/invalid kprobe entries */
-		if (str_has_pfx(buf, "__ftrace_invalid_address___"))
+		if (str_has_pfx(sym_buf, "__ftrace_invalid_address___"))
 			continue;
 
 		tmp = realloc(att->kprobes, (att->kprobe_cnt + 1) * sizeof(*att->kprobes));
@@ -747,16 +758,31 @@ static int load_available_kprobes(struct mass_attacher *att)
 			return -ENOMEM;
 		att->kprobes = tmp;
 
-		s = strdup(buf);
-		att->kprobes[att->kprobe_cnt].name = s;
-		att->kprobes[att->kprobe_cnt].used = false;
+		k = &att->kprobes[att->kprobe_cnt];
+		memset(k, 0, sizeof(*k));
+
 		att->kprobe_cnt++;
 
-		if (!s)
+		k->name = strdup(sym_buf);
+		if (!k->name)
 			return -ENOMEM;
+
+		if (cnt >= 2) {
+			/* mod_buf will be '    [module]', so we need to
+			 * extract module name from it
+			 */
+			mod = mod_buf;
+			while (*mod && (isspace(*mod) || *mod == '['))
+				mod++;
+			mod[strlen(mod) - 1] = '\0';
+
+			k->mod = strdup(mod);
+			if (!k->mod)
+				return -ENOMEM;
+		}
 	}
 
-	qsort(att->kprobes, att->kprobe_cnt, sizeof(*att->kprobes), kprobe_order);
+	qsort(att->kprobes, att->kprobe_cnt, sizeof(*att->kprobes), kprobe_by_mod_name_cmp);
 
 	if (att->verbose)
 		printf("Discovered %d available kprobes!\n", att->kprobe_cnt);
@@ -1102,11 +1128,16 @@ const struct mass_attacher_func_info *mass_attacher__func(const struct mass_atta
 	return &att->func_infos[id];
 }
 
-static int find_kprobe(const struct mass_attacher *att, const char *name)
+static int find_kprobe(const struct mass_attacher *att, const char *name, const char *module)
 {
+	/* we reuse kprobe_info as lookup key, so need to force non-const
+	 * strings; but that's ok, we are never freeing key's name/mod
+	 */
+	struct kprobe_info key = { .name = (char *)name, .mod = (char *)module };
 	struct kprobe_info *k;
 
-	k = bsearch(name, att->kprobes, att->kprobe_cnt, sizeof(*att->kprobes), kprobe_by_name);
+	k = bsearch(&key, att->kprobes, att->kprobe_cnt, sizeof(*att->kprobes),
+		    kprobe_by_mod_name_cmp);
 
 	return k == NULL ? -1 : k - att->kprobes;
 }
