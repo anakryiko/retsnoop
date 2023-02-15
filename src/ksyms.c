@@ -83,10 +83,8 @@ static int ksym_by_addr_cmp(const void *p1, const void *p2)
 	return s1->addr < s2->addr ? -1 : 1;
 }
 
-static int ksym_by_name_cmp(const void *p1, const void *p2)
+static int ksym_by_name_cmp(const struct ksym *s1, const struct ksym *s2)
 {
-	const struct ksym * const *sp1 = p1, * const *sp2 = p2;
-	const struct ksym *s1 = *sp1, *s2 = *sp2;
 	int ret;
 
 	if (s1->kind != s2->kind)
@@ -110,7 +108,7 @@ static int ksym_by_name_order(const void *p1, const void *p2)
 	const struct ksym *s1 = *sp1, *s2 = *sp2;
 	int ret;
 
-	ret = ksym_by_name_cmp(p1, p2);
+	ret = ksym_by_name_cmp(s1, s2);
 	if (ret != 0)
 		return ret;
 
@@ -156,7 +154,7 @@ struct ksyms *ksyms__load(void)
 	}
 	fclose(f);
 
-	ksyms->syms_by_name = calloc(ksyms->syms_sz, sizeof(*ksyms->syms_by_name));
+	ksyms->syms_by_name = calloc(ksyms->syms_sz + 1, sizeof(*ksyms->syms_by_name));
 	if (!ksyms->syms_by_name)
 		goto err_out;
 
@@ -170,6 +168,8 @@ struct ksyms *ksyms__load(void)
 
 	qsort(ksyms->syms_by_addr, ksyms->syms_sz, sizeof(*ksyms->syms_by_addr), ksym_by_addr_cmp);
 	qsort(ksyms->syms_by_name, ksyms->syms_sz, sizeof(*ksyms->syms_by_name), ksym_by_name_order);
+	/* last element is NULL for "iterator" use cases */
+	ksyms->syms_by_name[ksyms->syms_sz] = NULL;
 
 	/* do another pass to calculate (guess?) function sizes */
 	for (i = 0; i < ksyms->syms_sz; i++) {
@@ -226,19 +226,38 @@ const struct ksym *ksyms__map_addr(const struct ksyms *ksyms,
 	return NULL;
 }
 
+const struct ksym * const *ksyms__get_symbol_iter(const struct ksyms *ksyms,
+						  const char *name, const char *module,
+						  enum ksym_kind kind)
+{
+	struct ksym ksym = { .kind = kind, .name = name, .module = module };
+	struct ksym *key = &ksym, *sym;
+	int l = 0, r = ksyms->syms_sz - 1;
+
+	/* invariant: syms[r] >= key; we search for smallest r */
+	while (l < r) {
+		int m = l + (r - l) / 2;
+		sym = ksyms->syms_by_name[m];
+
+		if (ksym_by_name_cmp(sym, key) < 0)	/* syms[m] < key */
+			l = m + 1;
+		else					/* syms[m] >= key */
+			r = m;
+	}
+
+	sym = ksyms->syms_by_name[r];
+	if (ksym_by_name_cmp(key, sym) == 0)
+		return (const struct ksym * const *)&ksyms->syms_by_name[r];
+
+	return NULL;
+}
+
 const struct ksym *ksyms__get_symbol(const struct ksyms *ksyms,
 				     const char *name, const char *module,
 				     enum ksym_kind kind)
 {
-	struct ksym ksym = { .kind = kind, .name = name, .module = module };
-	struct ksym *key = &ksym;
-	const struct ksym **res;
+	const struct ksym * const *it;
 
-	res = bsearch(&key, ksyms->syms_by_name,
-		      ksyms->syms_sz, sizeof(*ksyms->syms_by_name),
-		      ksym_by_name_cmp);
-	if (res)
-		return *res;
-
-	return NULL;
+	it = ksyms__get_symbol_iter(ksyms, name, module, kind);
+	return it ? *it : NULL;
 }

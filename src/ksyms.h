@@ -3,6 +3,7 @@
 #define __KSYMS_H
 
 enum ksym_kind {
+	KSYM_INVALID,
 	KSYM_FUNC,
 	KSYM_DATA,
 };
@@ -24,5 +25,8 @@ const struct ksym *ksyms__map_addr(const struct ksyms *ksyms,
 const struct ksym *ksyms__get_symbol(const struct ksyms *ksyms,
 				     const char *module, const char *name,
 				     enum ksym_kind kind);
+const struct ksym * const *ksyms__get_symbol_iter(const struct ksyms *ksyms,
+						  const char *name, const char *module,
+						  enum ksym_kind kind);
 
 #endif /* __KSYMS_H */
