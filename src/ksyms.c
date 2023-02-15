@@ -8,8 +8,8 @@
 #include "ksyms.h"
 
 struct ksyms {
-	struct ksym *syms;
-	struct ksym **syms_by_kind_name;
+	struct ksym *syms_by_addr;
+	struct ksym **syms_by_name;
 	int syms_sz;
 	int syms_cap;
 	char *strs;
@@ -43,14 +43,14 @@ static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, const char *
 		new_cap = ksyms->syms_cap * 4 / 3;
 		if (new_cap < 1024)
 			new_cap = 1024;
-		tmp = realloc(ksyms->syms, sizeof(*ksyms->syms) * new_cap);
+		tmp = realloc(ksyms->syms_by_addr, sizeof(*ksyms->syms_by_addr) * new_cap);
 		if (!tmp)
 			return -1;
-		ksyms->syms = tmp;
+		ksyms->syms_by_addr = tmp;
 		ksyms->syms_cap = new_cap;
 	}
 
-	ksym = &ksyms->syms[ksyms->syms_sz];
+	ksym = &ksyms->syms_by_addr[ksyms->syms_sz];
 	/* while constructing, re-use pointer as just a plain offset */
 	ksym->name = (void *)(unsigned long)ksyms->strs_sz;
 	if (mod)
@@ -74,7 +74,7 @@ static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, const char *
 	return 0;
 }
 
-static int ksym_cmp(const void *p1, const void *p2)
+static int ksym_by_addr_cmp(const void *p1, const void *p2)
 {
 	const struct ksym *s1 = p1, *s2 = p2;
 
@@ -83,7 +83,7 @@ static int ksym_cmp(const void *p1, const void *p2)
 	return s1->addr < s2->addr ? -1 : 1;
 }
 
-static int ksym_by_kind_name_cmp(const void *p1, const void *p2)
+static int ksym_by_name_order(const void *p1, const void *p2)
 {
 	const struct ksym * const *sp1 = p1, * const *sp2 = p2;
 	const struct ksym *s1 = *sp1, *s2 = *sp2;
@@ -131,25 +131,24 @@ struct ksyms *ksyms__load(void)
 	}
 	fclose(f);
 
-	ksyms->syms_by_kind_name = calloc(ksyms->syms_sz, sizeof(*ksyms->syms_by_kind_name));
-	if (!ksyms->syms_by_kind_name)
+	ksyms->syms_by_name = calloc(ksyms->syms_sz, sizeof(*ksyms->syms_by_name));
+	if (!ksyms->syms_by_name)
 		goto err_out;
 
 	/* now when strings are finalized, adjust pointers properly */
 	for (i = 0; i < ksyms->syms_sz; i++) {
-		ksyms->syms[i].name += (unsigned long)ksyms->strs;
-		if (ksyms->syms[i].module)
-			ksyms->syms[i].module += (unsigned long)ksyms->strs;
-		ksyms->syms_by_kind_name[i] = &ksyms->syms[i];
+		ksyms->syms_by_addr[i].name += (unsigned long)ksyms->strs;
+		if (ksyms->syms_by_addr[i].module)
+			ksyms->syms_by_addr[i].module += (unsigned long)ksyms->strs;
+		ksyms->syms_by_name[i] = &ksyms->syms_by_addr[i];
 	}
 
-	qsort(ksyms->syms, ksyms->syms_sz, sizeof(*ksyms->syms), ksym_cmp);
-	qsort(ksyms->syms_by_kind_name, ksyms->syms_sz,
-	      sizeof(*ksyms->syms_by_kind_name), ksym_by_kind_name_cmp);
+	qsort(ksyms->syms_by_addr, ksyms->syms_sz, sizeof(*ksyms->syms_by_addr), ksym_by_addr_cmp);
+	qsort(ksyms->syms_by_name, ksyms->syms_sz, sizeof(*ksyms->syms_by_name), ksym_by_name_order);
 
 	/* do another pass to calculate (guess?) function sizes */
 	for (i = 0; i < ksyms->syms_sz; i++) {
-		struct ksym *ksym = &ksyms->syms[i];
+		struct ksym *ksym = &ksyms->syms_by_addr[i];
 		struct ksym *next_ksym = ksym + 1;
 
 		if (!ksym->size)
@@ -174,7 +173,8 @@ void ksyms__free(struct ksyms *ksyms)
 	if (!ksyms)
 		return;
 
-	free(ksyms->syms);
+	free(ksyms->syms_by_addr);
+	free(ksyms->syms_by_name);
 	free(ksyms->strs);
 	free(ksyms);
 }
@@ -188,7 +188,7 @@ const struct ksym *ksyms__map_addr(const struct ksyms *ksyms,
 	/* find largest sym_addr <= addr using binary search */
 	while (start < end) {
 		mid = start + (end - start + 1) / 2;
-		sym_addr = ksyms->syms[mid].addr;
+		sym_addr = ksyms->syms_by_addr[mid].addr;
 
 		if (sym_addr <= addr)
 			start = mid;
@@ -196,8 +196,8 @@ const struct ksym *ksyms__map_addr(const struct ksyms *ksyms,
 			end = mid - 1;
 	}
 
-	if (start == end && ksyms->syms[start].addr <= addr)
-		return &ksyms->syms[start];
+	if (start == end && ksyms->syms_by_addr[start].addr <= addr)
+		return &ksyms->syms_by_addr[start];
 	return NULL;
 }
 
@@ -208,9 +208,9 @@ const struct ksym *ksyms__get_symbol(const struct ksyms *ksyms,
 	struct ksym *key = &ksym;
 	const struct ksym **res;
 
-	res = bsearch(&key, ksyms->syms_by_kind_name,
-		      ksyms->syms_sz, sizeof(*ksyms->syms_by_kind_name),
-		      ksym_by_kind_name_cmp);
+	res = bsearch(&key, ksyms->syms_by_name,
+		      ksyms->syms_sz, sizeof(*ksyms->syms_by_name),
+		      ksym_by_name_order);
 	if (res)
 		return *res;
 
