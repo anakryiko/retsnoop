@@ -45,6 +45,11 @@ enum symb_mode {
 	SYMB_INLINES = 0x2,
 };
 
+enum debug_feat {
+	DEBUG_NONE = 0x00,
+	DEBUG_MULTI_KPROBE = 0x01,
+};
+
 static struct env {
 	bool show_version;
 	bool verbose;
@@ -58,6 +63,7 @@ static struct env {
 	bool emit_func_trace;
 	enum attach_mode attach_mode;
 	enum symb_mode symb_mode;
+	enum debug_feat debug_feats;
 	bool use_lbr;
 	long lbr_flags;
 	int lbr_max_cnt;
@@ -120,6 +126,7 @@ const char argp_program_doc[] =
 #define OPT_STACKS_MAP_SIZE 1002
 #define OPT_LBR_MAX_CNT 1003
 #define OPT_DRY_RUN 1004
+#define OPT_DEBUG_FEAT 1005
 
 static const struct argp_option opts[] = {
 	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
@@ -192,6 +199,8 @@ static const struct argp_option opts[] = {
 	  "Emit non-filtered full stack traces" },
 	{ "stacks-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
 	  "Stacks map size (default 4096)" },
+	{ "debug", OPT_DEBUG_FEAT, "FEATURE", 0,
+	  "Enable selected debug features. Any set of: multi-kprobe." },
 	{},
 };
 
@@ -287,6 +296,26 @@ static int parse_lbr_arg(const char *arg)
 		fprintf(stderr, "%s%s", i == 0 ? " " : ", ", table[i].alias);
 	}
 	fprintf(stderr, ".\n");
+
+	return -EINVAL;
+}
+
+static enum debug_feat parse_debug_arg(const char *arg)
+{
+	int i;
+	static struct {
+		const char *alias;
+		enum debug_feat value;
+	} table[] = {
+		{"multi-kprobe", DEBUG_MULTI_KPROBE},
+	};
+
+	for (i = 0; i < ARRAY_SIZE(table); i++) {
+		if (strcmp(table[i].alias, arg) == 0) {
+			env.debug_feats |= table[i].value;
+			return 0;
+		}
+	}
 
 	return -EINVAL;
 }
@@ -526,6 +555,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case OPT_DRY_RUN:
 		env.dry_run = true;
+		break;
+	case OPT_DEBUG_FEAT:
+		if (parse_debug_arg(arg))
+			return -EINVAL;
 		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
@@ -2096,6 +2129,7 @@ int main(int argc, char **argv)
 	att_opts.verbose = env.verbose;
 	att_opts.debug = env.debug;
 	att_opts.debug_extra = env.debug_extra;
+	att_opts.debug_multi_kprobe = env.debug_feats & DEBUG_MULTI_KPROBE;
 	att_opts.dry_run = env.dry_run;
 	switch (env.attach_mode) {
 	case ATTACH_DEFAULT:

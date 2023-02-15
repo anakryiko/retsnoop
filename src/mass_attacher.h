@@ -46,6 +46,7 @@ struct mass_attacher_opts {
 	bool verbose;
 	bool debug;
 	bool debug_extra;
+	bool debug_multi_kprobe;
 	bool dry_run;
 	func_filter_fn func_filter;
 };
