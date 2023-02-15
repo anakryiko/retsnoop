@@ -2366,7 +2366,7 @@ int main(int argc, char **argv)
 	}
 
 cleanup:
-	printf("\nDetaching... ");
+	printf("\nDetaching...\n");
 cleanup_silent:
 	fflush(stdout);
 
