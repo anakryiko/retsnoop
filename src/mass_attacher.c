@@ -111,6 +111,7 @@ struct mass_attacher {
 	bool verbose;
 	bool debug;
 	bool debug_extra;
+	bool debug_multi_kprobe;
 	bool dry_run;
 	int max_func_cnt;
 	int max_fileno_rlimit;
@@ -167,6 +168,7 @@ struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct ksyms *k
 	att->verbose = opts->verbose;
 	att->debug = opts->debug;
 	att->debug_extra = opts->debug_extra;
+	att->debug_multi_kprobe = opts->debug_multi_kprobe;
 	if (att->debug)
 		att->verbose = true;
 	att->dry_run = opts->dry_run;
@@ -853,6 +855,55 @@ static int clone_prog(const struct bpf_program *prog, int attach_btf_id)
 	return fd;
 }
 
+static void debug_multi_kprobe(struct mass_attacher *att, unsigned long *addrs,
+			       const char **syms, int l, int r)
+{
+	LIBBPF_OPTS(bpf_kprobe_multi_opts, opts);
+	struct bpf_link *link;
+	int m;
+
+	if (l > r)
+		return;
+
+	opts.addrs = addrs ? addrs + l : NULL;
+	opts.syms = syms ? syms + l : NULL;
+	opts.cnt = r - l + 1;
+	link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kentry, NULL, &opts);
+	if (link) {
+		/* entire batch has been successfully attached */
+		bpf_link__destroy(link);
+		return;
+	}
+
+	if (l == r) {
+		/* we narrowed it down to single function, report it */
+		struct mass_attacher_func_info *finfo = &att->func_infos[l];
+		const char *func_desc = finfo->name;
+		char buf[256];
+		int err;
+
+		err = -errno;
+		if (finfo->module) {
+			snprintf(buf, sizeof(buf), "%s [%s]", finfo->name, finfo->module);
+			func_desc = buf;
+		}
+		printf("DEBUG: KPROBE.MULTI can't attach to func #%d (%s) at addr %lx using %s: %d\n",
+		       l + 1, func_desc, finfo->addr,
+		       addrs ? "addrs" : "syms", err);
+		return;
+	}
+
+	/* otherwise keep splitting in half to narrow it down */
+	m = l + (r - l) / 2;
+	debug_multi_kprobe(att, addrs, syms, l, m);
+	debug_multi_kprobe(att, addrs, syms, m + 1, r);
+}
+
+static int libbpf_noop_print_fn(enum libbpf_print_level level, const char *format, va_list args)
+{
+	return 0;
+}
+
 int mass_attacher__attach(struct mass_attacher *att)
 {
 	LIBBPF_OPTS(bpf_kprobe_opts, kprobe_opts);
@@ -969,6 +1020,19 @@ skip_attach:
 		multi_opts.retprobe = false;
 		multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kentry,
 								   NULL, &multi_opts);
+		if (!multi_link && att->debug_multi_kprobe) {
+			libbpf_print_fn_t old_print_fn;
+
+			err = -errno;
+			fprintf(stderr, "Going to debug failing KPROBE.MULTI attachment to %d functions with error: %d...\n",
+				att->func_cnt, err);
+
+			old_print_fn = libbpf_set_print(libbpf_noop_print_fn);
+			debug_multi_kprobe(att, addrs, NULL, 0, att->func_cnt - 1);
+			debug_multi_kprobe(att, NULL, syms, 0, att->func_cnt - 1);
+			libbpf_set_print(old_print_fn);
+			goto err_out;
+		}
 		if (!multi_link) {
 			multi_opts.addrs = NULL;
 			multi_opts.syms = syms;
