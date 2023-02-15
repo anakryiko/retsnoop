@@ -430,11 +430,17 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	for (i = 1; i < n; i++) {
 		const struct btf_type *t = btf__type_by_id(att->vmlinux_btf, i);
 		const char *func_name;
+		int kprobe_idx;
 
 		if (!btf_is_func(t))
 			continue;
 
 		func_name = btf__str_by_offset(att->vmlinux_btf, t->name_off);
+
+		/* check if we already processed a function with such name */
+		kprobe_idx = find_kprobe(att, func_name, NULL);
+		if (kprobe_idx >= 0 && att->kprobes[kprobe_idx].used)
+			continue;
 
 		err = prepare_func(att, func_name, NULL, t, i);
 		if (err)
@@ -656,6 +662,8 @@ static int prepare_func(struct mass_attacher *att,
 		att->func_skip_cnt += ksym_cnt;
 		return 0;
 	}
+	att->kprobes[kprobe_idx].used = true;
+
 	kprobe_cnt = att->kprobes[kprobe_idx].cnt;
 	if (kprobe_cnt != ksym_cnt) {
 		printf("Function '%s' has mismatched %d ksyms vs %d attachable kprobe entries, skipping.\n",
@@ -663,7 +671,6 @@ static int prepare_func(struct mass_attacher *att,
 		att->func_skip_cnt += ksym_cnt;
 		return 0;
 	}
-	att->kprobes[kprobe_idx].used = true;
 
 	if (att->use_fentries && !is_func_type_ok(att->vmlinux_btf, t)) {
 		if (att->debug)
