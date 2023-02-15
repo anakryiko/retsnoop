@@ -83,14 +83,39 @@ static int ksym_by_addr_cmp(const void *p1, const void *p2)
 	return s1->addr < s2->addr ? -1 : 1;
 }
 
+static int ksym_by_name_cmp(const void *p1, const void *p2)
+{
+	const struct ksym * const *sp1 = p1, * const *sp2 = p2;
+	const struct ksym *s1 = *sp1, *s2 = *sp2;
+	int ret;
+
+	if (s1->kind != s2->kind)
+		return s1->kind < s2->kind ? -1 : 1;
+
+	if (!!s1->module != !!s2->module)
+		return s2->module ? -1 : 1;
+
+	if (s1->module) {
+		ret = strcmp(s1->module, s2->module);
+		if (ret != 0)
+			return ret;
+	}
+
+	return strcmp(s1->name, s2->name);
+}
+
 static int ksym_by_name_order(const void *p1, const void *p2)
 {
 	const struct ksym * const *sp1 = p1, * const *sp2 = p2;
 	const struct ksym *s1 = *sp1, *s2 = *sp2;
+	int ret;
 
-	if (s1->kind != s2->kind)
-		return s1->kind < s2->kind ? -1 : 1;
-	return strcmp(s1->name, s2->name);
+	ret = ksym_by_name_cmp(p1, p2);
+	if (ret != 0)
+		return ret;
+
+	/* disambiguate by addr */
+	return s1->addr < s2->addr ? -1 : 1;
 }
 
 struct ksyms *ksyms__load(void)
@@ -202,15 +227,16 @@ const struct ksym *ksyms__map_addr(const struct ksyms *ksyms,
 }
 
 const struct ksym *ksyms__get_symbol(const struct ksyms *ksyms,
-				     const char *name, enum ksym_kind kind)
+				     const char *name, const char *module,
+				     enum ksym_kind kind)
 {
-	struct ksym ksym = { .kind = kind, .name = name };
+	struct ksym ksym = { .kind = kind, .name = name, .module = module };
 	struct ksym *key = &ksym;
 	const struct ksym **res;
 
 	res = bsearch(&key, ksyms->syms_by_name,
 		      ksyms->syms_sz, sizeof(*ksyms->syms_by_name),
-		      ksym_by_name_order);
+		      ksym_by_name_cmp);
 	if (res)
 		return *res;
 
