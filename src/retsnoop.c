@@ -1977,7 +1977,7 @@ int main(int argc, char **argv)
 		goto cleanup_silent;
 	}
 
-	stext_sym = ksyms__get_symbol(ksyms, "_stext");
+	stext_sym = ksyms__get_symbol(ksyms, "_stext", KSYM_FUNC);
 	if (!stext_sym) {
 		fprintf(stderr, "Failed to determine _stext address from /proc/kallsyms\n");
 		err = -EINVAL;

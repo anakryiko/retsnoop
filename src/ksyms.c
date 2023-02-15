@@ -9,7 +9,7 @@
 
 struct ksyms {
 	struct ksym *syms;
-	struct ksym **syms_by_name;
+	struct ksym **syms_by_kind_name;
 	int syms_sz;
 	int syms_cap;
 	char *strs;
@@ -60,6 +60,7 @@ static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, const char *
 	ksym->addr = addr;
 	/* mark which symbols are functions for post-processing */
 	ksym->size = (sym_type == 't' || sym_type == 'T') ? (unsigned long)-1 : 0;
+	ksym->kind = (sym_type == 't' || sym_type == 'T') ? KSYM_FUNC : KSYM_DATA;
 
 	memcpy(ksyms->strs + ksyms->strs_sz, name, name_len);
 	ksyms->strs_sz += name_len;
@@ -82,11 +83,13 @@ static int ksym_cmp(const void *p1, const void *p2)
 	return s1->addr < s2->addr ? -1 : 1;
 }
 
-static int ksym_by_name_cmp(const void *p1, const void *p2)
+static int ksym_by_kind_name_cmp(const void *p1, const void *p2)
 {
 	const struct ksym * const *sp1 = p1, * const *sp2 = p2;
 	const struct ksym *s1 = *sp1, *s2 = *sp2;
 
+	if (s1->kind != s2->kind)
+		return s1->kind < s2->kind ? -1 : 1;
 	return strcmp(s1->name, s2->name);
 }
 
@@ -128,8 +131,8 @@ struct ksyms *ksyms__load(void)
 	}
 	fclose(f);
 
-	ksyms->syms_by_name = calloc(ksyms->syms_sz, sizeof(*ksyms->syms_by_name));
-	if (!ksyms->syms_by_name)
+	ksyms->syms_by_kind_name = calloc(ksyms->syms_sz, sizeof(*ksyms->syms_by_kind_name));
+	if (!ksyms->syms_by_kind_name)
 		goto err_out;
 
 	/* now when strings are finalized, adjust pointers properly */
@@ -137,11 +140,12 @@ struct ksyms *ksyms__load(void)
 		ksyms->syms[i].name += (unsigned long)ksyms->strs;
 		if (ksyms->syms[i].module)
 			ksyms->syms[i].module += (unsigned long)ksyms->strs;
-		ksyms->syms_by_name[i] = &ksyms->syms[i];
+		ksyms->syms_by_kind_name[i] = &ksyms->syms[i];
 	}
 
 	qsort(ksyms->syms, ksyms->syms_sz, sizeof(*ksyms->syms), ksym_cmp);
-	qsort(ksyms->syms_by_name, ksyms->syms_sz, sizeof(*ksyms->syms_by_name), ksym_by_name_cmp);
+	qsort(ksyms->syms_by_kind_name, ksyms->syms_sz,
+	      sizeof(*ksyms->syms_by_kind_name), ksym_by_kind_name_cmp);
 
 	/* do another pass to calculate (guess?) function sizes */
 	for (i = 0; i < ksyms->syms_sz; i++) {
@@ -198,15 +202,15 @@ const struct ksym *ksyms__map_addr(const struct ksyms *ksyms,
 }
 
 const struct ksym *ksyms__get_symbol(const struct ksyms *ksyms,
-				     const char *name)
+				     const char *name, enum ksym_kind kind)
 {
-	struct ksym ksym = { .name = name };
+	struct ksym ksym = { .kind = kind, .name = name };
 	struct ksym *key = &ksym;
 	const struct ksym **res;
 
-	res = bsearch(&key, ksyms->syms_by_name,
-		      ksyms->syms_sz, sizeof(*ksyms->syms_by_name),
-		      ksym_by_name_cmp);
+	res = bsearch(&key, ksyms->syms_by_kind_name,
+		      ksyms->syms_sz, sizeof(*ksyms->syms_by_kind_name),
+		      ksym_by_kind_name_cmp);
 	if (res)
 		return *res;
 
