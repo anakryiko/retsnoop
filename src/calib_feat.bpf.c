@@ -13,6 +13,9 @@ int my_tid = 0;
 __u64 entry_ip = 0;
 int kret_ip_off = 0;
 
+bool calib_entry_happened = false;
+bool calib_exit_happened = false;
+
 bool has_bpf_get_func_ip = false;
 bool has_fexit_sleep_fix = false;
 bool has_fentry_protection = false;
@@ -21,7 +24,7 @@ bool has_ringbuf = false;
 bool has_bpf_cookie = false;
 bool has_kprobe_multi = false;
 
-SEC("kprobe/hrtimer_start_range_ns")
+SEC("ksyscall/nanosleep")
 int calib_entry(struct pt_regs *ctx)
 {
 	pid_t tid;
@@ -29,6 +32,8 @@ int calib_entry(struct pt_regs *ctx)
 	tid = (__u32)bpf_get_current_pid_tgid();
 	if (tid != my_tid)
 		return 0;
+
+	calib_entry_happened = true;
 
 	/* Used for kretprobe function entry IP discovery, before
 	 * bpf_get_func_ip() helper was added.
@@ -82,7 +87,7 @@ int calib_entry(struct pt_regs *ctx)
 	return 0;
 }
 
-SEC("kretprobe/hrtimer_start_range_ns")
+SEC("kretsyscall/nanosleep")
 int calib_exit(struct pt_regs *ctx)
 {
 	struct trace_kprobe *tk;
@@ -92,6 +97,8 @@ int calib_exit(struct pt_regs *ctx)
 	tid = (__u32)bpf_get_current_pid_tgid();
 	if (tid != my_tid)
 		return 0;
+
+	calib_exit_happened = true;
 
 	/* get frame pointer */
 	asm volatile ("%[fp] = r10" : [fp] "+r"(fp) :);

@@ -523,37 +523,42 @@ int mass_attacher__prepare(struct mass_attacher *att)
 
 static int calibrate_features(struct mass_attacher *att)
 {
-	struct calib_feat_bpf *calib_skel;
+	struct calib_feat_bpf *skel;
 	int err;
 
-	calib_skel = calib_feat_bpf__open_and_load();
-	if (!calib_skel) {
+	skel = calib_feat_bpf__open_and_load();
+	if (!skel) {
 		fprintf(stderr, "Failed to load feature calibration skeleton\n");
 		return -EFAULT;
 	}
 
-	calib_skel->bss->my_tid = syscall(SYS_gettid);
+	skel->bss->my_tid = syscall(SYS_gettid);
 
-	err = calib_feat_bpf__attach(calib_skel);
+	err = calib_feat_bpf__attach(skel);
 	if (err) {
 		fprintf(stderr, "Failed to attach feature calibration skeleton\n");
-		calib_feat_bpf__destroy(calib_skel);
-		return -EFAULT;
+		goto err_out;
 	}
 
-	usleep(1);
+	/* trigger ksyscall and kretsyscall probes */
+	syscall(__NR_nanosleep, NULL, NULL);
 
-	if (!calib_skel->bss->has_bpf_get_func_ip && calib_skel->bss->kret_ip_off == 0) {
+	if (!skel->bss->calib_entry_happened || !skel->bss->calib_exit_happened) {
+		fprintf(stderr, "Calibration failure, BPF probes weren't triggered!\n");
+		goto err_out;
+	}
+
+	if (!skel->bss->has_bpf_get_func_ip && skel->bss->kret_ip_off == 0) {
 		fprintf(stderr, "Failed to calibrate kretprobe func IP extraction.\n");
-		return -EFAULT;
+		goto err_out;
 	}
 
-	att->kret_ip_off = calib_skel->bss->kret_ip_off;
-	att->has_bpf_get_func_ip = calib_skel->bss->has_bpf_get_func_ip;
-	att->has_fexit_sleep_fix = calib_skel->bss->has_fexit_sleep_fix;
-	att->has_fentry_protection = calib_skel->bss->has_fentry_protection;
-	att->has_bpf_cookie = calib_skel->bss->has_bpf_cookie;
-	att->has_kprobe_multi = calib_skel->bss->has_kprobe_multi;
+	att->kret_ip_off = skel->bss->kret_ip_off;
+	att->has_bpf_get_func_ip = skel->bss->has_bpf_get_func_ip;
+	att->has_fexit_sleep_fix = skel->bss->has_fexit_sleep_fix;
+	att->has_fentry_protection = skel->bss->has_fentry_protection;
+	att->has_bpf_cookie = skel->bss->has_bpf_cookie;
+	att->has_kprobe_multi = skel->bss->has_kprobe_multi;
 
 	if (att->debug) {
 		printf("Feature calibration results:\n"
@@ -565,8 +570,13 @@ static int calibrate_features(struct mass_attacher *att)
 		       att->has_fentry_protection ? "yes" : "no");
 	}
 
-	calib_feat_bpf__destroy(calib_skel);
+	calib_feat_bpf__destroy(skel);
 	return 0;
+
+err_out:
+	calib_feat_bpf__destroy(skel);
+	return -EFAULT;
+
 }
 
 static bool ksym_eq(const struct ksym *ksym, const char *name,
