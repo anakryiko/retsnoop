@@ -1840,7 +1840,13 @@ static int detect_kernel_features(void)
 		goto out;
 	}
 
-	usleep(1);
+	/* trigger ksyscall and kretsyscall probes */
+	syscall(__NR_nanosleep, NULL, NULL);
+
+	if (!skel->bss->calib_entry_happened || !skel->bss->calib_exit_happened) {
+		fprintf(stderr, "Calibration failure, BPF probes weren't triggered!\n");
+		goto out;
+	}
 
 	if (env.debug) {
 		printf("Feature detection:\n"
