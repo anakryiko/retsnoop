@@ -1,0 +1,38 @@
+name: release
+
+on:
+  push:
+    tags:
+      - '**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.after }}
+  cancel-in-progress: true
+
+jobs:
+  draft-release:
+    name: Create a draft release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout retsnoop and submodules code
+        uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v3.5.0
+        with:
+          submodules: recursive
+          path: 'retsnoop'
+
+      - name: Package source code including submodules
+        run: |
+          tar -I 'gzip -9' --exclude-vcs \
+              -cvf "srcs-full-${{ github.ref_name }}.tar.gz" retsnoop
+          zip -9 -x '*.git' -x '*.git/*' \
+              -r "srcs-full-${{ github.ref_name }}.zip" retsnoop
+
+      - name: Create draft release and add artifacts
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v0.1.15
+        with:
+          draft: true
+          files: |
+            retsnoop*
+            srcs-full-*
