@@ -612,7 +612,7 @@ static int prepare_func(struct mass_attacher *att,
 
 	ksym_it = ksyms__get_symbol_iter(att->ksyms, func_name, module, KSYM_FUNC);
 	if (!ksym_it) {
-		if (att->verbose)
+		if (att->debug_extra)
 			printf("Function '%s' not found in /proc/kallsyms! Skipping.\n", fn_desc);
 		att->func_skip_cnt++;
 		return 0;
@@ -658,8 +658,6 @@ static int prepare_func(struct mass_attacher *att,
 		}
 
 		if (!found) {
-			if (att->debug_extra)
-				printf("Function '%s' doesn't match any allow glob, skipping.\n", fn_desc);
 			att->func_skip_cnt += ksym_cnt;
 			return 0;
 		}
@@ -1115,9 +1113,9 @@ int mass_attacher__attach(struct mass_attacher *att)
 
 skip_attach:
 		if (att->debug) {
-			printf("Attached%s to function #%d '%s' (addr %lx, btf id %d).\n",
+			printf("Attached%s to function #%d '%s' (addr %lx, btf id %d, flags 0x%x).\n",
 			       att->dry_run ? " (dry run)" : "", i + 1,
-			       func_desc, func_addr, finfo->btf_id);
+			       func_desc, func_addr, finfo->btf_id, att->skel->bss->func_flags[i]);
 		} else if (att->verbose) {
 			printf("Attached%s to function #%d '%s'.\n",
 			att->dry_run ? " (dry run)" : "", i + 1, func_desc);
