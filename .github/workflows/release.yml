@@ -18,9 +18,11 @@ jobs:
         include:
           - arch: amd64
             file_str: x86-64
+            target: x86_64-unknown-linux-gnu
 
           - arch: arm64
             file_str: aarch64
+            target: aarch64-unknown-linux-gnu
 
     steps:
       # amd64 needs the dependencies to build retsnoop
@@ -44,6 +46,25 @@ jobs:
               make -j -C src V=1
           strip src/retsnoop
 
+      - name: (arm64) Pre-compile Rust sidecar binary, addr2line
+        if: matrix.arch == 'arm64'
+        working-directory: 'retsnoop/sidecar'
+        run: |
+          # It's too expensive to compile addr2line inside of the Docker
+          # container, below: Cargo's registry index update gets OOM-killed,
+          # and even if we worked around that, the build would take about three
+          # times as long as doing it on the host.
+          #
+          # We need the right toolchain and linker, then we can compile.
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          rustup target add ${{ matrix.target }}
+          CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+              cargo build --release --target ${{ matrix.target }} \
+                  --config target.${{ matrix.target }}.linker=\"aarch64-linux-gnu-gcc\"
+          # Makefile expects the binary in retsnoop/sidecar/target/release/
+          mv target/${{ matrix.target }}/release/addr2line target/release/
+
       - name: (arm64) Set up QEMU
         uses: docker/setup-qemu-action@e81a89b1732b9c48d79cd809d8d81d79c4647a18 # v2.1.0
         if: matrix.arch == 'arm64'
@@ -57,9 +78,10 @@ jobs:
         run: |
           docker run --platform linux/arm64 --rm -v $(pwd):/build ubuntu:22.04 \
               bash -c "apt-get update && \
-                       apt-get install -y cargo clang llvm make pkg-config gcc \
+                       apt-get install -y clang llvm make pkg-config gcc \
                            libelf-dev zlib1g-dev && \
                        cd /build/retsnoop && \
+                       CARGO=true \
                        CFLAGS=--static \
                            make -j -C src V=1 && \
                        strip src/retsnoop"
