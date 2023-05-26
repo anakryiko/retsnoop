@@ -108,11 +108,12 @@ jobs:
           path: 'retsnoop'
 
       - name: Package source code including submodules
-        run: |
-          tar -I 'gzip -9' --exclude-vcs \
-              -cvf "srcs-full-${{ github.ref_name }}.tar.gz" retsnoop
-          zip -9 -x '*.git' -x '*.git/*' \
-              -r "srcs-full-${{ github.ref_name }}.zip" retsnoop
+        uses: qmonnet/git-archive-all-action@791fb850881cf58b1d1fcc9b06c01940080bba0a # v1.0.1
+        with:
+          output-files: >-
+            srcs-full-${{ github.ref_name }}.tar.gz
+            srcs-full-${{ github.ref_name }}.zip
+          base-repo: retsnoop
 
       - name: Create draft release and add artifacts
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v0.1.15
