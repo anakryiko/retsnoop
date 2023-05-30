@@ -13,17 +13,18 @@ jobs:
   build:
     name: Build static retsnoop binary
     runs-on: ubuntu-22.04
-    env:
-      TARGETARCH: ${{ matrix.arch }}
-      FILE_STRING_ARCH_amd64: x86-64
-      FILE_STRING_ARCH_arm64: aarch64
     strategy:
       matrix:
-        arch: [arm64, amd64]
+        include:
+          - arch: amd64
+            file_str: x86-64
+
+          - arch: arm64
+            file_str: aarch64
 
     steps:
       # amd64 needs the dependencies to build retsnoop
-      - name: Install dependencies (amd64)
+      - name: (amd64) Install dependencies
         if: matrix.arch == 'amd64'
         run: |
           sudo apt-get update
@@ -35,7 +36,7 @@ jobs:
           submodules: recursive
           path: 'retsnoop'
 
-      - name: Build static retsnoop natively for amd64
+      - name: (amd64) Build static retsnoop natively
         if: matrix.arch == 'amd64'
         working-directory: 'retsnoop'
         run: |
@@ -43,34 +44,32 @@ jobs:
               make -j -C src V=1
           strip src/retsnoop
 
-      - name: Set up QEMU
+      - name: (arm64) Set up QEMU
         uses: docker/setup-qemu-action@e81a89b1732b9c48d79cd809d8d81d79c4647a18 # v2.1.0
         if: matrix.arch == 'arm64'
         with:
-          platforms: arm64
+          platforms: ${{ matrix.arch }}
 
       # The emulated build leverages Docker and Ubuntu 22.04 container image
       # distribution to have all the needed arm64 packages.
-      - name: Build static retsnoop for arm64 with emulation
+      - name: (arm64) Build static retsnoop for arm64 with emulation
         if: matrix.arch == 'arm64'
-        run:  |
+        run: |
           docker run --platform linux/arm64 --rm -v $(pwd):/build ubuntu:22.04 \
-          bash -c "apt-get update && \
-                   apt-get install -y cargo clang llvm make pkg-config gcc \
-                       libelf-dev zlib1g-dev && \
-                   cd /build/retsnoop && \
-                   CFLAGS=--static \
-                       make -j -C src V=1 && \
-                   strip src/retsnoop"
+              bash -c "apt-get update && \
+                       apt-get install -y cargo clang llvm make pkg-config gcc \
+                           libelf-dev zlib1g-dev && \
+                       cd /build/retsnoop && \
+                       CFLAGS=--static \
+                           make -j -C src V=1 && \
+                       strip src/retsnoop"
 
       - name: Test retsnoop binary
         working-directory: 'retsnoop/src'
-        env:
-          ARCH: ${{ env[format('FILE_STRING_ARCH_{0}', matrix.arch)] }}
         run: |
           file ./retsnoop | \
               tee /dev/stderr | \
-              grep -q "${{ env.ARCH }}"
+              grep -q "${{ matrix.file_str }}"
           ./retsnoop --usage | grep -q Usage
           ldd ./retsnoop 2>&1 | \
               tee /dev/stderr | \
