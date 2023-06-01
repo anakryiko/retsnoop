@@ -23,8 +23,6 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 	bpf_trace_printk(___fmt, sizeof(___fmt), ##__VA_ARGS__);	\
 })
 
-#define barrier_var(var) asm volatile("" : "=r"(var) : "0"(var))
-
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 } rb SEC(".maps");

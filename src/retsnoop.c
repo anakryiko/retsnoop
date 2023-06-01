@@ -1070,12 +1070,12 @@ struct func_trace {
 
 static struct hashmap *func_traces_hash;
 
-static size_t func_traces_hasher(const void *key, void *ctx)
+static size_t func_traces_hasher(long key, void *ctx)
 {
 	return (size_t)key;
 }
 
-static bool func_traces_equal(const void *key1, const void *key2, void *ctx)
+static bool func_traces_equal(long key1, long key2, void *ctx)
 {
 	return key1 == key2;
 }
@@ -1107,7 +1107,7 @@ static void free_func_traces(void)
 		return;
 
 	hashmap__for_each_entry(func_traces_hash, e, bkt) {
-		free_func_trace(e->value);
+		free_func_trace(e->pvalue);
 	}
 
 	hashmap__free(func_traces_hash);
@@ -1121,7 +1121,7 @@ static void purge_func_trace(struct ctx *ctx, int pid)
 	if (!env.emit_func_trace)
 		return;
 
-	if (hashmap__delete(func_traces_hash, k, NULL, (void **)&ft))
+	if (hashmap__delete(func_traces_hash, k, NULL, &ft))
 		free_func_trace(ft);
 }
 
@@ -1139,7 +1139,7 @@ static int handle_func_trace_entry(struct ctx *ctx, const struct func_trace_entr
 	struct func_trace_item *fti;
 	void *tmp;
 
-	if (!hashmap__find(func_traces_hash, k, (void **)&ft)) {
+	if (!hashmap__find(func_traces_hash, k, &ft)) {
 		ft = calloc(1, sizeof(*ft));
 		if (!ft || hashmap__add(func_traces_hash, k, ft)) {
 			fprintf(stderr, "Failed to allocate memory for new function trace entry!\n");
@@ -1199,7 +1199,7 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 	struct func_trace_item *f, *fn;
 	int i, d, last_seq_id = -1;
 
-	if (!hashmap__find(func_traces_hash, k, (void **)&ft))
+	if (!hashmap__find(func_traces_hash, k, &ft))
 		return;
 
 	cache->cnt = 0;
