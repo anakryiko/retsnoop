@@ -49,7 +49,7 @@ static __always_inline u64 get_kret_func_ip(void *ctx)
 		/* get frame pointer */
 		asm volatile ("%[fp] = r10" : [fp] "+r"(fp) :);
 
-		bpf_probe_read(&tk, sizeof(tk), (void *)(fp + kret_ip_off * sizeof(__u64)));
+		bpf_probe_read_kernel(&tk, sizeof(tk), (void *)(fp + kret_ip_off * sizeof(__u64)));
 		ip = (__u64)BPF_CORE_READ(tk, rp.kp.addr);
 		return ip;
 	}
