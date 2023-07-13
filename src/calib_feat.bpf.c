@@ -104,7 +104,7 @@ int calib_exit(struct pt_regs *ctx)
 	asm volatile ("%[fp] = r10" : [fp] "+r"(fp) :);
 
 	for (i = 1; i <= MAX_ATTEMPTS; i++) {
-		bpf_probe_read(&tk, sizeof(tk), (void *)(fp + i * sizeof(__u64)));
+		bpf_probe_read_kernel(&tk, sizeof(tk), (void *)(fp + i * sizeof(__u64)));
 		ip = (__u64)BPF_CORE_READ(tk, rp.kp.addr);
 
 		if (ip == entry_ip) {

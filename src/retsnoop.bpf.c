@@ -112,9 +112,9 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 
 	/* we can stitch together stack subsections */
 	if (stack->saved_depth && stack->max_depth + 1 == stack->saved_depth) {
-		bpf_probe_read(stack->saved_ids + d, len * sizeof(stack->saved_ids[0]), stack->func_ids + d);
-		bpf_probe_read(stack->saved_res + d, len * sizeof(stack->saved_res[0]), stack->func_res + d);
-		bpf_probe_read(stack->saved_lat + d, len * sizeof(stack->saved_lat[0]), stack->func_lat + d);
+		bpf_probe_read_kernel(stack->saved_ids + d, len * sizeof(stack->saved_ids[0]), stack->func_ids + d);
+		bpf_probe_read_kernel(stack->saved_res + d, len * sizeof(stack->saved_res[0]), stack->func_res + d);
+		bpf_probe_read_kernel(stack->saved_lat + d, len * sizeof(stack->saved_lat[0]), stack->func_lat + d);
 		stack->saved_depth = stack->depth + 1;
 		if (extra_verbose)
 			bpf_printk("STITCHED STACK %d..%d to ..%d\n",
@@ -132,9 +132,9 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 			   stack->saved_depth, stack->saved_max_depth, stack->depth + 1);
 	}
 
-	bpf_probe_read(stack->saved_ids + d, len * sizeof(stack->saved_ids[0]), stack->func_ids + d);
-	bpf_probe_read(stack->saved_res + d, len * sizeof(stack->saved_res[0]), stack->func_res + d);
-	bpf_probe_read(stack->saved_lat + d, len * sizeof(stack->saved_lat[0]), stack->func_lat + d);
+	bpf_probe_read_kernel(stack->saved_ids + d, len * sizeof(stack->saved_ids[0]), stack->func_ids + d);
+	bpf_probe_read_kernel(stack->saved_res + d, len * sizeof(stack->saved_res[0]), stack->func_res + d);
+	bpf_probe_read_kernel(stack->saved_lat + d, len * sizeof(stack->saved_lat[0]), stack->func_lat + d);
 
 	stack->saved_depth = stack->depth + 1;
 	stack->saved_max_depth = stack->max_depth;
