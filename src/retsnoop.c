@@ -1929,7 +1929,7 @@ static void sig_handler(int sig)
 	exiting = true;
 }
 
-int main(int argc, char **argv)
+int main(int argc, char **argv, char **envp)
 {
 	long page_size = sysconf(_SC_PAGESIZE);
 	struct mass_attacher_opts att_opts = {};
@@ -2009,7 +2009,7 @@ int main(int argc, char **argv)
 			symb_inlines = true;
 
 		env.ctx.a2l = addr2line__init(env.vmlinux_path ?: vmlinux_path, stext_sym->addr,
-					      env.verbose, symb_inlines);
+					      env.verbose, symb_inlines, envp);
 		if (!env.ctx.a2l) {
 			fprintf(stderr, "Failed to start addr2line for vmlinux image at %s!\n",
 				env.vmlinux_path ?: vmlinux_path);

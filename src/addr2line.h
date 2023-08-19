@@ -17,7 +17,7 @@ struct a2l_cu_resp
 
 struct addr2line;
 
-struct addr2line *addr2line__init(const char *vmlinux, long stext_addr, bool verbose, bool inlines);
+struct addr2line *addr2line__init(const char *vmlinux, long stext_addr, bool verbose, bool inlines, char **envp);
 void addr2line__free(struct addr2line *a2l);
 
 long addr2line__kaslr_offset(const struct addr2line *a2l);
