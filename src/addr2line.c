@@ -51,14 +51,13 @@ static void sig_pipe(int signo)
 	exit(1);
 }
 
-static void child_driver(int fd1[2], int fd2[2], const char *vmlinux, bool inlines)
+static void child_driver(int fd1[2], int fd2[2], const char *vmlinux, bool inlines, char **envp)
 {
 	size_t a2l_sz = __binary_sidecar_end - __binary_sidecar_start;
 	char *argv[] = {
 		"addr2line", "-f", "--llvm", "-e", (char *)vmlinux,
 		inlines ? "-i" : NULL, NULL,
 	};
-	char *envp[] = { NULL };
 	int a2l_rwfd, a2l_rofd, ppid;
 	FILE *a2l_bin;
 	char buf[256];
@@ -204,7 +203,7 @@ cleanup:
  * compensate for during matching real (potentially randomized) kernel
  * addresses against non-randomized addresses recorded in ELF and DWARF data.
  */
-struct addr2line *addr2line__init(const char *vmlinux, long stext_addr, bool verbose, bool inlines)
+struct addr2line *addr2line__init(const char *vmlinux, long stext_addr, bool verbose, bool inlines, char **envp)
 {
 	struct addr2line *a2l;
 	int fd1[2], fd2[2], pid;
@@ -244,7 +243,7 @@ struct addr2line *addr2line__init(const char *vmlinux, long stext_addr, bool ver
 
 	/* CHILD PROCESS */
 	if (pid == 0) {
-		child_driver(fd1, fd2, vmlinux, inlines);
+		child_driver(fd1, fd2, vmlinux, inlines, envp);
 		exit(2); /* should never reach this */
 	}
 
