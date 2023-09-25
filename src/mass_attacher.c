@@ -1115,7 +1115,8 @@ skip_attach:
 		if (att->debug) {
 			printf("Attached%s to function #%d '%s' (addr %lx, btf id %d, flags 0x%x).\n",
 			       att->dry_run ? " (dry run)" : "", i + 1,
-			       func_desc, func_addr, finfo->btf_id, att->skel->bss->func_flags[i]);
+			       func_desc, func_addr, finfo->btf_id,
+			       att->skel->data_func_infos->func_infos[i].flags);
 		} else if (att->verbose) {
 			printf("Attached%s to function #%d '%s'.\n",
 			att->dry_run ? " (dry run)" : "", i + 1, func_desc);

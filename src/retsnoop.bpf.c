@@ -64,14 +64,20 @@ const volatile __u32 comm_deny_cnt = 0;
 
 const volatile __u64 duration_ns = 0;
 
-char func_names[MAX_FUNC_CNT][MAX_FUNC_NAME_LEN] = {};
-__u64 func_ips[MAX_FUNC_CNT] = {};
-int func_flags[MAX_FUNC_CNT] = {};
-
 const volatile char spaces[512] = {};
 
 /* provided by mass_attach.bpf.c */
 int copy_lbrs(void *dst, size_t dst_sz);
+
+
+/* dynamically sized from the user space */
+struct func_info func_infos[1] SEC(".data.func_infos");
+const volatile __u32 func_info_mask;
+
+static __always_inline const struct func_info *func_info(__u32 id)
+{
+	return &func_infos[id & func_info_mask];
+}
 
 static __always_inline int output_stack(void *ctx, void *map, struct call_stack *stack)
 {
@@ -153,7 +159,7 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 	if (!stack) {
 		struct task_struct *tsk;
 
-		if (!(func_flags[id & MAX_FUNC_MASK] & FUNC_IS_ENTRY))
+		if (!(func_info(id)->flags & FUNC_IS_ENTRY))
 			return false;
 
 		bpf_map_update_elem(&stacks, &pid, &empty_stack, BPF_ANY);
@@ -218,7 +224,7 @@ skip_ft_entry:;
 	}
 
 	if (verbose) {
-		const char *func_name = func_names[id & MAX_FUNC_MASK];
+		const char *func_name = func_info(id)->name;
 
 		if (printk_is_sane) {
 			if (d == 0)
@@ -289,11 +295,16 @@ char FMT_SUCC_INT_COMPAT[]   = "    EXIT  [%d] %s [%d]    ";
 
 static __noinline void print_exit(void *ctx, __u32 d, __u32 id, long res)
 {
-	const char *func_name = func_names[id & MAX_FUNC_MASK];
+	const struct func_info *fi;
+	const char *func_name = fi->name;
 	const size_t FMT_MAX_SZ = sizeof(FMT_SUCC_PTR_COMPAT); /* UPDATE IF NECESSARY */
 	u32 flags, fmt_sz;
 	const char *fmt;
 	bool failed;
+
+	fi = func_info(id);
+	func_name = fi->name;
+	flags = fi->flags;
 
 	if (printk_needs_endline) {
 		/* before bpf_trace_printk() started using underlying
@@ -325,7 +336,6 @@ static __noinline void print_exit(void *ctx, __u32 d, __u32 id, long res)
 		APPEND_ENDLINE(FMT_SUCC_INT_COMPAT);
 	}
 
-	flags = func_flags[id & MAX_FUNC_MASK];
 	if (flags & FUNC_RET_VOID) {
 		fmt = printk_is_sane ? FMT_SUCC_VOID : FMT_SUCC_VOID_COMPAT;
 		failed = false;
@@ -366,7 +376,8 @@ static __noinline void print_exit(void *ctx, __u32 d, __u32 id, long res)
 
 static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 {
-	const char *func_name = func_names[id & MAX_FUNC_MASK];
+	const struct func_info *fi;
+	const char *func_name;
 	struct call_stack *stack;
 	u32 pid, exp_id, flags, fmt_sz;
 	const char *fmt;
@@ -389,7 +400,10 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	if (d >= MAX_FSTACK_DEPTH)
 		return false;
 
-	flags = func_flags[id & MAX_FUNC_MASK];
+	fi = func_info(id);
+	func_name = fi->name;
+	flags = fi->flags;
+
 	if (flags & FUNC_CANT_FAIL)
 		failed = false;
 	else if ((flags & FUNC_RET_PTR) && res == 0)
@@ -426,13 +440,7 @@ skip_ft_exit:;
 
 	exp_id = stack->func_ids[d];
 	if (exp_id != id) {
-		const char *exp_func_name = func_names[exp_id & MAX_FUNC_MASK];
-		u64 exp_ip;
-
-		if (exp_id < MAX_FUNC_CNT)
-			exp_ip = func_ips[exp_id];
-		else
-			exp_ip = 0;
+		const struct func_info *exp_fi = func_info(exp_id);
 
 		if (verbose) {
 			bpf_printk("POP(0) UNEXPECTED PID %d DEPTH %d MAX DEPTH %d",
@@ -440,7 +448,7 @@ skip_ft_exit:;
 			bpf_printk("POP(1) UNEXPECTED GOT  ID %d ADDR %lx NAME %s",
 				   id, ip, func_name);
 			bpf_printk("POP(2) UNEXPECTED WANT ID %u ADDR %lx NAME %s",
-				   exp_id, exp_ip, exp_func_name);
+				   exp_id, exp_fi->ip, exp_fi->name);
 		}
 
 		stack->depth = 0;
