@@ -3,9 +3,6 @@
 #ifndef __RETSNOOP_H
 #define __RETSNOOP_H
 
-#define MAX_CPUS 256
-#define MAX_CPUS_MSK (MAX_CPUS - 1)
-
 #define MAX_FUNC_NAME_LEN 40
 
 #define MAX_FSTACK_DEPTH 64

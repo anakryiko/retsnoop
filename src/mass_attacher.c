@@ -338,9 +338,25 @@ static int prepare_func(struct mass_attacher *att,
 			const struct btf_type *t, int btf_id);
 static int calibrate_features(struct mass_attacher *att);
 
+/* BPF map is assumed to have been sized to a single element */
+static void *resize_map(struct bpf_map *map, size_t elem_cnt)
+{
+	size_t elem_sz = bpf_map__value_size(map);
+	int err;
+
+	err = bpf_map__set_value_size(map, elem_cnt * elem_sz);
+	if (err) {
+		fprintf(stderr, "Failed to dynamically size BPF map '%s' to %zu elements with total size %zu: %d\n",
+			bpf_map__name(map), elem_cnt, elem_cnt * elem_sz, err);
+		return NULL;
+	}
+
+	return bpf_map__initial_value(map, &elem_sz);
+}
+
 int mass_attacher__prepare(struct mass_attacher *att)
 {
-	int err, i, n;
+	int err, i, n, cpu_cnt, tmp_cnt;
 
 	/* Load and cache /proc/kallsyms for IP <-> kfunc mapping */
 	att->ksyms = ksyms__load();
@@ -388,6 +404,20 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	att->skel->rodata->has_fentry_protection = att->has_fentry_protection;
 	att->skel->rodata->has_bpf_get_func_ip = att->has_bpf_get_func_ip;
 	att->skel->rodata->has_bpf_cookie = att->has_bpf_cookie;
+
+	/* round up actual CPU count to the closest power-of-2 */
+	cpu_cnt = libbpf_num_possible_cpus();
+	for (tmp_cnt = 1; tmp_cnt < cpu_cnt; tmp_cnt *= 2) {
+		/* nothing */
+	}
+	cpu_cnt = tmp_cnt;
+	att->skel->rodata->max_cpu_mask = cpu_cnt - 1;
+
+	/* resize per-CPU global arrays */
+	if (!resize_map(att->skel->maps.data_lbrs, cpu_cnt) ||
+	    !resize_map(att->skel->maps.data_lbr_szs, cpu_cnt) ||
+	    !resize_map(att->skel->maps.data_running, cpu_cnt))
+		return -EINVAL;
 
 	/* Load names of possible kprobes */
 	err = load_available_kprobes(att);
