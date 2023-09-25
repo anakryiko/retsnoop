@@ -15,8 +15,6 @@ struct {
 	__type(value, unsigned);
 } ip_to_id SEC(".maps");
 
-#define MAX_CPU_CNT 256
-#define MAX_CPU_MASK (MAX_CPU_CNT - 1)
 #define MAX_LBR_ENTRIES 32
 
 bool ready = false;
@@ -34,8 +32,12 @@ const volatile bool has_fentry_protection = false;
 
 extern const volatile bool use_lbr;
 
-static __u64 lbr_szs[MAX_CPU_CNT];
-static struct perf_branch_entry lbrs[MAX_CPU_CNT][MAX_LBR_ENTRIES];
+const volatile __u32 max_cpu_mask;
+
+/* dynamically sized arrays */
+static __u64 lbr_szs[1] SEC(".data.lbr_szs");
+static struct perf_branch_entry lbrs[1][MAX_LBR_ENTRIES] SEC(".data.lbrs");
+static int running[1] SEC(".data.running");
 
 /* has to be called from entry-point BPF program if not using
  * bpf_get_func_ip()
@@ -64,8 +66,8 @@ static __always_inline void capture_lbrs(int cpu)
 	if (!use_lbr)
 		return;
 
-	lbr_sz = bpf_get_branch_snapshot(&lbrs[cpu & MAX_CPU_MASK], sizeof(lbrs[0]), 0);
-	lbr_szs[cpu & MAX_CPU_MASK] = lbr_sz;
+	lbr_sz = bpf_get_branch_snapshot(&lbrs[cpu & max_cpu_mask], sizeof(lbrs[0]), 0);
+	lbr_szs[cpu & max_cpu_mask] = lbr_sz;
 }
 
 __hidden int copy_lbrs(void *dst, size_t dst_sz)
@@ -76,8 +78,8 @@ __hidden int copy_lbrs(void *dst, size_t dst_sz)
 		return 0;
 
 	cpu = bpf_get_smp_processor_id();
-	bpf_probe_read_kernel(dst, dst_sz, &lbrs[cpu & MAX_CPU_MASK]);
-	return lbr_szs[cpu & MAX_CPU_MASK];
+	bpf_probe_read_kernel(dst, dst_sz, &lbrs[cpu & max_cpu_mask]);
+	return lbr_szs[cpu & max_cpu_mask];
 }
 
 
@@ -156,21 +158,19 @@ int kexit(struct pt_regs *ctx)
 	return 0;
 }
 
-int running[MAX_CPU_CNT] = {};
-
 static __always_inline bool recur_enter(u32 cpu)
 {
-	if (running[cpu & MAX_CPU_MASK])
+	if (running[cpu & max_cpu_mask])
 		return false;
 
-	running[cpu & MAX_CPU_MASK] += 1;
+	running[cpu & max_cpu_mask] += 1;
 
 	return true;
 }
 
 static __always_inline void recur_exit(u32 cpu)
 {
-	running[cpu & MAX_CPU_MASK] -= 1;
+	running[cpu & max_cpu_mask] -= 1;
 }
 
 static __always_inline u64 get_ftrace_func_ip(void *ctx, int arg_cnt)
