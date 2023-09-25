@@ -548,7 +548,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case OPT_STACKS_MAP_SIZE:
 		errno = 0;
 		env.stacks_map_sz = strtol(arg, NULL, 10);
-		if (errno || env.pid < 0) {
+		if (errno || env.stacks_map_sz < 0) {
 			fprintf(stderr, "Invalid stacks map size: %d\n", env.stacks_map_sz);
 			return -EINVAL;
 		}
@@ -688,9 +688,13 @@ static bool is_err_in_mask(__u64 *err_mask, int err)
 	return (err_mask[err / 64] >> (err % 64)) & 1;
 }
 
+static const struct func_info *func_info(const struct ctx *ctx, __u32 id)
+{
+	return &ctx->skel->data_func_infos->func_infos[id];
+}
+
 static bool should_report_stack(struct ctx *ctx, const struct call_stack *s)
 {
-	struct retsnoop_bpf *skel = ctx->skel;
 	int i, id, flags, res;
 	bool allowed = false;
 
@@ -699,7 +703,7 @@ static bool should_report_stack(struct ctx *ctx, const struct call_stack *s)
 
 	for (i = 0; i < s->max_depth; i++) {
 		id = s->func_ids[i];
-		flags = skel->bss->func_flags[id];
+		flags = func_info(ctx, id)->flags;
 
 		if (flags & FUNC_CANT_FAIL)
 			continue;
@@ -727,7 +731,7 @@ static bool should_report_stack(struct ctx *ctx, const struct call_stack *s)
 
 	for (i = s->saved_depth - 1; i < s->saved_max_depth; i++) {
 		id = s->saved_ids[i];
-		flags = skel->bss->func_flags[id];
+		flags = func_info(ctx, id)->flags;
 
 		if (flags & FUNC_CANT_FAIL)
 			continue;
@@ -756,14 +760,13 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 {
 	const struct mass_attacher_func_info *finfo;
 	struct mass_attacher *att = ctx->att;
-	struct retsnoop_bpf *skel = ctx->skel;
 	struct fstack_item *fitem;
 	const char *fname;
 	int i, id, flags, cnt;
 
 	for (i = 0, cnt = 0; i < s->max_depth; i++, cnt++) {
 		id = s->func_ids[i];
-		flags = skel->bss->func_flags[id];
+		flags = func_info(ctx, id)->flags;
 		finfo = mass_attacher__func(att, id);
 		fname = finfo->name;
 
@@ -792,7 +795,7 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 
 	for (i = s->saved_depth - 1; i < s->saved_max_depth; i++, cnt++) {
 		id = s->saved_ids[i];
-		flags = skel->bss->func_flags[id];
+		flags = func_info(ctx, id)->flags;
 		finfo = mass_attacher__func(att, id);
 		fname = finfo->name;
 
@@ -1243,7 +1246,7 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 
 		if (f->depth < 0) {
 			snappendf(s->dur, "%.3fus", f->func_lat / 1000.0);
-			prepare_func_res(s, f->func_res, ctx->skel->bss->func_flags[f->func_id]);
+			prepare_func_res(s, f->func_res, func_info(ctx, f->func_id)->flags);
 		}
 	}
 
@@ -1910,6 +1913,11 @@ static int create_lbr_perf_events(int *fds, int cpu_cnt)
 	return 0;
 }
 
+static inline bool is_pow_of_2(long x)
+{
+	return x && (x & (x - 1)) == 0;
+}
+
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
 	if (level == LIBBPF_DEBUG && !env.debug_extra)
@@ -1943,6 +1951,7 @@ int main(int argc, char **argv, char **envp)
 	char vmlinux_path[1024] = {};
 	const struct ksym *stext_sym = 0;
 	int err, i, j, n;
+	size_t tmp_n;
 	__u64 ts1, ts2;
 
 	if (setvbuf(stdout, NULL, _IOLBF, BUFSIZ))
@@ -2186,18 +2195,35 @@ int main(int argc, char **argv, char **envp)
 		goto cleanup_silent;
 
 	n = mass_attacher__func_cnt(att);
-	if (n > MAX_FUNC_CNT) {
-		fprintf(stderr,
-			"Number of requested functions %d is too big, only up to %d functions are supported\n",
-			n, MAX_FUNC_CNT);
-		err = -E2BIG;
+	/* Set up dynamically sized array of func_infos. On BPF side we need
+	 * it to be a power-of-2 sized.
+	 */
+	if (is_pow_of_2(n)) {
+		tmp_n = n;
+	} else {
+		for (tmp_n = 1; tmp_n <= INT_MAX / 4; tmp_n *= 2) {
+			if (tmp_n >= n)
+				break;
+		}
+		if (tmp_n >= INT_MAX / 2) {
+			err = -E2BIG;
+			fprintf(stderr, "Unrealistically large number of functions: %zu!\n", tmp_n);
+			goto cleanup_silent;
+		}
+	}
+	skel->rodata->func_info_mask = tmp_n - 1;
+	err = bpf_map__set_value_size(skel->maps.data_func_infos, tmp_n * sizeof(struct func_info));
+	if (err) {
+		fprintf(stderr, "Failed to dynamically size func info table: %d\n", err);
 		goto cleanup_silent;
 	}
+	skel->data_func_infos = bpf_map__initial_value(skel->maps.data_func_infos, &tmp_n);
 
 	vmlinux_btf = mass_attacher__btf(att);
 	for (i = 0; i < n; i++) {
 		const struct mass_attacher_func_info *finfo;
 		const struct glob *glob;
+		struct func_info *fi;
 		__u32 flags;
 
 		finfo = mass_attacher__func(att, i);
@@ -2216,10 +2242,11 @@ int main(int argc, char **argv, char **envp)
 			break;
 		}
 
-		strncpy(skel->bss->func_names[i], finfo->name, MAX_FUNC_NAME_LEN - 1);
-		skel->bss->func_names[i][MAX_FUNC_NAME_LEN - 1] = '\0';
-		skel->bss->func_ips[i] = finfo->addr;
-		skel->bss->func_flags[i] = flags;
+		fi = (struct func_info *)func_info(&env.ctx, i);
+		strncpy(fi->name, finfo->name, MAX_FUNC_NAME_LEN - 1);
+		fi->name[MAX_FUNC_NAME_LEN - 1] = '\0';
+		fi->ip = finfo->addr;
+		fi->flags = flags;
 	}
 
 	for (i = 0; i < env.entry_glob_cnt; i++) {
