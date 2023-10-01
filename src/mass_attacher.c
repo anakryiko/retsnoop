@@ -118,7 +118,6 @@ struct mass_attacher {
 	bool dry_run;
 	int max_func_cnt;
 	int max_fileno_rlimit;
-	func_filter_fn func_filter;
 
 	int kret_ip_off;
 	bool has_bpf_get_func_ip;
@@ -177,7 +176,6 @@ struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct ksyms *k
 	att->dry_run = opts->dry_run;
 	att->attach_mode = opts->attach_mode;
 	att->use_fentries = opts->attach_mode == MASS_ATTACH_FENTRY;
-	att->func_filter = opts->func_filter;
 
 	for (i = 0; i < ARRAY_SIZE(enforced_deny_globs); i++) {
 		err = mass_attacher__deny_glob(att, enforced_deny_globs[i], NULL);
@@ -720,13 +718,6 @@ static int prepare_func(struct mass_attacher *att,
 		if (att->verbose)
 			printf("Function '%s' has multiple (%d) ambiguous instances and is incompatible with fentry/fexit, skipping.\n",
 			       fn_desc, ksym_cnt);
-		att->func_skip_cnt += ksym_cnt;
-		return 0;
-	}
-
-	if (att->func_filter && !att->func_filter(att, att->vmlinux_btf, i, func_name, att->func_cnt)) {
-		if (att->debug)
-			printf("Function '%s' skipped due to custom filter function.\n", fn_desc);
 		att->func_skip_cnt += ksym_cnt;
 		return 0;
 	}

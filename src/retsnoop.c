@@ -1770,14 +1770,6 @@ static int func_flags(const char *func_name, const struct btf *btf, int btf_id)
 	return 0;
 }
 
-static bool func_filter(const struct mass_attacher *att,
-			const struct btf *btf, int func_btf_id,
-			const char *name, int func_id)
-{
-	/* no extra filtering for now */
-	return true;
-}
-
 static int find_vmlinux(char *path, size_t max_len, bool soft)
 {
 	const char *locations[] = {
@@ -2162,7 +2154,6 @@ int main(int argc, char **argv, char **envp)
 		err = -EINVAL;
 		goto cleanup_silent;
 	}
-	att_opts.func_filter = func_filter;
 	att = mass_attacher__new(skel, ksyms, &att_opts);
 	if (!att)
 		goto cleanup_silent;
