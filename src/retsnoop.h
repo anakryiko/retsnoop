@@ -55,6 +55,8 @@ struct call_stack {
 	long lbrs_sz;
 
 	int next_seq_id;
+
+	long scratch; /* for obfuscating pointers to be read as integers */
 };
 
 struct func_trace_start {

@@ -353,7 +353,7 @@ static __noinline void print_exit(void *ctx, __u32 d, __u32 id, long res)
 			fmt = res ? FMT_SUCC_TRUE_COMPAT : FMT_SUCC_FALSE_COMPAT;
 		failed = false;
 	} else if (flags & FUNC_NEEDS_SIGN_EXT) {
-		failed = IS_ERR_VALUE32(res);
+		failed = IS_ERR_VALUE32((u32)res);
 		if (failed)
 			fmt = printk_is_sane ? FMT_FAIL_INT : FMT_FAIL_INT_COMPAT;
 		else
@@ -404,13 +404,21 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	func_name = fi->name;
 	flags = fi->flags;
 
+	/* obfuscate pointers (tracked in fentry/fexit mode by BPF verifier
+	 * for pointer-returning functions) to be interpreted as opaque
+	 * integers
+	 */
+	stack->scratch = res;
+	barrier_var(res);
+	res = stack->scratch;
+
 	if (flags & FUNC_CANT_FAIL)
 		failed = false;
 	else if ((flags & FUNC_RET_PTR) && res == 0)
 		/* consider NULL pointer an error as well */
 		failed = true;
 	else if (flags & FUNC_NEEDS_SIGN_EXT)
-		failed = IS_ERR_VALUE32(res);
+		failed = IS_ERR_VALUE32((u32)res);
 	else
 		failed = IS_ERR_VALUE(res);
 
