@@ -134,7 +134,7 @@ $(OUTPUT)/addr2line.embed.o: $(SIDECAR)
 	$(call msg,LLVM_STRIP,$<)
 	$(Q)$(LLVM_STRIP) -g $<
 	$(call msg,LD,$@)
-	$(Q)$(LD) -r -b binary \
+	$(Q)$(LD) -r -b binary -z noexecstack \
 		--defsym __binary_sidecar_start=_binary____sidecar_target_$(if $(DEBUG),debug,release)_addr2line_start \
 		--defsym __binary_sidecar_end=_binary____sidecar_target_$(if $(DEBUG),debug,release)_addr2line_end \
 		--defsym __binary_sidecar_size=_binary____sidecar_target_$(if $(DEBUG),debug,release)_addr2line_size \
