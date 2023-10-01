@@ -11,8 +11,8 @@ use std::fs::File;
 use std::io::{BufRead, Lines, StdinLock, Write};
 use std::path::Path;
 
+use crate::addr2line::fallible_iterator::FallibleIterator;
 use clap::{App, Arg, ArgMatches, Values};
-use fallible_iterator::FallibleIterator;
 use glob;
 use object::{Object, ObjectSection, SymbolMap, SymbolMapName};
 use typed_arena::Arena;
