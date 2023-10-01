@@ -12,10 +12,6 @@ struct ksyms;
 struct mass_attacher;
 struct SKEL_NAME;
 
-typedef bool (*func_filter_fn)(const struct mass_attacher *att,
-			       const struct btf *btf, int func_btf_id,
-			       const char *name, int func_id);
-
 struct mass_attacher_func_info {
 	const char *name;
 	const char *module;
@@ -48,7 +44,6 @@ struct mass_attacher_opts {
 	bool debug_extra;
 	bool debug_multi_kprobe;
 	bool dry_run;
-	func_filter_fn func_filter;
 };
 
 struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct ksyms *ksyms,
