@@ -1,9 +1,6 @@
 name: release
 
-on:
-  push:
-    tags:
-      - '**'
+on: workflow_dispatch
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.after }}
