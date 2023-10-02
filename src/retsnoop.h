@@ -19,7 +19,7 @@ struct func_info {
 	char name[MAX_FUNC_NAME_LEN];
 	__u64 ip;
 	int flags;
-};
+} __attribute__((aligned(8)));
 
 enum rec_type {
 	REC_CALL_STACK,
