@@ -1,0 +1,73 @@
+name: build
+
+on: pull_request
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.after }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build retsnoop binary
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            file_str: x86-64
+            target: x86_64-unknown-linux-gnu
+
+    steps:
+      - name: (amd64) Install dependencies
+        if: matrix.arch == 'amd64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cargo llvm libelf-dev
+
+      - name: Checkout retsnoop code
+        uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
+        with:
+          submodules: recursive
+          path: 'retsnoop'
+
+      - name: (amd64) Build retsnoop
+        if: matrix.arch == 'amd64'
+        working-directory: 'retsnoop'
+        run: |
+          make -j -C src V=1
+          strip src/retsnoop
+
+      - name: Test retsnoop binary
+        working-directory: 'retsnoop/src'
+        run: |
+          file ./retsnoop | \
+              tee /dev/stderr | \
+              grep -q "${{ matrix.file_str }}"
+          ./retsnoop --usage | grep -q Usage
+          ldd ./retsnoop 2>&1 | \
+              tee /dev/stderr | \
+              grep -q 'libc.so'
+
+      - name: Clean up
+        working-directory: 'retsnoop'
+        run: |
+          make -C src clean
+
+      - name: (amd64) Build static retsnoop
+        if: matrix.arch == 'amd64'
+        working-directory: 'retsnoop'
+        run: |
+          CFLAGS=--static \
+              make -j -C src V=1
+          strip src/retsnoop
+
+      - name: Test retsnoop binary
+        working-directory: 'retsnoop/src'
+        run: |
+          file ./retsnoop | \
+              tee /dev/stderr | \
+              grep -q "${{ matrix.file_str }}"
+          ./retsnoop --usage | grep -q Usage
+          ldd ./retsnoop 2>&1 | \
+              tee /dev/stderr | \
+              grep -q 'not a dynamic executable'
