@@ -96,9 +96,10 @@ $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPU
 $(BPFTOOL): $(LIBBPF_OBJ) | $(BPFTOOL_OUTPUT)
 	$(call msg,BPFTOOL,$@)
 	$(Q) [ -d ../bpftool/src ] || git submodule update --init
-	$(Q)$(MAKE) ARCH= CROSS_COMPILE=				      \
-		    BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT)/	      \
-		    -C $(BPFTOOL_SRC) bootstrap
+	$(Q)CFLAGS= EXTRA_CFLAGS="$(CFLAGS)"				      \
+		$(MAKE) ARCH= CROSS_COMPILE=				      \
+			BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT)/	      \
+			-C $(BPFTOOL_SRC) bootstrap
 
 bpftool: $(BPFTOOL)
 	$(Q)ln -s $(BPFTOOL) bpftool
