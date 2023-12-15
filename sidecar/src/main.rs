@@ -165,7 +165,7 @@ fn query_address<T: gimli::Endianity>(
 
     if config.do_functions || config.do_inlines {
         let mut printed_anything = false;
-        let mut frames = ctx.find_frames(probe).unwrap().enumerate();
+        let mut frames = ctx.find_frames(probe).skip_all_loads().unwrap().enumerate();
         while let Some((i, frame)) = frames.next().unwrap() {
             if config.pretty && i != 0 {
                 print!(" (inlined by) ");
@@ -243,11 +243,10 @@ fn query_address<T: gimli::Endianity>(
 //
 fn query_compile_unit<T: gimli::Endianity>(
     compile_unit: &str,
-    ctx: &Context<gimli::EndianSlice<T>>,
+    dwarf: &gimli::Dwarf<gimli::EndianSlice<T>>,
     _config: &Config,
 ) {
     let cu_pattern = glob::Pattern::new(compile_unit).unwrap();
-    let dwarf = ctx.dwarf();
     let mut units = dwarf.units();
     while let Some(header) = units.next().expect("fail to parse units") {
         let unit = dwarf.unit(header).expect("fail to parse header");
@@ -438,7 +437,7 @@ fn main() {
         dwarf.load_sup(&mut load_sup_section).unwrap();
     }
 
-    let ctx = Context::from_dwarf(dwarf).unwrap();
+    let ctx = Context::from_dwarf(dwarf.borrow(|b| *b)).unwrap();
 
     let stdin = std::io::stdin();
     let queries = matches
@@ -450,7 +449,7 @@ fn main() {
         match addr_or_cunit {
             QueryType::Addr(probe) => query_address(probe, &ctx, &symbols, &config),
             QueryType::CompileUnit(compile_unit) => {
-                query_compile_unit(&compile_unit, &ctx, &config)
+                query_compile_unit(&compile_unit, &dwarf, &config)
             }
             _ => panic!("not implemented yet"),
         }
