@@ -158,7 +158,7 @@ retsnoop: $(addprefix $(OUTPUT)/,					\
 		      mass_attacher.o)					\
 	  $(LIBBPF_OBJ)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -o $@
+	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) $^ -lelf -lz -o $@
 
 $(OUTPUT)/tests/simfail.o: $(OUTPUT)/tests/kprobe_bad_kfunc.skel.h	\
 			   $(OUTPUT)/tests/fentry_unsupp_func.skel.h	\
@@ -169,7 +169,7 @@ simfail: $(addprefix $(OUTPUT)/tests/,					\
 		     simfail.o)						\
 	  $(LIBBPF_OBJ)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -o $@
+	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) $^ -lelf -lz -o $@
 
 # delete failed targets
 .DELETE_ON_ERROR:

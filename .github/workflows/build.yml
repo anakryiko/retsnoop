@@ -57,6 +57,7 @@ jobs:
         if: matrix.arch == 'amd64'
         working-directory: 'retsnoop'
         run: |
+          # LDFLAGS here would also apply to bpftool which fails to build with static
           CFLAGS=--static \
               make -j -C src V=1
           strip src/retsnoop
