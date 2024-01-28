@@ -11,8 +11,9 @@ BPFTOOL_OUTPUT ?= $(abspath $(OUTPUT)/bpftool)
 BPFTOOL ?= $(BPFTOOL_OUTPUT)/bootstrap/bpftool
 
 LIBBPF_SRC := $(abspath ../libbpf/src)
-LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
-SIDECAR := ../sidecar/target/$(if $(DEBUG),debug,release)/addr2line
+LIBBPF_OBJ ?= $(abspath $(OUTPUT)/libbpf.a)
+SIDECAR ?= ../sidecar/target/$(if $(DEBUG),debug,release)/addr2line
+SIDECAR_EMBED_NAME ?= $(subst .,_,$(subst /,_,$(SIDECAR)))
 # Use our own libbpf API headers and Linux UAPI headers distributed with
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
@@ -34,7 +35,7 @@ endif
 
 # for installation
 INSTALL := install
-prefix := /usr/local
+prefix ?= /usr/local
 bindir := $(prefix)/bin
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
@@ -136,9 +137,9 @@ $(OUTPUT)/addr2line.embed.o: $(SIDECAR)
 	$(Q)$(LLVM_STRIP) -g $<
 	$(call msg,LD,$@)
 	$(Q)$(LD) -r -b binary -z noexecstack \
-		--defsym __binary_sidecar_start=_binary____sidecar_target_$(if $(DEBUG),debug,release)_addr2line_start \
-		--defsym __binary_sidecar_end=_binary____sidecar_target_$(if $(DEBUG),debug,release)_addr2line_end \
-		--defsym __binary_sidecar_size=_binary____sidecar_target_$(if $(DEBUG),debug,release)_addr2line_size \
+		--defsym __binary_sidecar_start=_binary_$(SIDECAR_EMBED_NAME)_start \
+		--defsym __binary_sidecar_end=_binary_$(SIDECAR_EMBED_NAME)_end \
+		--defsym __binary_sidecar_size=_binary_$(SIDECAR_EMBED_NAME)_size \
 		-o $@ $<
 
 $(OUTPUT)/addr2line.o: $(OUTPUT)/addr2line.embed.o
