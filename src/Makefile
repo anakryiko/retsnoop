@@ -12,7 +12,8 @@ BPFTOOL ?= $(BPFTOOL_OUTPUT)/bootstrap/bpftool
 
 LIBBPF_SRC := $(abspath ../libbpf/src)
 LIBBPF_OBJ ?= $(abspath $(OUTPUT)/libbpf.a)
-SIDECAR ?= ../sidecar/target/$(if $(DEBUG),debug,release)/addr2line
+DEFAULT_SIDECAR := ../sidecar/target/$(if $(DEBUG),debug,release)/addr2line
+SIDECAR ?= $(DEFAULT_SIDECAR)
 SIDECAR_EMBED_NAME ?= $(subst .,_,$(subst /,_,$(SIDECAR)))
 # Use our own libbpf API headers and Linux UAPI headers distributed with
 # libbpf to avoid dependency on system-wide headers, which could be missing or
@@ -128,7 +129,7 @@ $(OUTPUT)/retsnoop.skel.h: $(OUTPUT)/mass_attach.bpf.o
 $(OUTPUT)/retsnoop.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 $(OUTPUT)/mass_attacher.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 
-$(SIDECAR)::
+$(DEFAULT_SIDECAR)::
 	$(call msg,CARGO,addr2line)
 	$(Q)$(CARGO) build --manifest-path=../sidecar/Cargo.toml $(if $(DEBUG),,--release)
 
