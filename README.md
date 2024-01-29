@@ -470,7 +470,7 @@ dependencies are already included:
     ([bpftool](https://github.com/libbpf/bpftool/) required during the build,
     but this can be improved if there is an interest in `retsnoop` on non-x86
     architecture (please open an issue to request);
-  - the largest external depenency is Clang compiler with support for `bpf`
+  - the largest external dependency is Clang compiler with support for `bpf`
     target. Try to use at least Clang 11+, but the latest Clang version you
     can get, the better.
 
@@ -486,6 +486,6 @@ distributed besides the main `retsnoop` executable.
 ## Distro availability
 
 Retsnoop started to be packaged by distros. Table below will point out which
-distros package retsnoop and at which verison.
+distros package retsnoop and at which version.
 
 [![retsnoop distro status](https://repology.org/badge/vertical-allrepos/retsnoop.svg)](https://repology.org/project/retsnoop/versions)
