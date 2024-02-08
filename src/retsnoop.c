@@ -1933,7 +1933,6 @@ int main(int argc, char **argv, char **envp)
 {
 	long page_size = sysconf(_SC_PAGESIZE);
 	struct mass_attacher_opts att_opts = {};
-	const struct btf *vmlinux_btf = NULL;
 	struct ksyms *ksyms = NULL;
 	struct mass_attacher *att = NULL;
 	struct retsnoop_bpf *skel = NULL;
@@ -2210,7 +2209,6 @@ int main(int argc, char **argv, char **envp)
 	}
 	skel->data_func_infos = bpf_map__initial_value(skel->maps.data_func_infos, &tmp_n);
 
-	vmlinux_btf = mass_attacher__btf(att);
 	for (i = 0; i < n; i++) {
 		const struct mass_attacher_func_info *finfo;
 		const struct glob *glob;
@@ -2218,7 +2216,7 @@ int main(int argc, char **argv, char **envp)
 		__u32 flags;
 
 		finfo = mass_attacher__func(att, i);
-		flags = func_flags(finfo->name, vmlinux_btf, finfo->btf_id);
+		flags = func_flags(finfo->name, finfo->btf, finfo->btf_id);
 
 		for (j = 0; j < env.entry_glob_cnt; j++) {
 			glob = &env.entry_globs[j];
