@@ -90,14 +90,14 @@ $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPU
 	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1		      \
 		    OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@)		      \
 		    INCLUDEDIR= LIBDIR= UAPIDIR=			      \
-		    EXTRA_CFLAGS="-g -O$(if $(DEBUG),0,2)" \
+		    EXTRA_CFLAGS="-g -O$(if $(DEBUG),0,2)"                    \
 		    install
 
 # Build bpftool
 $(BPFTOOL): $(LIBBPF_OBJ) | $(BPFTOOL_OUTPUT)
 	$(call msg,BPFTOOL,$@)
 	$(Q) [ -d ../bpftool/src ] || git submodule update --init
-	$(Q)CFLAGS= EXTRA_CFLAGS="$(CFLAGS)"				      \
+	$(Q)CFLAGS= EXTRA_CFLAGS="$(CFLAGS) -Wno-sign-compare"		      \
 		$(MAKE) ARCH= CROSS_COMPILE=				      \
 			BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT)/	      \
 			-C $(BPFTOOL_SRC) bootstrap
