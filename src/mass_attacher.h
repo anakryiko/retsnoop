@@ -18,7 +18,9 @@ struct mass_attacher_func_info {
 	long addr;
 	long size;
 	int arg_cnt;
+
 	int btf_id;
+	const struct btf *btf;
 
 	int fentry_prog_fd;
 	int fexit_prog_fd;

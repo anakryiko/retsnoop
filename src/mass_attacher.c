@@ -333,7 +333,7 @@ static int find_kprobe(const struct mass_attacher *att, const char *name, const 
 static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t);
 static int prepare_func(struct mass_attacher *att,
 			const char *func_name, const char *module,
-			const struct btf_type *t, int btf_id);
+			const struct btf *btf, const struct btf_type *t, int btf_id);
 static int calibrate_features(struct mass_attacher *att);
 
 /* BPF map is assumed to have been sized to a single element */
@@ -470,7 +470,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		if (kprobe_idx >= 0 && att->kprobes[kprobe_idx].used)
 			continue;
 
-		err = prepare_func(att, func_name, NULL, t, i);
+		err = prepare_func(att, func_name, NULL, att->vmlinux_btf, t, i);
 		if (err)
 			return err;
 	}
@@ -479,7 +479,8 @@ int mass_attacher__prepare(struct mass_attacher *att)
 			if (att->kprobes[i].used)
 				continue;
 
-			err = prepare_func(att, att->kprobes[i].name, att->kprobes[i].mod, NULL, 0);
+			err = prepare_func(att, att->kprobes[i].name, att->kprobes[i].mod,
+					   NULL, NULL, 0);
 			if (err)
 				return err;
 		}
@@ -623,7 +624,7 @@ static bool ksym_eq(const struct ksym *ksym, const char *name,
 
 static int prepare_func(struct mass_attacher *att,
 			const char *func_name, const char *module,
-			const struct btf_type *t, int btf_id)
+			const struct btf *btf, const struct btf_type *t, int btf_id)
 {
 	const struct ksym * const *ksym_it, * const *tmp_it;
 	char fn_desc_buf[512];
@@ -708,7 +709,7 @@ static int prepare_func(struct mass_attacher *att,
 		return 0;
 	}
 
-	if (att->use_fentries && !is_func_type_ok(att->vmlinux_btf, t)) {
+	if (att->use_fentries && !is_func_type_ok(btf, t)) {
 		if (att->debug)
 			printf("Function '%s' has prototype incompatible with fentry/fexit, skipping.\n", fn_desc);
 		att->func_skip_cnt += ksym_cnt;
@@ -737,7 +738,7 @@ static int prepare_func(struct mass_attacher *att,
 	finfo = &att->func_infos[att->func_cnt];
 	memset(finfo, 0, sizeof(*finfo) * ksym_cnt);
 
-	arg_cnt = func_arg_cnt(att->vmlinux_btf, btf_id);
+	arg_cnt = func_arg_cnt(btf, btf_id);
 
 	for (i = 0; i < ksym_cnt; i++, finfo++, ksym_it++) {
 		const struct ksym *ksym = *ksym_it;
@@ -747,6 +748,7 @@ static int prepare_func(struct mass_attacher *att,
 		finfo->name = ksym->name;
 		finfo->module = ksym->module;
 		finfo->arg_cnt = arg_cnt;
+		finfo->btf = btf;
 		finfo->btf_id = btf_id;
 
 		if (att->use_fentries) {
@@ -907,7 +909,7 @@ static int load_available_kprobes(struct mass_attacher *att)
 	return 0;
 }
 
-static int clone_prog(const struct bpf_program *prog, int attach_btf_id);
+static int clone_prog(const struct bpf_program *prog, int btf_fd, int attach_btf_id);
 static bool is_ret_void(const struct btf *btf, int btf_id);
 
 int mass_attacher__load(struct mass_attacher *att)
@@ -957,17 +959,19 @@ int mass_attacher__load(struct mass_attacher *att)
 		}
 
 		if (att->use_fentries) {
-			err = clone_prog(att->fentries[finfo->arg_cnt], finfo->btf_id);
+			int btf_fd = finfo->btf == att->vmlinux_btf ? 0 : btf__fd(finfo->btf);
+
+			err = clone_prog(att->fentries[finfo->arg_cnt], btf_fd, finfo->btf_id);
 			if (err < 0) {
 				fprintf(stderr, "Failed to clone FENTRY BPF program for function '%s': %d\n", func_name, err);
 				return err;
 			}
 			finfo->fentry_prog_fd = err;
 
-			if (is_ret_void(att->vmlinux_btf, finfo->btf_id))
-				err = clone_prog(att->fexit_voids[finfo->arg_cnt], finfo->btf_id);
+			if (is_ret_void(finfo->btf, finfo->btf_id))
+				err = clone_prog(att->fexit_voids[finfo->arg_cnt], btf_fd, finfo->btf_id);
 			else
-				err = clone_prog(att->fexits[finfo->arg_cnt], finfo->btf_id);
+				err = clone_prog(att->fexits[finfo->arg_cnt], btf_fd, finfo->btf_id);
 			if (err < 0) {
 				fprintf(stderr, "Failed to clone FEXIT BPF program for function '%s': %d\n", func_name, err);
 				return err;
@@ -978,10 +982,11 @@ int mass_attacher__load(struct mass_attacher *att)
 	return 0;
 }
 
-static int clone_prog(const struct bpf_program *prog, int attach_btf_id)
+static int clone_prog(const struct bpf_program *prog, int btf_fd, int attach_btf_id)
 {
 	LIBBPF_OPTS(bpf_prog_load_opts, opts,
 		.expected_attach_type = bpf_program__get_expected_attach_type(prog),
+		.attach_btf_obj_fd = btf_fd,
 		.attach_btf_id = attach_btf_id,
 	);
 	int fd;
@@ -1227,11 +1232,6 @@ void mass_attacher__activate(struct mass_attacher *att)
 struct SKEL_NAME *mass_attacher__skeleton(const struct mass_attacher *att)
 {
 	return att->skel;
-}
-
-const struct btf *mass_attacher__btf(const struct mass_attacher *att)
-{
-	return att->vmlinux_btf;
 }
 
 size_t mass_attacher__func_cnt(const struct mass_attacher *att)
