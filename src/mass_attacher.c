@@ -190,6 +190,14 @@ struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct ksyms *k
 	return att;
 }
 
+static void cleanup_kprobe_info(struct kprobe_info *info)
+{
+	free(info->name);
+	free(info->mod);
+	info->name = NULL;
+	info->mod = NULL;
+}
+
 void mass_attacher__free(struct mass_attacher *att)
 {
 	int i;
@@ -218,10 +226,8 @@ void mass_attacher__free(struct mass_attacher *att)
 	free(att->func_infos);
 
 	if (att->kprobes) {
-		for (i = 0; i < att->kprobe_cnt; i++) {
-			free(att->kprobes[i].name);
-			free(att->kprobes[i].mod);
-		}
+		for (i = 0; i < att->kprobe_cnt; i++)
+			cleanup_kprobe_info(&att->kprobes[i]);
 		free(att->kprobes);
 	}
 
@@ -326,14 +332,14 @@ int mass_attacher__deny_glob(struct mass_attacher *att, const char *glob, const 
 }
 
 static int bump_rlimit(int resource, rlim_t max);
-static int load_available_kprobes(struct mass_attacher *attacher);
+static int load_matching_kprobes(struct mass_attacher *attacher);
 
 static int func_arg_cnt(const struct btf *btf, int id);
-static int find_kprobe(const struct mass_attacher *att, const char *name, const char *module);
-static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t);
-static int prepare_func(struct mass_attacher *att,
-			const char *func_name, const char *module,
-			const struct btf *btf, const struct btf_type *t, int btf_id);
+static struct kprobe_info *find_kprobe(const struct mass_attacher *att,
+				       const char *name, const char *module);
+static bool is_func_type_ok(const struct btf *btf, int btf_id);
+static int prepare_func(struct mass_attacher *att, struct kprobe_info *kp,
+			const struct btf *btf, int btf_id);
 static int calibrate_features(struct mass_attacher *att);
 
 /* BPF map is assumed to have been sized to a single element */
@@ -417,8 +423,8 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	    !resize_map(att->skel->maps.data_running, cpu_cnt))
 		return -EINVAL;
 
-	/* Load names of possible kprobes */
-	err = load_available_kprobes(att);
+	/* Load names of attachable kprobes matching glob specs */
+	err = load_matching_kprobes(att);
 	if (err) {
 		fprintf(stderr, "Failed to read the list of available kprobes: %d\n", err);
 		return err;
@@ -457,8 +463,8 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	n = btf__type_cnt(att->vmlinux_btf);
 	for (i = 1; i < n; i++) {
 		const struct btf_type *t = btf__type_by_id(att->vmlinux_btf, i);
+		struct kprobe_info *kp;
 		const char *func_name;
-		int kprobe_idx;
 
 		if (!btf_is_func(t))
 			continue;
@@ -466,21 +472,28 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		func_name = btf__str_by_offset(att->vmlinux_btf, t->name_off);
 
 		/* check if we already processed a function with such name */
-		kprobe_idx = find_kprobe(att, func_name, NULL);
-		if (kprobe_idx >= 0 && att->kprobes[kprobe_idx].used)
+		kp = find_kprobe(att, func_name, NULL);
+		if (!kp) {
+			if (att->debug_extra)
+				printf("Function '%s' is not attachable kprobe, skipping.\n", func_name);
+			continue;
+		}
+		if (kp->used)
 			continue;
 
-		err = prepare_func(att, func_name, NULL, att->vmlinux_btf, t, i);
+		err = prepare_func(att, kp, att->vmlinux_btf, i);
 		if (err)
 			return err;
 	}
 	if (!att->use_fentries) {
+		struct kprobe_info *kp;
+
 		for (i = 0; i < att->kprobe_cnt; i++) {
-			if (att->kprobes[i].used)
+			kp = &att->kprobes[i];
+			if (kp->used)
 				continue;
 
-			err = prepare_func(att, att->kprobes[i].name, att->kprobes[i].mod,
-					   NULL, NULL, 0);
+			err = prepare_func(att, kp, NULL, 0);
 			if (err)
 				return err;
 		}
@@ -622,24 +635,25 @@ static bool ksym_eq(const struct ksym *ksym, const char *name,
 	return strcmp(ksym->name, name) == 0;
 }
 
-static int prepare_func(struct mass_attacher *att,
-			const char *func_name, const char *module,
-			const struct btf *btf, const struct btf_type *t, int btf_id)
+static int prepare_func(struct mass_attacher *att, struct kprobe_info *kp,
+			const struct btf *btf, int btf_id)
 {
 	const struct ksym * const *ksym_it, * const *tmp_it;
 	char fn_desc_buf[512];
 	const char *fn_desc;
 	struct mass_attacher_func_info *finfo;
-	int i, arg_cnt, kprobe_idx, ksym_cnt, kprobe_cnt;
+	int i, arg_cnt, ksym_cnt;
 	void *tmp;
 
-	fn_desc = func_name;
-	if (module) {
-		snprintf(fn_desc_buf, sizeof(fn_desc_buf), "%s [%s]", func_name, module);
+	kp->used = true; /* mark it as processed, no matter the outcome */
+
+	fn_desc = kp->name;
+	if (kp->mod) {
+		snprintf(fn_desc_buf, sizeof(fn_desc_buf), "%s [%s]", kp->name, kp->mod);
 		fn_desc = fn_desc_buf;
 	}
 
-	ksym_it = ksyms__get_symbol_iter(att->ksyms, func_name, module, KSYM_FUNC);
+	ksym_it = ksyms__get_symbol_iter(att->ksyms, kp->name, kp->mod, KSYM_FUNC);
 	if (!ksym_it) {
 		if (att->debug_extra)
 			printf("Function '%s' not found in /proc/kallsyms! Skipping.\n", fn_desc);
@@ -648,68 +662,18 @@ static int prepare_func(struct mass_attacher *att,
 	}
 
 	ksym_cnt = 0;
-	for (tmp_it = ksym_it; ksym_eq(*tmp_it, func_name, module, KSYM_FUNC); tmp_it++) {
+	for (tmp_it = ksym_it; ksym_eq(*tmp_it, kp->name, kp->mod, KSYM_FUNC); tmp_it++) {
 		ksym_cnt++;
 	}
 
-	/* any deny glob forces skipping a function */
-	for (i = 0; i < att->deny_glob_cnt; i++) {
-		if (!full_glob_matches(att->deny_globs[i].glob, att->deny_globs[i].mod_glob,
-				       func_name, module))
-			continue;
-
-		att->deny_globs[i].matches++;
-
-		if (att->debug_extra)
-			printf("Function '%s' is denied by '%s' glob.\n",
-			       fn_desc, att->deny_globs[i].glob);
-		att->func_skip_cnt += ksym_cnt;
-		return 0;
-	}
-
-	/* if any allow glob is specified, function has to match one of them */
-	if (att->allow_glob_cnt) {
-		bool found = false;
-
-		for (i = 0; i < att->allow_glob_cnt; i++) {
-			if (!full_glob_matches(att->allow_globs[i].glob, att->allow_globs[i].mod_glob,
-					       func_name, module))
-				continue;
-
-			att->allow_globs[i].matches++;
-			if (att->debug_extra) {
-				printf("Function '%s' is allowed by '%s' glob.\n",
-				       fn_desc, att->allow_globs[i].glob);
-			}
-
-			found = true;
-			break;
-		}
-
-		if (!found) {
-			att->func_skip_cnt += ksym_cnt;
-			return 0;
-		}
-	}
-
-	kprobe_idx = find_kprobe(att, func_name, module);
-	if (kprobe_idx < 0) {
-		if (att->debug_extra)
-			printf("Function '%s' is not attachable kprobe, skipping.\n", fn_desc);
-		att->func_skip_cnt += ksym_cnt;
-		return 0;
-	}
-	att->kprobes[kprobe_idx].used = true;
-
-	kprobe_cnt = att->kprobes[kprobe_idx].cnt;
-	if (kprobe_cnt != ksym_cnt) {
+	if (kp->cnt != ksym_cnt) {
 		printf("Function '%s' has mismatched %d ksyms vs %d attachable kprobe entries, skipping.\n",
-		       fn_desc, ksym_cnt, kprobe_cnt);
+		       fn_desc, ksym_cnt, kp->cnt);
 		att->func_skip_cnt += ksym_cnt;
 		return 0;
 	}
 
-	if (att->use_fentries && !is_func_type_ok(btf, t)) {
+	if (att->use_fentries && !is_func_type_ok(btf, btf_id)) {
 		if (att->debug)
 			printf("Function '%s' has prototype incompatible with fentry/fexit, skipping.\n", fn_desc);
 		att->func_skip_cnt += ksym_cnt;
@@ -826,12 +790,13 @@ static bool kprobe_eq(const struct kprobe_info *k1, const struct kprobe_info *k2
 	return strcmp(k1->name, k2->name) == 0;
 }
 
-static int load_available_kprobes(struct mass_attacher *att)
+static int load_matching_kprobes(struct mass_attacher *att)
 {
 	static char sym_buf[256], mod_buf[128], *mod;
 	const char *fname = tracefs_available_filter_functions();
 	struct kprobe_info *k;
-	int i, j, cnt, err, orig_cnt;
+	int i, j, cnt, err;
+	int orig_cnt, filter_cnt;
 	void *tmp;
 	FILE *f;
 
@@ -875,19 +840,82 @@ static int load_available_kprobes(struct mass_attacher *att)
 				return -ENOMEM;
 		}
 	}
+	orig_cnt = att->kprobe_cnt;
+
+	/* filter kprobes according to specified globs */
+	for (i = 0; i < att->kprobe_cnt;) {
+		const char *name = att->kprobes[i].name;
+		const char *mod = att->kprobes[i].mod;
+		const char *name_glob, *mod_glob;
+		bool keep = false;;
+
+		for (j = 0; j < att->deny_glob_cnt; j++) {
+			name_glob = att->deny_globs[j].glob;
+			mod_glob = att->deny_globs[j].mod_glob;
+			if (!full_glob_matches(name_glob, mod_glob, name, mod))
+				continue;
+
+			att->deny_globs[j].matches++;
+
+			if (att->debug_extra) {
+				printf("Function '%s%s%s%s' is denied by '%s%s%s%s' glob.\n",
+				       name,
+				       mod ? " [" : "", mod ?: "", mod ? "]" : "",
+				       name_glob,
+				       mod_glob ? " [" : "", mod_glob ?: "", mod_glob ? "]" : "");
+			}
+
+			keep = false;
+			goto kprobe_verdict;
+		}
+
+		/* if any allow glob is specified, function has to match one of them */
+		if (att->allow_glob_cnt == 0) {
+			keep = true;
+			goto kprobe_verdict;
+		}
+
+		for (j = 0; j < att->allow_glob_cnt; j++) {
+			name_glob = att->allow_globs[j].glob;
+			mod_glob = att->allow_globs[j].mod_glob;
+			if (!full_glob_matches(name_glob, mod_glob, name, mod))
+				continue;
+
+			att->allow_globs[j].matches++;
+			if (att->debug_extra) {
+				printf("Function '%s%s%s%s' is allowed by '%s%s%s%s' glob.\n",
+				       name,
+				       mod ? " [" : "", mod ?: "", mod ? "]" : "",
+				       name_glob,
+				       mod_glob ? " [" : "", mod_glob ?: "", mod_glob ? "]" : "");
+			}
+
+			keep = true;
+			goto kprobe_verdict;
+		}
+
+kprobe_verdict:
+		if (keep) {
+			i++;
+			continue;
+		}
+
+		/* clean up memory and swap in last element */
+		cleanup_kprobe_info(&att->kprobes[i]);
+		att->kprobes[i] = att->kprobes[att->kprobe_cnt - 1];
+		att->kprobe_cnt--;
+
+		att->func_skip_cnt += 1;
+	}
+	filter_cnt = att->kprobe_cnt;
 
 	qsort(att->kprobes, att->kprobe_cnt, sizeof(*att->kprobes), kprobe_by_mod_name_cmp);
 
-	orig_cnt = att->kprobe_cnt;
 	for (i = 0, j = 0; j < att->kprobe_cnt; j++) {
 		if (kprobe_eq(&att->kprobes[i], &att->kprobes[j])) {
 			att->kprobes[i].cnt++;
-			if (i != j) {
-				free(att->kprobes[j].name);
-				free(att->kprobes[j].mod);
-				att->kprobes[j].name = NULL;
-				att->kprobes[j].mod = NULL;
-			}
+			if (i != j)
+				cleanup_kprobe_info(&att->kprobes[j]);
 			continue;
 		}
 
@@ -899,11 +927,12 @@ static int load_available_kprobes(struct mass_attacher *att)
 		}
 		att->kprobes[i].cnt++;
 	}
-	att->kprobe_cnt = i + 1;
+	/* it could be that globs filtered out all discovered kprobes */
+	att->kprobe_cnt = att->kprobe_cnt ? i + 1 : 0;
 
 	if (att->verbose) {
-		printf("Discovered %d available kprobes, compacted to %d unique names!\n",
-		       orig_cnt, att->kprobe_cnt);
+		printf("Discovered %d available kprobes, filtered down to %d, and compacted to %d unique names!\n",
+		       orig_cnt, filter_cnt, att->kprobe_cnt);
 	}
 
 	return 0;
@@ -1246,18 +1275,16 @@ const struct mass_attacher_func_info *mass_attacher__func(const struct mass_atta
 	return &att->func_infos[id];
 }
 
-static int find_kprobe(const struct mass_attacher *att, const char *name, const char *module)
+static struct kprobe_info *find_kprobe(const struct mass_attacher *att,
+				       const char *name, const char *module)
 {
 	/* we reuse kprobe_info as lookup key, so need to force non-const
 	 * strings; but that's ok, we are never freeing key's name/mod
 	 */
 	struct kprobe_info key = { .name = (char *)name, .mod = (char *)module };
-	struct kprobe_info *k;
 
-	k = bsearch(&key, att->kprobes, att->kprobe_cnt, sizeof(*att->kprobes),
-		    kprobe_by_mod_name_cmp);
-
-	return k == NULL ? -1 : k - att->kprobes;
+	return bsearch(&key, att->kprobes, att->kprobe_cnt, sizeof(*att->kprobes),
+		       kprobe_by_mod_name_cmp);
 }
 
 static int func_arg_cnt(const struct btf *btf, int id)
@@ -1315,20 +1342,16 @@ static bool is_ret_void(const struct btf *btf, int btf_id)
 	return t->type == 0;
 }
 
-static bool is_func_type_ok(const struct btf *btf, const struct btf_type *t)
+static bool is_func_type_ok(const struct btf *btf, int btf_id)
 {
 	const struct btf_param *p;
+	const struct btf_type *t;
 	int i;
 
-	t = btf__type_by_id(btf, t->type);
+	t = btf__type_by_id(btf, btf_id); /* FUNC */
+	t = btf__type_by_id(btf, t->type); /* FUNC_PROTO */
 	if (btf_vlen(t) > MAX_FUNC_ARG_CNT)
 		return false;
-
-	/* IGNORE VOID FUNCTIONS, THIS SHOULDN'T BE DONE IN GENERAL!!! */
-	/*
-	if (!t->type)
-		return false;
-	*/
 
 	if (t->type && !is_ret_type_ok(btf, btf__type_by_id(btf, t->type)))
 		return false;
