@@ -350,6 +350,58 @@ int glob_set__add_glob(struct glob_set *gs, const char *glob, const char *mod_gl
 	return 0;
 }
 
+/* Find matching glob and return its index. GLOB_DENY globs are checked and
+ * matched first. If no GLOB_DENY matches, then GLOB_ALLOW globs are checked.
+ * Return true, if glob set allows given name/mod pair. If there was explicit
+ * GLOB_ALLOW glob that matched, its index is returned in glob_idx, otherwise
+ * glob_idx is set to -ENOENT;
+ * Return false, if glob set disallows given name/mod pair. If there was
+ * explicit GLOB_DENY glob that matched, its index is returned in glob_idx,
+ * otherwise glob_idx is set to -ENOENT.
+ * glob_idx pointer is optional and can be NULL.
+ */
+bool glob_set__match(const struct glob_set *gs, const char *name, const char *mod, int *glob_idx)
+{
+	struct glob_spec *g;
+	int i, deny_glob_cnt = 0;
+
+	if (glob_idx)
+		*glob_idx = -ENOENT;
+
+	for (i = 0; i < gs->glob_cnt; i++) {
+		g = &gs->globs[i];
+		if (!(g->flags & GLOB_DENY))
+			continue;
+
+		deny_glob_cnt++;
+
+		if (full_glob_matches(g->glob, g->mod_glob, name, mod)) {
+			if (glob_idx)
+				*glob_idx = i;
+			return false; /* explicit mismatch */
+		}
+	}
+
+	/* if no explicit GLOB_ALLOW globs are specified, we are OK */
+	if (deny_glob_cnt == gs->glob_cnt)
+		return true; /* implicit match */
+
+	/* if any allow glob is specified, function has to match one of them */
+	for (i = 0; i < gs->glob_cnt; i++) {
+		g = &gs->globs[i];
+		if (!(g->flags & GLOB_ALLOW))
+			continue;
+
+		if (full_glob_matches(g->glob, g->mod_glob, name, mod)) {
+			if (glob_idx)
+				*glob_idx = i;
+			return true; /* explicit match */
+		}
+	}
+
+	return false; /* implicit mismatch */
+}
+
 void glob_set__clear(struct glob_set *gs)
 {
 	int i;

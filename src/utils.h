@@ -99,6 +99,7 @@ struct glob_set {
 int glob_set__add_glob(struct glob_set *gs,
 		       const char *glob, const char *mod_glob,
 		       enum glob_flags flags);
+bool glob_set__match(const struct glob_set *gs, const char *name, const char *mod, int *glob_idx);
 void glob_set__clear(struct glob_set *gs);
 
 #endif /* __UTILS_H */

@@ -818,66 +818,36 @@ static int load_matching_kprobes(struct mass_attacher *att)
 		const char *name = att->kprobes[i].name;
 		const char *mod = att->kprobes[i].mod;
 		struct glob_spec *g;
-		bool keep = false;
-		int allow_glob_cnt = 0;
+		int glob_idx;
 
-		for (j = 0; j < att->globs.glob_cnt; j++) {
-			g = &att->globs.globs[j];
-			if (g->flags & GLOB_ALLOW) {
-				allow_glob_cnt++;
-				continue;
+		if (glob_set__match(&att->globs, name, mod, &glob_idx)) {
+			if (glob_idx >= 0) {
+				g = &att->globs.globs[glob_idx];
+				g->matches++;
+				if (att->debug_extra) {
+					printf("Function '%s%s%s%s' is allowed by '%s%s%s%s' glob.\n",
+					       NAME_MOD(name, mod), NAME_MOD(g->glob, g->mod_glob));
+				}
 			}
 
-			if (!full_glob_matches(g->glob, g->mod_glob, name, mod))
-				continue;
-
-			g->matches++;
-
-			if (att->debug_extra) {
-				printf("Function '%s%s%s%s' is denied by '%s%s%s%s' glob.\n",
-				       NAME_MOD(name, mod), NAME_MOD(g->glob, g->mod_glob));
+			i++; /* keep kprobe */
+		} else {
+			if (glob_idx >= 0) {
+				g = &att->globs.globs[glob_idx];
+				g->matches++;
+				if (att->debug_extra) {
+					printf("Function '%s%s%s%s' is denied by '%s%s%s%s' glob.\n",
+					       NAME_MOD(name, mod), NAME_MOD(g->glob, g->mod_glob));
+				}
 			}
 
-			keep = false;
-			goto kprobe_verdict;
+			/* clean up memory and swap in last element */
+			cleanup_kprobe_info(&att->kprobes[i]);
+			att->kprobes[i] = att->kprobes[att->kprobe_cnt - 1];
+			att->kprobe_cnt--;
+
+			att->func_skip_cnt += 1;
 		}
-
-		/* if any allow glob is specified, function has to match one of them */
-		if (allow_glob_cnt == 0) {
-			keep = true;
-			goto kprobe_verdict;
-		}
-
-		for (j = 0; j < att->globs.glob_cnt; j++) {
-			g = &att->globs.globs[j];
-			if (g->flags & GLOB_DENY)
-				continue;
-
-			if (!full_glob_matches(g->glob, g->mod_glob, name, mod))
-				continue;
-
-			g->matches++;
-			if (att->debug_extra) {
-				printf("Function '%s%s%s%s' is allowed by '%s%s%s%s' glob.\n",
-				       NAME_MOD(name, mod), NAME_MOD(g->glob, g->mod_glob));
-			}
-
-			keep = true;
-			goto kprobe_verdict;
-		}
-
-kprobe_verdict:
-		if (keep) {
-			i++;
-			continue;
-		}
-
-		/* clean up memory and swap in last element */
-		cleanup_kprobe_info(&att->kprobes[i]);
-		att->kprobes[i] = att->kprobes[att->kprobe_cnt - 1];
-		att->kprobe_cnt--;
-
-		att->func_skip_cnt += 1;
 	}
 	filter_cnt = att->kprobe_cnt;
 
