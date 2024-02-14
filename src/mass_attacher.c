@@ -669,16 +669,6 @@ static int calibrate_features(struct mass_attacher *att)
 	att->has_bpf_cookie = skel->bss->has_bpf_cookie;
 	att->has_kprobe_multi = skel->bss->has_kprobe_multi;
 
-	if (att->debug) {
-		printf("Feature calibration results:\n"
-		       "\tkretprobe IP offset: %d\n"
-		       "\tfexit sleep fix: %s\n"
-		       "\tfentry re-entry protection: %s\n",
-		       att->kret_ip_off,
-		       att->has_fexit_sleep_fix ? "yes" : "no",
-		       att->has_fentry_protection ? "yes" : "no");
-	}
-
 	calib_feat_bpf__destroy(skel);
 	return 0;
 
