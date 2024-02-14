@@ -74,4 +74,31 @@ int append_compile_unit(struct addr2line *a2l, struct glob **globs, int *cnt, co
 
 int append_pid(int **pids, int *cnt, const char *arg);
 
+enum glob_flags {
+	GLOB_ALLOW = 0x1,
+	GLOB_DENY = 0x2,
+	/* implicitly added glob, this affects match logging verboseness
+	 * (internal globs are not emitted in logs unless debug verboseness is
+	 * requested)
+	 */
+	GLOB_INTERNAL = 0x4,
+};
+
+struct glob_spec {
+	char *glob;
+	char *mod_glob;
+	int matches;
+	enum glob_flags flags;
+};
+
+struct glob_set {
+	struct glob_spec *globs;
+	int glob_cnt;
+};
+
+int glob_set__add_glob(struct glob_set *gs,
+		       const char *glob, const char *mod_glob,
+		       enum glob_flags flags);
+void glob_set__clear(struct glob_set *gs);
+
 #endif /* __UTILS_H */

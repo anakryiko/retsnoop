@@ -283,3 +283,82 @@ int append_pid(int **pids, int *cnt, const char *arg)
 
 	return 0;
 }
+
+static bool is_valid_glob(const char *glob)
+{
+	int n;
+
+	if (!glob) {
+		fprintf(stderr, "NULL glob provided.\n");
+		return false;
+	}
+
+	n = strlen(glob);
+	if (n == 0) {
+		fprintf(stderr, "Empty glob provided.\n");
+		return false;
+	}
+
+	if (strcmp(glob, "**") == 0) {
+		fprintf(stderr, "Unsupported glob '%s'.\n", glob);
+		return false;
+	}
+
+	return true;
+}
+
+int glob_set__add_glob(struct glob_set *gs, const char *glob, const char *mod_glob, enum glob_flags flags)
+{
+	void *tmp, *s1, *s2 = NULL;
+	struct glob_spec *g;
+
+	/* exactly one of GLOB_ALLOW or GLOB_DENY should be set */
+	if (!(flags & (GLOB_ALLOW | GLOB_DENY)))
+		return -EINVAL;
+	if ((flags & (GLOB_ALLOW | GLOB_DENY)) == (GLOB_ALLOW | GLOB_DENY))
+		return -EINVAL;
+	if (!is_valid_glob(glob))
+		return -EINVAL;
+	if (mod_glob && !is_valid_glob(mod_glob))
+		return -EINVAL;
+
+	tmp = realloc(gs->globs, (gs->glob_cnt + 1) * sizeof(*gs->globs));
+	if (!tmp)
+		return -ENOMEM;
+	gs->globs = tmp;
+
+	g = &gs->globs[gs->glob_cnt];
+	memset(g, 0, sizeof(*g));
+
+	s1 = strdup(glob);
+	if (!s1)
+		return -ENOMEM;
+	if (mod_glob) {
+		s2 = strdup(mod_glob);
+		if (!s2) {
+			free(s1);
+			return -ENOMEM;
+		}
+	}
+
+	g->glob = s1;
+	g->mod_glob = s2;
+	g->flags = flags;
+
+	gs->glob_cnt += 1;
+
+	return 0;
+}
+
+void glob_set__clear(struct glob_set *gs)
+{
+	int i;
+
+	for (i = 0; i < gs->glob_cnt; i++) {
+		free(gs->globs[i].glob);
+		free(gs->globs[i].mod_glob);
+	}
+	free(gs->globs);
+	gs->globs = NULL;
+	gs->glob_cnt = 0;
+}
