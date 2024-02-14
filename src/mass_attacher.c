@@ -397,14 +397,20 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		if (!btf_is_func(t))
 			continue;
 
-		/* check if we already processed a function with such name */
+		/* skip BTF function if it doesn't match globs */
 		func_name = btf__str_by_offset(att->vmlinux_btf, t->name_off);
+		if (!glob_set__match(&att->globs, func_name, NULL, NULL))
+			continue;
+
+		/* check if we have a matching attachable kprobe */
 		kp = find_kprobe(att, func_name, NULL);
 		if (!kp) {
-			if (att->debug_extra)
-				printf("Function '%s' is not attachable kprobe, skipping.\n", func_name);
+			if (att->verbose)
+				printf("Function '%s' is not an attachable kprobe, skipping.\n", func_name);
 			continue;
 		}
+
+		/* we might have already processed it, skip if so */
 		if (kp->used)
 			continue;
 
@@ -456,14 +462,22 @@ int mass_attacher__prepare(struct mass_attacher *att)
 			if (!btf_is_func(t))
 				continue;
 
-			/* check if we already processed a function with such name */
+			/* skip BTF function if it doesn't match globs */
 			func_name = btf__str_by_offset(btf, t->name_off);
+			if (!glob_set__match(&att->globs, func_name, mod, NULL))
+				continue;
+
+			/* check if we have a matching attachable kprobe */
 			kp = find_kprobe(att, func_name, mod);
 			if (!kp) {
-				if (att->debug_extra)
-					printf("Function '%s [%s]' is not attachable kprobe, skipping.\n", func_name, mod);
+				if (att->verbose)
+					printf("Function '%s [%s]' is not an attachable kprobe, skipping.\n", func_name, mod);
 				continue;
 			}
+
+			/* we might have already processed it, skip if so */
+			if (kp->used)
+				continue;
 
 			err = prepare_func(att, kp, btf, j);
 			if (err)
