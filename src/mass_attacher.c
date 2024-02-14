@@ -1105,10 +1105,14 @@ int mass_attacher__attach(struct mass_attacher *att)
 
 skip_attach:
 		if (att->debug) {
-			printf("Attached%s to function #%d '%s%s%s%s' (addr %lx, btf id %d, flags 0x%x).\n",
+			char flags_buf[256];
+
+			format_func_flags(flags_buf, sizeof(flags_buf),
+					  att->skel->data_func_infos->func_infos[i].flags);
+			printf("Attached%s to function #%d '%s%s%s%s' (addr 0x%lx, btf id %d, flags %s).\n",
 			       att->dry_run ? " (dry run)" : "", i + 1,
 			       NAME_MOD(finfo->name, finfo->module), func_addr, finfo->btf_id,
-			       att->skel->data_func_infos->func_infos[i].flags);
+			       flags_buf);
 		} else if (att->verbose) {
 			printf("Attached%s to function #%d '%s%s%s%s'.\n",
 			att->dry_run ? " (dry run)" : "", i + 1, NAME_MOD(finfo->name, finfo->module));

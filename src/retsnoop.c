@@ -1770,6 +1770,41 @@ static int func_flags(const char *func_name, const struct btf *btf, int btf_id)
 	return 0;
 }
 
+void format_func_flags(char *buf, size_t buf_sz, int flags)
+{
+	char s[256];
+	size_t s_len = 0;
+
+	if (flags & FUNC_IS_ENTRY) {
+		snappendf(s, "%sENTRY", s_len ? "|" : "");
+		flags &= ~FUNC_IS_ENTRY;
+	}
+	if (flags & FUNC_CANT_FAIL) {
+		snappendf(s, "%sNOFAIL", s_len ? "|" : "");
+		flags &= ~FUNC_CANT_FAIL;
+	}
+	if (flags & FUNC_NEEDS_SIGN_EXT) {
+		snappendf(s, "%sSIGNEXT", s_len ? "|" : "");
+		flags &= ~FUNC_NEEDS_SIGN_EXT;
+	}
+	if (flags & FUNC_RET_PTR) {
+		snappendf(s, "%sPTR", s_len ? "|" : "");
+		flags &= ~FUNC_RET_PTR;
+	}
+	if (flags & FUNC_RET_BOOL) {
+		snappendf(s, "%sBOOL", s_len ? "|" : "");
+		flags &= ~FUNC_RET_BOOL;
+	}
+	if (flags & FUNC_RET_VOID) {
+		snappendf(s, "%sVOID", s_len ? "|" : "");
+		flags &= ~FUNC_RET_VOID;
+	}
+	if (flags)
+		snappendf(s, "%s0x%x", s_len ? "|" : "", flags);
+
+	snprintf(buf, buf_sz, "%s", s);
+}
+
 static int find_vmlinux(char *path, size_t max_len, bool soft)
 {
 	const char *locations[] = {
