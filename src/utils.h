@@ -50,6 +50,8 @@ static inline uint64_t now_ns(void)
 
 void ts_to_str(uint64_t ts, char buf[], size_t buf_sz);
 
+void format_func_flags(char *buf, size_t buf_sz, int flags);
+
 /*
  * Glob helpers
  */
