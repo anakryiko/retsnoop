@@ -100,6 +100,9 @@ struct mass_attacher {
 	struct bpf_link *kentry_multi_link;
 	struct bpf_link *kexit_multi_link;
 
+	struct btf **mod_btfs;
+	int mod_btf_cnt;
+
 	struct bpf_program *fentries[MAX_FUNC_ARG_CNT + 1];
 	struct bpf_program *fexits[MAX_FUNC_ARG_CNT + 1];
 	struct bpf_program *fexit_voids[MAX_FUNC_ARG_CNT + 1];
@@ -209,6 +212,9 @@ void mass_attacher__free(struct mass_attacher *att)
 		att->skel->bss->ready = false;
 
 	btf__free(att->vmlinux_btf);
+	for (i = 0; i < att->mod_btf_cnt; i++)
+		btf__free(att->mod_btfs[i]);
+	free(att->mod_btfs);
 
 	bpf_link__destroy(att->kentry_multi_link);
 	bpf_link__destroy(att->kexit_multi_link);
@@ -360,7 +366,8 @@ static void *resize_map(struct bpf_map *map, size_t elem_cnt)
 
 int mass_attacher__prepare(struct mass_attacher *att)
 {
-	int err, i, n, cpu_cnt, tmp_cnt;
+	int err, i, j, n, cpu_cnt, tmp_cnt;
+	const char *mod;
 
 	/* Load and cache /proc/kallsyms for IP <-> kfunc mapping */
 	att->ksyms = ksyms__load();
@@ -459,23 +466,25 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		fprintf(stderr, "Failed to load vmlinux BTF: %d\n", err);
 		return -EINVAL;
 	}
+	if (att->verbose)
+		printf("Loaded BTF for [vmlinux].\n");
 
 	n = btf__type_cnt(att->vmlinux_btf);
 	for (i = 1; i < n; i++) {
-		const struct btf_type *t = btf__type_by_id(att->vmlinux_btf, i);
+		const struct btf_type *t;
 		struct kprobe_info *kp;
 		const char *func_name;
 
+		t = btf__type_by_id(att->vmlinux_btf, i);
 		if (!btf_is_func(t))
 			continue;
 
-		func_name = btf__str_by_offset(att->vmlinux_btf, t->name_off);
-
 		/* check if we already processed a function with such name */
+		func_name = btf__str_by_offset(att->vmlinux_btf, t->name_off);
 		kp = find_kprobe(att, func_name, NULL);
 		if (!kp) {
 			if (att->debug_extra)
-				printf("Function '%s' is not attachable kprobe, skipping.\n", func_name);
+				printf("Function '%s [vmlinux]' is not attachable kprobe, skipping.\n", func_name);
 			continue;
 		}
 		if (kp->used)
@@ -484,6 +493,64 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		err = prepare_func(att, kp, att->vmlinux_btf, i);
 		if (err)
 			return err;
+	}
+	/* now we go over all kprobes to figure out necessary kernel modules;
+	 * all kprobes are sorted by module first, so it's easy to find all
+	 * unique module names by keeping track of change in kprobe's module
+	 */
+	mod = NULL;
+	for (i = 0; i < att->kprobe_cnt; i++) {
+		struct kprobe_info *kp = &att->kprobes[i];
+		struct btf *btf;
+		void *tmp;
+
+		/* vmlinux, not a module */
+		if (!kp->mod)
+			continue;
+
+		/* same module */
+		if (kp->mod && mod && strcmp(mod, kp->mod) == 0)
+			continue;
+		mod = kp->mod;
+
+		btf = btf__load_module_btf(mod, att->vmlinux_btf);
+		if (!btf) {
+			err = -errno;
+			if (att->verbose)
+				printf("Failed to load BTF for module [%s]: %d\n", mod, err);
+			continue;
+		}
+		if (att->verbose)
+			printf("Loaded BTF for module [%s].\n", mod);
+		tmp = realloc(att->mod_btfs, (att->mod_btf_cnt + 1) * sizeof(*att->mod_btfs));
+		if (!tmp)
+			return -ENOMEM;
+		att->mod_btfs = tmp;
+		att->mod_btfs[att->mod_btf_cnt] = btf;
+		att->mod_btf_cnt++;
+
+		n = btf__type_cnt(btf);
+		for (j = btf__type_cnt(att->vmlinux_btf); j < n; j++) {
+			const struct btf_type *t;
+			const char *func_name;
+
+			t = btf__type_by_id(btf, j);
+			if (!btf_is_func(t))
+				continue;
+
+			/* check if we already processed a function with such name */
+			func_name = btf__str_by_offset(btf, t->name_off);
+			kp = find_kprobe(att, func_name, mod);
+			if (!kp) {
+				if (att->debug_extra)
+					printf("Function '%s [%s]' is not attachable kprobe, skipping.\n", func_name, mod);
+				continue;
+			}
+
+			err = prepare_func(att, kp, btf, j);
+			if (err)
+				return err;
+		}
 	}
 	if (!att->use_fentries) {
 		struct kprobe_info *kp;
