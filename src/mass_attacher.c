@@ -175,7 +175,8 @@ struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct ksyms *k
 	att->use_fentries = opts->attach_mode == MASS_ATTACH_FENTRY;
 
 	for (i = 0; i < ARRAY_SIZE(enforced_deny_globs); i++) {
-		err = mass_attacher__deny_glob(att, enforced_deny_globs[i], NULL);
+		err = glob_set__add_glob(&att->globs, enforced_deny_globs[i], NULL,
+					 GLOB_DENY | GLOB_INTERNAL);
 		if (err) {
 			fprintf(stderr, "Failed to add enforced deny glob '%s': %d\n",
 				enforced_deny_globs[i], err);
@@ -318,7 +319,8 @@ int mass_attacher__prepare(struct mass_attacher *att)
 
 	if (att->use_fentries && !att->has_fexit_sleep_fix) {
 		for (i = 0; i < ARRAY_SIZE(sleepable_deny_globs); i++) {
-			err = mass_attacher__deny_glob(att, sleepable_deny_globs[i], NULL);
+			err = glob_set__add_glob(&att->globs, sleepable_deny_globs[i], NULL,
+						 GLOB_DENY | GLOB_INTERNAL);
 			if (err) {
 				fprintf(stderr, "Failed to add enforced deny glob '%s': %d\n",
 					sleepable_deny_globs[i], err);
@@ -530,9 +532,14 @@ int mass_attacher__prepare(struct mass_attacher *att)
 			for (i = 0; i < att->globs.glob_cnt; i++) {
 				struct glob_spec *g = &att->globs.globs[i];
 
-				printf("%s glob '%s%s%s%s' matched %d functions.\n",
+				if ((g->flags & GLOB_INTERNAL) && !att->debug_extra)
+					continue;
+
+				printf("%s glob '%s%s%s%s'%s matched %d functions.\n",
 				       (g->flags & GLOB_ALLOW) ? "Allow" : "Deny",
-				       NAME_MOD(g->glob, g->mod_glob), g->matches);
+				       NAME_MOD(g->glob, g->mod_glob),
+				       (g->flags & GLOB_INTERNAL) ? " (internal)" : "",
+				       g->matches);
 			}
 		}
 	}
