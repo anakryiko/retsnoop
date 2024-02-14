@@ -140,13 +140,7 @@ struct mass_attacher {
 
 	int func_skip_cnt;
 
-	int allow_glob_cnt;
-	int deny_glob_cnt;
-	struct {
-		char *glob;
-		char *mod_glob;
-		int matches;
-	} *allow_globs, *deny_globs;
+	struct glob_set globs;
 };
 
 struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct ksyms *ksyms,
@@ -230,6 +224,7 @@ void mass_attacher__free(struct mass_attacher *att)
 	}
 
 	free(att->func_infos);
+	glob_set__clear(&att->globs);
 
 	if (att->kprobes) {
 		for (i = 0; i < att->kprobe_cnt; i++)
@@ -248,93 +243,14 @@ void mass_attacher__free(struct mass_attacher *att)
 	free(att);
 }
 
-static bool is_valid_glob(const char *glob)
-{
-	int n;
-
-	if (!glob) {
-		fprintf(stderr, "NULL glob provided.\n");
-		return false;
-	}
-	
-	n = strlen(glob);
-	if (n == 0) {
-		fprintf(stderr, "Empty glob provided.\n");
-		return false;
-	}
-
-	if (strcmp(glob, "**") == 0) {
-		fprintf(stderr, "Unsupported glob '%s'.\n", glob);
-		return false;
-	}
-
-	return true;
-}
-
 int mass_attacher__allow_glob(struct mass_attacher *att, const char *glob, const char *mod_glob)
 {
-	void *tmp, *s1, *s2 = NULL;
-
-	if (!is_valid_glob(glob))
-		return -EINVAL;
-	if (mod_glob && !is_valid_glob(mod_glob))
-		return -EINVAL;
-
-	tmp = realloc(att->allow_globs, (att->allow_glob_cnt + 1) * sizeof(*att->allow_globs));
-	if (!tmp)
-		return -ENOMEM;
-	att->allow_globs = tmp;
-
-	s1 = strdup(glob);
-	if (!s1)
-		return -ENOMEM;
-	if (mod_glob) {
-		s2 = strdup(mod_glob);
-		if (!s2) {
-			free(s1);
-			return -ENOMEM;
-		}
-	}
-
-	att->allow_globs[att->allow_glob_cnt].glob = s1;
-	att->allow_globs[att->allow_glob_cnt].mod_glob = s2;
-	att->allow_globs[att->allow_glob_cnt].matches = 0;
-	att->allow_glob_cnt++;
-
-	return 0;
+	return glob_set__add_glob(&att->globs, glob, mod_glob, GLOB_ALLOW);
 }
 
 int mass_attacher__deny_glob(struct mass_attacher *att, const char *glob, const char *mod_glob)
 {
-	void *tmp, *s1, *s2 = NULL;
-
-	if (!is_valid_glob(glob))
-		return -EINVAL;
-	if (mod_glob && !is_valid_glob(mod_glob))
-		return -EINVAL;
-
-	tmp = realloc(att->deny_globs, (att->deny_glob_cnt + 1) * sizeof(*att->deny_globs));
-	if (!tmp)
-		return -ENOMEM;
-	att->deny_globs = tmp;
-
-	s1 = strdup(glob);
-	if (!s1)
-		return -ENOMEM;
-	if (mod_glob) {
-		s2 = strdup(mod_glob);
-		if (!s2) {
-			free(s1);
-			return -ENOMEM;
-		}
-	}
-
-	att->deny_globs[att->deny_glob_cnt].glob = s1;
-	att->deny_globs[att->deny_glob_cnt].mod_glob = s2;
-	att->deny_globs[att->deny_glob_cnt].matches = 0;
-	att->deny_glob_cnt++;
-
-	return 0;
+	return glob_set__add_glob(&att->globs, glob, mod_glob, GLOB_DENY);
 }
 
 static int bump_rlimit(int resource, rlim_t max);
@@ -611,15 +527,12 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		printf("Skipped %d functions in total.\n", att->func_skip_cnt);
 
 		if (att->debug) {
-			for (i = 0; i < att->deny_glob_cnt; i++) {
-				printf("Deny glob '%s%s%s%s' matched %d functions.\n",
-				       NAME_MOD(att->deny_globs[i].glob, att->deny_globs[i].mod_glob),
-				       att->deny_globs[i].matches);
-			}
-			for (i = 0; i < att->allow_glob_cnt; i++) {
-				printf("Allow glob '%s%s%s%s' matched %d functions.\n",
-				       NAME_MOD(att->allow_globs[i].glob, att->allow_globs[i].mod_glob),
-				       att->allow_globs[i].matches);
+			for (i = 0; i < att->globs.glob_cnt; i++) {
+				struct glob_spec *g = &att->globs.globs[i];
+
+				printf("%s glob '%s%s%s%s' matched %d functions.\n",
+				       (g->flags & GLOB_ALLOW) ? "Allow" : "Deny",
+				       NAME_MOD(g->glob, g->mod_glob), g->matches);
 			}
 		}
 	}
@@ -904,20 +817,25 @@ static int load_matching_kprobes(struct mass_attacher *att)
 	for (i = 0; i < att->kprobe_cnt;) {
 		const char *name = att->kprobes[i].name;
 		const char *mod = att->kprobes[i].mod;
-		const char *name_glob, *mod_glob;
-		bool keep = false;;
+		struct glob_spec *g;
+		bool keep = false;
+		int allow_glob_cnt = 0;
 
-		for (j = 0; j < att->deny_glob_cnt; j++) {
-			name_glob = att->deny_globs[j].glob;
-			mod_glob = att->deny_globs[j].mod_glob;
-			if (!full_glob_matches(name_glob, mod_glob, name, mod))
+		for (j = 0; j < att->globs.glob_cnt; j++) {
+			g = &att->globs.globs[j];
+			if (g->flags & GLOB_ALLOW) {
+				allow_glob_cnt++;
+				continue;
+			}
+
+			if (!full_glob_matches(g->glob, g->mod_glob, name, mod))
 				continue;
 
-			att->deny_globs[j].matches++;
+			g->matches++;
 
 			if (att->debug_extra) {
 				printf("Function '%s%s%s%s' is denied by '%s%s%s%s' glob.\n",
-				       NAME_MOD(name, mod), NAME_MOD(name_glob, mod_glob));
+				       NAME_MOD(name, mod), NAME_MOD(g->glob, g->mod_glob));
 			}
 
 			keep = false;
@@ -925,21 +843,23 @@ static int load_matching_kprobes(struct mass_attacher *att)
 		}
 
 		/* if any allow glob is specified, function has to match one of them */
-		if (att->allow_glob_cnt == 0) {
+		if (allow_glob_cnt == 0) {
 			keep = true;
 			goto kprobe_verdict;
 		}
 
-		for (j = 0; j < att->allow_glob_cnt; j++) {
-			name_glob = att->allow_globs[j].glob;
-			mod_glob = att->allow_globs[j].mod_glob;
-			if (!full_glob_matches(name_glob, mod_glob, name, mod))
+		for (j = 0; j < att->globs.glob_cnt; j++) {
+			g = &att->globs.globs[j];
+			if (g->flags & GLOB_DENY)
 				continue;
 
-			att->allow_globs[j].matches++;
+			if (!full_glob_matches(g->glob, g->mod_glob, name, mod))
+				continue;
+
+			g->matches++;
 			if (att->debug_extra) {
 				printf("Function '%s%s%s%s' is allowed by '%s%s%s%s' glob.\n",
-				       NAME_MOD(name, mod), NAME_MOD(name_glob, mod_glob));
+				       NAME_MOD(name, mod), NAME_MOD(g->glob, g->mod_glob));
 			}
 
 			keep = true;
