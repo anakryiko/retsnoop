@@ -2225,8 +2225,10 @@ int main(int argc, char **argv, char **envp)
 
 			flags |= FUNC_IS_ENTRY;
 
-			if (env.verbose)
-				printf("Function '%s' is marked as an entry point.\n", finfo->name);
+			if (env.verbose) {
+				printf("Function '%s%s%s%s' is marked as an entry point.\n",
+				       NAME_MOD(finfo->name, finfo->module));
+			}
 
 			break;
 		}
@@ -2253,13 +2255,8 @@ int main(int argc, char **argv, char **envp)
 
 		if (!matched && glob->mandatory) {
 			err = -ENOENT;
-			if (glob->mod) {
-				fprintf(stderr, "Entry glob '%s[%s]' doesn't match any kernel function!\n",
-					glob->name, glob->mod);
-			} else {
-				fprintf(stderr, "Entry glob '%s' doesn't match any kernel function!\n",
-					glob->name);
-			}
+			fprintf(stderr, "Entry glob '%s%s%s%s' doesn't match any kernel function!\n",
+				NAME_MOD(glob->name, glob->mod));
 			goto cleanup_silent;
 		}
 	}

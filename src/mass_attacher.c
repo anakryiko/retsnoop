@@ -484,7 +484,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		kp = find_kprobe(att, func_name, NULL);
 		if (!kp) {
 			if (att->debug_extra)
-				printf("Function '%s [vmlinux]' is not attachable kprobe, skipping.\n", func_name);
+				printf("Function '%s' is not attachable kprobe, skipping.\n", func_name);
 			continue;
 		}
 		if (kp->used)
@@ -612,12 +612,14 @@ int mass_attacher__prepare(struct mass_attacher *att)
 
 		if (att->debug) {
 			for (i = 0; i < att->deny_glob_cnt; i++) {
-				printf("Deny glob '%s' matched %d functions.\n",
-				       att->deny_globs[i].glob, att->deny_globs[i].matches);
+				printf("Deny glob '%s%s%s%s' matched %d functions.\n",
+				       NAME_MOD(att->deny_globs[i].glob, att->deny_globs[i].mod_glob),
+				       att->deny_globs[i].matches);
 			}
 			for (i = 0; i < att->allow_glob_cnt; i++) {
-				printf("Allow glob '%s' matched %d functions.\n",
-				       att->allow_globs[i].glob, att->allow_globs[i].matches);
+				printf("Allow glob '%s%s%s%s' matched %d functions.\n",
+				       NAME_MOD(att->allow_globs[i].glob, att->allow_globs[i].mod_glob),
+				       att->allow_globs[i].matches);
 			}
 		}
 	}
@@ -696,24 +698,17 @@ static int prepare_func(struct mass_attacher *att, struct kprobe_info *kp,
 			const struct btf *btf, int btf_id)
 {
 	const struct ksym * const *ksym_it, * const *tmp_it;
-	char fn_desc_buf[512];
-	const char *fn_desc;
 	struct mass_attacher_func_info *finfo;
 	int i, arg_cnt, ksym_cnt;
 	void *tmp;
 
 	kp->used = true; /* mark it as processed, no matter the outcome */
 
-	fn_desc = kp->name;
-	if (kp->mod) {
-		snprintf(fn_desc_buf, sizeof(fn_desc_buf), "%s [%s]", kp->name, kp->mod);
-		fn_desc = fn_desc_buf;
-	}
-
 	ksym_it = ksyms__get_symbol_iter(att->ksyms, kp->name, kp->mod, KSYM_FUNC);
 	if (!ksym_it) {
 		if (att->debug_extra)
-			printf("Function '%s' not found in /proc/kallsyms! Skipping.\n", fn_desc);
+			printf("Function '%s%s%s%s' not found in /proc/kallsyms! Skipping.\n",
+			       NAME_MOD(kp->name, kp->mod));
 		att->func_skip_cnt++;
 		return 0;
 	}
@@ -724,30 +719,34 @@ static int prepare_func(struct mass_attacher *att, struct kprobe_info *kp,
 	}
 
 	if (kp->cnt != ksym_cnt) {
-		printf("Function '%s' has mismatched %d ksyms vs %d attachable kprobe entries, skipping.\n",
-		       fn_desc, ksym_cnt, kp->cnt);
+		printf("Function '%s%s%s%s' has mismatched %d ksyms vs %d attachable kprobe entries, skipping.\n",
+		       NAME_MOD(kp->name, kp->mod), ksym_cnt, kp->cnt);
 		att->func_skip_cnt += ksym_cnt;
 		return 0;
 	}
 
 	if (att->use_fentries && !is_func_type_ok(btf, btf_id)) {
-		if (att->debug)
-			printf("Function '%s' has prototype incompatible with fentry/fexit, skipping.\n", fn_desc);
+		if (att->debug) {
+			printf("Function '%s%s%s%s' has prototype incompatible with fentry/fexit, skipping.\n",
+			       NAME_MOD(kp->name, kp->mod));
+		}
 		att->func_skip_cnt += ksym_cnt;
 		return 0;
 	}
 	if (att->use_fentries && ksym_cnt > 1) {
-		if (att->verbose)
-			printf("Function '%s' has multiple (%d) ambiguous instances and is incompatible with fentry/fexit, skipping.\n",
-			       fn_desc, ksym_cnt);
+		if (att->verbose) {
+			printf("Function '%s%s%s%s' has multiple (%d) ambiguous instances and is incompatible with fentry/fexit, skipping.\n",
+			       NAME_MOD(kp->name, kp->mod), ksym_cnt);
+		}
 		att->func_skip_cnt += ksym_cnt;
 		return 0;
 	}
 
 	if (att->max_func_cnt && att->func_cnt + ksym_cnt > att->max_func_cnt) {
-		if (att->verbose)
+		if (att->verbose) {
 			fprintf(stderr, "Maximum allowed number of functions (%d) reached, skipping the rest.\n",
 			        att->max_func_cnt);
+		}
 		return -E2BIG;
 	}
 
@@ -780,8 +779,10 @@ static int prepare_func(struct mass_attacher *att, struct kprobe_info *kp,
 
 		att->func_cnt++;
 
-		if (att->debug_extra)
-			printf("Found function '%s' at address 0x%lx...\n", fn_desc, ksym->addr);
+		if (att->debug_extra) {
+			printf("Found function '%s%s%s%s' at address 0x%lx...\n",
+			       NAME_MOD(kp->name, kp->mod), ksym->addr);
+		}
 	}
 
 	return 0;
@@ -916,10 +917,7 @@ static int load_matching_kprobes(struct mass_attacher *att)
 
 			if (att->debug_extra) {
 				printf("Function '%s%s%s%s' is denied by '%s%s%s%s' glob.\n",
-				       name,
-				       mod ? " [" : "", mod ?: "", mod ? "]" : "",
-				       name_glob,
-				       mod_glob ? " [" : "", mod_glob ?: "", mod_glob ? "]" : "");
+				       NAME_MOD(name, mod), NAME_MOD(name_glob, mod_glob));
 			}
 
 			keep = false;
@@ -941,10 +939,7 @@ static int load_matching_kprobes(struct mass_attacher *att)
 			att->allow_globs[j].matches++;
 			if (att->debug_extra) {
 				printf("Function '%s%s%s%s' is allowed by '%s%s%s%s' glob.\n",
-				       name,
-				       mod ? " [" : "", mod ?: "", mod ? "]" : "",
-				       name_glob,
-				       mod_glob ? " [" : "", mod_glob ?: "", mod_glob ? "]" : "");
+				       NAME_MOD(name, mod), NAME_MOD(name_glob, mod_glob));
 			}
 
 			keep = true;
@@ -1112,17 +1107,11 @@ static void debug_multi_kprobe(struct mass_attacher *att, unsigned long *addrs,
 	if (l == r) {
 		/* we narrowed it down to single function, report it */
 		struct mass_attacher_func_info *finfo = &att->func_infos[l];
-		const char *func_desc = finfo->name;
-		char buf[256];
 		int err;
 
 		err = -errno;
-		if (finfo->module) {
-			snprintf(buf, sizeof(buf), "%s [%s]", finfo->name, finfo->module);
-			func_desc = buf;
-		}
-		printf("DEBUG: KPROBE.MULTI can't attach to func #%d (%s) at addr %lx using %s: %d\n",
-		       l + 1, func_desc, finfo->addr,
+		printf("DEBUG: KPROBE.MULTI can't attach to func #%d (%s%s%s%s) at addr %lx using %s: %d\n",
+		       l + 1, NAME_MOD(finfo->name, finfo->module), finfo->addr,
 		       addrs ? "addrs" : "syms", err);
 		return;
 	}
@@ -1158,14 +1147,8 @@ int mass_attacher__attach(struct mass_attacher *att)
 
 	for (i = 0; i < att->func_cnt; i++) {
 		struct mass_attacher_func_info *finfo = &att->func_infos[i];
-		const char *func_name = finfo->name, *func_desc = finfo->name;
-		char buf[256];
+		const char *func_name = finfo->name;
 		long func_addr = finfo->addr;
-
-		if (finfo->module) {
-			snprintf(buf, sizeof(buf), "%s [%s]", finfo->name, finfo->module);
-			func_desc = buf;
-		}
 
 		if (att->dry_run)
 			goto skip_attach;
@@ -1176,8 +1159,8 @@ int mass_attacher__attach(struct mass_attacher *att)
 			prog_fd = att->func_infos[i].fentry_prog_fd;
 			err = bpf_raw_tracepoint_open(NULL, prog_fd);
 			if (err < 0) {
-				fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
-					prog_fd, i + 1, func_desc, func_addr, -errno);
+				fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s%s%s%s) at addr %lx: %d\n",
+					prog_fd, i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, -errno);
 				goto err_out;
 			}
 			att->func_infos[i].fentry_link_fd = err;
@@ -1185,8 +1168,8 @@ int mass_attacher__attach(struct mass_attacher *att)
 			prog_fd = att->func_infos[i].fexit_prog_fd;
 			err = bpf_raw_tracepoint_open(NULL, prog_fd);
 			if (err < 0) {
-				fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s) at addr %lx: %d\n",
-					prog_fd, i + 1, func_desc, func_addr, -errno);
+				fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s%s%s%s) at addr %lx: %d\n",
+					prog_fd, i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, -errno);
 				goto err_out;
 			}
 			att->func_infos[i].fexit_link_fd = err;
@@ -1205,8 +1188,8 @@ int mass_attacher__attach(struct mass_attacher *att)
 									     func_name, &kprobe_opts);
 			err = libbpf_get_error(finfo->kentry_link);
 			if (err) {
-				fprintf(stderr, "Failed to attach KPROBE prog for func #%d (%s) at addr %lx: %d\n",
-					i + 1, func_desc, func_addr, err);
+				fprintf(stderr, "Failed to attach KPROBE prog for func #%d (%s%s%s%s) at addr %lx: %d\n",
+					i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, err);
 				goto err_out;
 			}
 
@@ -1217,21 +1200,21 @@ int mass_attacher__attach(struct mass_attacher *att)
 									    func_name, &kprobe_opts);
 			err = libbpf_get_error(finfo->kexit_link);
 			if (err) {
-				fprintf(stderr, "Failed to attach KRETPROBE prog for func #%d (%s) at addr %lx: %d\n",
-					i + 1, func_desc, func_addr, err);
+				fprintf(stderr, "Failed to attach KRETPROBE prog for func #%d (%s%s%s%s) at addr %lx: %d\n",
+					i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, err);
 				goto err_out;
 			}
 		}
 
 skip_attach:
 		if (att->debug) {
-			printf("Attached%s to function #%d '%s' (addr %lx, btf id %d, flags 0x%x).\n",
+			printf("Attached%s to function #%d '%s%s%s%s' (addr %lx, btf id %d, flags 0x%x).\n",
 			       att->dry_run ? " (dry run)" : "", i + 1,
-			       func_desc, func_addr, finfo->btf_id,
+			       NAME_MOD(finfo->name, finfo->module), func_addr, finfo->btf_id,
 			       att->skel->data_func_infos->func_infos[i].flags);
 		} else if (att->verbose) {
-			printf("Attached%s to function #%d '%s'.\n",
-			att->dry_run ? " (dry run)" : "", i + 1, func_desc);
+			printf("Attached%s to function #%d '%s%s%s%s'.\n",
+			att->dry_run ? " (dry run)" : "", i + 1, NAME_MOD(finfo->name, finfo->module));
 		}
 	}
 

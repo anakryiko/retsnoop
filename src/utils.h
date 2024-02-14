@@ -13,6 +13,14 @@
 #define min(x, y) ((x) < (y) ? (x): (y))
 #define max(x, y) ((x) < (y) ? (y): (x))
 
+/* Macro to output glob or kprobe full display name in the form of either:
+ *   - 'name', if mod is NULL;
+ *   - 'name [mod]', if mod is not NULL;
+ * printf() format string should have %s%s%s%s arguments
+ * corresponding to NAME_MOD() "invocation"
+ */
+#define NAME_MOD(name, mod) name, mod ? " [" : "", mod ?: "", mod ? "]" : ""
+
 /*
  * Errno helpers
  */
