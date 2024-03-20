@@ -5,6 +5,9 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
 /* these two are defined by custom BPF code outside of mass_attacher */
 extern int handle_func_entry(void *ctx, u32 func_id, u64 func_ip);
 extern int handle_func_exit(void *ctx, u32 func_id, u64 func_ip, u64 ret);
@@ -63,7 +66,8 @@ static __always_inline void capture_lbrs(int cpu)
 {
 	long lbr_sz;
 
-	if (!use_lbr)
+	/* prioritize straight path logic if LBR is requested */
+	if (unlikely(!use_lbr))
 		return;
 
 	lbr_sz = bpf_get_branch_snapshot(&lbrs[cpu & max_cpu_mask], sizeof(lbrs[0]), 0);
@@ -131,7 +135,7 @@ int kexit(struct pt_regs *ctx)
 	u32 id, cpu;
 	long ip;
 
-	if (!ready)
+	if (unlikely(!ready))
 		return 0;
 
 	cpu = bpf_get_smp_processor_id();
@@ -232,11 +236,11 @@ static __always_inline int handle_fexit(void *ctx, int arg_cnt, bool is_void_ret
 	long ip;
 	u64 res;
 
-	if (!ready)
+	if (unlikely(!ready))
 		return 0;
 
 	cpu = bpf_get_smp_processor_id();
-	if (!recur_enter(cpu))
+	if (unlikely(!recur_enter(cpu)))
 		return 0;
 
 	capture_lbrs(cpu);
