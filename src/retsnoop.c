@@ -48,6 +48,7 @@ enum symb_mode {
 enum debug_feat {
 	DEBUG_NONE = 0x00,
 	DEBUG_MULTI_KPROBE = 0x01,
+	DEBUG_FULL_LBR = 0x02,
 };
 
 static struct env {
@@ -200,7 +201,7 @@ static const struct argp_option opts[] = {
 	{ "stacks-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
 	  "Stacks map size (default 4096)" },
 	{ "debug", OPT_DEBUG_FEAT, "FEATURE", 0,
-	  "Enable selected debug features. Any set of: multi-kprobe." },
+	  "Enable selected debug features. Any set of: multi-kprobe, full-lbr." },
 	{},
 };
 
@@ -308,6 +309,7 @@ static enum debug_feat parse_debug_arg(const char *arg)
 		enum debug_feat value;
 	} table[] = {
 		{"multi-kprobe", DEBUG_MULTI_KPROBE},
+		{"full-lbr", DEBUG_FULL_LBR},
 	};
 
 	for (i = 0; i < ARRAY_SIZE(table); i++) {
@@ -1612,23 +1614,22 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 		lbr_cnt = s->lbrs_sz / sizeof(struct perf_branch_entry);
 		lbr_from = lbr_cnt - 1;
 
-		if (!env.emit_full_stacks) {
-			/* Filter out last few irrelevant LBRs that captured
-			 * internal BPF/kprobe/perf jumps. For that, find the
-			 * first LBR record that overlaps with the last traced
-			 * function. All the records after that are assumed
-			 * relevant.
-			 */
-			for (i = 0, lbr_to = 0; i < lbr_cnt; i++, lbr_to++) {
-				if (lbr_matches(s->lbrs[i].from, start, end) ||
-				    lbr_matches(s->lbrs[i].to, start, end)) {
-					found_useful_lbrs = true;
-					break;
-				}
+		/* Filter out last few irrelevant LBRs that captured
+		 * internal BPF/kprobe/perf jumps. For that, find the
+		 * first LBR record that overlaps with the last traced
+		 * function. All the records after that are assumed
+		 * relevant.
+		 */
+		for (i = 0, lbr_to = 0; i < lbr_cnt; i++, lbr_to++) {
+			if (lbr_matches(s->lbrs[i].from, start, end) ||
+			    lbr_matches(s->lbrs[i].to, start, end)) {
+				found_useful_lbrs = true;
+				break;
 			}
-			if (!found_useful_lbrs)
-				lbr_to = 0;
 		}
+		if (!found_useful_lbrs ||
+		    env.emit_full_stacks || (env.debug_feats & DEBUG_FULL_LBR))
+			lbr_to = 0;
 
 		if (env.lbr_max_cnt && lbr_from - lbr_to + 1 > env.lbr_max_cnt)
 			lbr_from = min(lbr_cnt - 1, lbr_to + env.lbr_max_cnt - 1);
@@ -1647,7 +1648,7 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 				&stack_items1, rec_cnts1,
 				&stack_items2, rec_cnts2);
 
-		if (!env.emit_full_stacks && !found_useful_lbrs)
+		if (!found_useful_lbrs)
 			printf("[LBR] No relevant LBR data were captured, showing unfiltered LBR stack!\n");
 	}
 
