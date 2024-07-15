@@ -19,6 +19,13 @@ struct env env = {
 	.stacks_map_sz = 4096,
 };
 
+__attribute__((constructor))
+static void init()
+{
+	/* set allowed error mask to all 1s (enabled by default) */
+	memset(env.allow_error_mask, 0xFF, sizeof(env.allow_error_mask));
+}
+
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
 #define OPT_LBR_MAX_CNT 1003
