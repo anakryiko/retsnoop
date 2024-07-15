@@ -66,6 +66,15 @@ void ts_to_str(uint64_t ts, char buf[], size_t buf_sz);
 
 void format_func_flags(char *buf, size_t buf_sz, int flags);
 
+extern uint64_t ktime_off;
+
+void calibrate_ktime(void);
+
+static inline uint64_t ktime_to_ts(uint64_t ktime_ts)
+{
+	return ktime_off + ktime_ts;
+}
+
 /*
  * Glob helpers
  */

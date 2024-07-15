@@ -414,3 +414,26 @@ void glob_set__clear(struct glob_set *gs)
 	gs->globs = NULL;
 	gs->glob_cnt = 0;
 }
+
+uint64_t ktime_off;
+
+void calibrate_ktime(void)
+{
+	int i;
+	struct timespec t1, t2, t3;
+	uint64_t best_delta = 0, delta, ts;
+
+	for (i = 0; i < 10; i++) {
+		clock_gettime(CLOCK_REALTIME, &t1);
+		clock_gettime(CLOCK_MONOTONIC, &t2);
+		clock_gettime(CLOCK_REALTIME, &t3);
+
+		delta = timespec_to_ns(&t3) - timespec_to_ns(&t1);
+		ts = (timespec_to_ns(&t3) + timespec_to_ns(&t1)) / 2;
+
+		if (i == 0 || delta < best_delta) {
+			best_delta = delta;
+			ktime_off = ts - timespec_to_ns(&t2);
+		}
+	}
+}
