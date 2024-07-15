@@ -30,6 +30,20 @@
 int str_to_err(const char *arg);
 const char *err_to_str(long err);
 
+static inline void err_mask_set(uint64_t *err_mask, int err_value)
+{
+	err_mask[err_value / 64] |= 1ULL << (err_value % 64);
+}
+
+static inline bool is_err_in_mask(uint64_t *err_mask, int err)
+{
+	if (err < 0)
+		err = -err;
+	if (err > MAX_ERRNO)
+		return false;
+	return (err_mask[err / 64] >> (err % 64)) & 1;
+}
+
 /*
  * Time helpers
  */
