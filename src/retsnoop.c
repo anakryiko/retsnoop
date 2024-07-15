@@ -53,29 +53,6 @@ static int process_cu_globs()
 	return err;
 }
 
-static __u64 ktime_off;
-
-static void calibrate_ktime(void)
-{
-	int i;
-	struct timespec t1, t2, t3;
-	__u64 best_delta = 0, delta, ts;
-
-	for (i = 0; i < 10; i++) {
-		clock_gettime(CLOCK_REALTIME, &t1);
-		clock_gettime(CLOCK_MONOTONIC, &t2);
-		clock_gettime(CLOCK_REALTIME, &t3);
-
-		delta = timespec_to_ns(&t3) - timespec_to_ns(&t1);
-		ts = (timespec_to_ns(&t3) + timespec_to_ns(&t1)) / 2;
-
-		if (i == 0 || delta < best_delta) {
-			best_delta = delta;
-			ktime_off = ts - timespec_to_ns(&t2);
-		}
-	}
-}
-
 /* fexit logical stack trace item */
 struct fstack_item {
 	const struct mass_attacher_func_info *finfo;
@@ -971,8 +948,8 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 		printf("KSTACK (%d items out of original %ld):\n", kstack_n, s->kstack_sz / 8);
 	}
 
-	ts_to_str(s->start_ts + ktime_off, ts1, sizeof(ts1));
-	ts_to_str(s->emit_ts + ktime_off, ts2, sizeof(ts2));
+	ts_to_str(ktime_to_ts(s->start_ts), ts1, sizeof(ts1));
+	ts_to_str(ktime_to_ts(s->emit_ts), ts2, sizeof(ts2));
 	printf("%s -> %s TID/PID %d/%d (%s/%s):\n", ts1, ts2, s->pid, s->tgid,  s->task_comm, s->proc_comm);
 
 	/* Emit more verbose outputs before more succinct and high signal output.
