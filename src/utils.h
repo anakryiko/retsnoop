@@ -43,13 +43,6 @@ static inline bool is_err_in_mask(uint64_t *err_mask, int err)
 		return false;
 	return (err_mask[err / 64] >> (err % 64)) & 1;
 }
-/*
- * Misc helpers
- */
-
-enum func_flags;
-
-void format_func_flags(char *buf, size_t buf_sz, enum func_flags flags);
 
 /*
  * Time helpers

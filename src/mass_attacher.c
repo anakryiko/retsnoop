@@ -15,6 +15,7 @@
 #include "ksyms.h"
 #include "calib_feat.skel.h"
 #include "utils.h"
+#include "logic.h"
 
 #ifndef SKEL_NAME
 #error "Please define -DSKEL_NAME=<BPF skeleton name> for mass_attacher"
