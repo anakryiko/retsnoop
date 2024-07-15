@@ -547,7 +547,7 @@ static int handle_func_trace_entry(struct ctx *ctx, const struct func_trace_entr
 	return 0;
 }
 
-static void prepare_func_res(struct stack_item *s, long res, int func_flags);
+static void prepare_func_res(struct stack_item *s, long res, enum func_flags func_flags);
 
 static char underline[512]; /* fill be filled with header underline char */
 static char spaces[512]; /* fill be filled with spaces */
@@ -669,7 +669,7 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 
 }
 
-static void prepare_func_res(struct stack_item *s, long res, int func_flags)
+static void prepare_func_res(struct stack_item *s, long res, enum func_flags func_flags)
 {
 	const char *errstr;
 
@@ -1146,7 +1146,7 @@ static int func_flags(const char *func_name, const struct btf *btf, int btf_id)
 	return 0;
 }
 
-void format_func_flags(char *buf, size_t buf_sz, int flags)
+void format_func_flags(char *buf, size_t buf_sz, enum func_flags flags)
 {
 	char s[256];
 	size_t s_len = 0;
@@ -1622,7 +1622,7 @@ int main(int argc, char **argv, char **envp)
 		const struct mass_attacher_func_info *finfo;
 		const struct glob *glob;
 		struct func_info *fi;
-		__u32 flags;
+		enum func_flags flags;
 
 		finfo = mass_attacher__func(att, i);
 		flags = func_flags(finfo->name, finfo->btf, finfo->btf_id);

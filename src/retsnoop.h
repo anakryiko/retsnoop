@@ -15,10 +15,21 @@
  */
 #define MAX_ERR_CNT 4096
 
+#define TASK_COMM_LEN 16
+
+enum func_flags {
+	FUNC_IS_ENTRY = 0x1,
+	FUNC_CANT_FAIL = 0x2,
+	FUNC_NEEDS_SIGN_EXT = 0x4,
+	FUNC_RET_PTR = 0x8,
+	FUNC_RET_BOOL = 0x10,
+	FUNC_RET_VOID = 0x20,
+};
+
 struct func_info {
 	char name[MAX_FUNC_NAME_LEN];
 	__u64 ip;
-	int flags;
+	enum func_flags flags;
 } __attribute__((aligned(8)));
 
 enum rec_type {
@@ -79,14 +90,5 @@ struct func_trace_entry {
 	long func_lat;
 	long func_res;
 };
-
-#define FUNC_IS_ENTRY 0x1
-#define FUNC_CANT_FAIL 0x2
-#define FUNC_NEEDS_SIGN_EXT 0x4
-#define FUNC_RET_PTR 0x8
-#define FUNC_RET_BOOL 0x10
-#define FUNC_RET_VOID 0x20
-
-#define TASK_COMM_LEN 16
 
 #endif /* __RETSNOOP_H */
