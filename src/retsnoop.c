@@ -1908,8 +1908,6 @@ out:
 	return err;
 }
 
-#define INTEL_FIXED_VLBR_EVENT        0x1b00
-
 static int create_lbr_perf_events(int *fds, int cpu_cnt)
 {
 	struct perf_event_attr attr;
