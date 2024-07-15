@@ -35,9 +35,9 @@ struct {
 
 const volatile bool verbose = false;
 const volatile bool extra_verbose = false;
-const volatile bool use_ringbuf = false;
-const volatile bool use_lbr = false;
-const volatile int targ_tgid = 0;
+const volatile bool use_ringbuf = true;
+const volatile bool use_lbr = true;
+const volatile int targ_tgid = -1;
 const volatile bool emit_success_stacks = false;
 const volatile bool emit_intermediate_stacks = false;
 const volatile bool emit_func_trace = false;
@@ -49,8 +49,8 @@ struct {
 	__uint(max_entries, 1); /* could be overriden from user-space */
 } tgids_filter SEC(".maps");
 
-const volatile __u32 tgid_allow_cnt = 0;
-const volatile __u32 tgid_deny_cnt = 0;
+const volatile __u32 tgid_allow_cnt = -1;
+const volatile __u32 tgid_deny_cnt = -1;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -59,10 +59,10 @@ struct {
 	__uint(max_entries, 1); /* could be overriden from user-space */
 } comms_filter SEC(".maps");
 
-const volatile __u32 comm_allow_cnt = 0;
-const volatile __u32 comm_deny_cnt = 0;
+const volatile __u32 comm_allow_cnt = -1;
+const volatile __u32 comm_deny_cnt = -1;
 
-const volatile __u64 duration_ns = 0;
+const volatile __u64 duration_ns = -1;
 
 const volatile char spaces[512] = {};
 
