@@ -99,13 +99,6 @@ static int handle_session_start(struct ctx *ctx, const struct session_start *r)
 static char underline[512]; /* fill be filled with header underline char */
 static char spaces[512]; /* fill be filled with spaces */
 
-__attribute__((constructor))
-static void init(void)
-{
-	 memset(underline, '-', sizeof(underline) - 1);
-	 memset(spaces, ' ', sizeof(spaces) - 1);
-}
-
 /* logical stack trace item */
 struct fstack_item {
 	const struct mass_attacher_func_info *finfo;
@@ -600,13 +593,13 @@ struct func_trace_item {
 
 static int handle_func_trace_entry(struct ctx *ctx, const struct func_trace_entry *r)
 {
-	const void *k = (const void *)(uintptr_t)r->pid;
 	struct session *sess;
 	struct func_trace_item *fti;
 	void *tmp;
 
-	if (!hashmap__find(&sessions_hash, k, &sess)) {
-		fprintf(stderr, "Session data for PID %d not found, bug!\n", r->pid);
+	if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
+		fprintf(stderr, "BUG: PID %d session data not found (%s)!\n", r->pid,
+			r->type == REC_FUNC_TRACE_ENTRY ? "FUNC_TRACE_ENTRY" : "FUNC_TRACE_EXIT");
 		return -EINVAL;
 	}
 
@@ -1116,7 +1109,19 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 out:
 	printf("\n\n");
 
-	purge_session(dctx, s->pid);
+	return 0;
+}
+
+static int handle_session_end(struct ctx *ctx, const struct session_end *r)
+{
+	struct session *sess;
+
+	if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
+		fprintf(stderr, "BUG: PID %d session data not found (SESSION_END)!\n", r->pid);
+		return -EINVAL;
+	}
+
+	purge_session(ctx, r->pid);
 
 	return 0;
 }
@@ -1130,6 +1135,8 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 		return handle_call_stack(ctx, data);
 	case REC_SESSION_START:
 		return handle_session_start(ctx, data);
+	case REC_SESSION_END:
+		return handle_session_end(ctx, data);
 	case REC_FUNC_TRACE_ENTRY:
 	case REC_FUNC_TRACE_EXIT:
 		return handle_func_trace_entry(ctx, data);
@@ -1137,6 +1144,13 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 		fprintf(stderr, "Unrecognized record type %d\n", type);
 		return -ENOTSUP;
 	}
+}
+
+__attribute__((constructor))
+static void init(void)
+{
+	 memset(underline, '-', sizeof(underline) - 1);
+	 memset(spaces, ' ', sizeof(spaces) - 1);
 }
 
 __attribute__((destructor))
