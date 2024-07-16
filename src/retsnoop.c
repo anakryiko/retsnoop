@@ -342,9 +342,8 @@ int main(int argc, char **argv, char **envp)
 		goto cleanup_silent;
 	}
 
-
-	bpf_map__set_max_entries(skel->maps.rb, env.ringbuf_sz);
-	bpf_map__set_max_entries(skel->maps.stacks, env.stacks_map_sz);
+	bpf_map__set_max_entries(skel->maps.rb, env.ringbuf_map_sz);
+	bpf_map__set_max_entries(skel->maps.stacks, env.sessions_map_sz);
 
 	skel->rodata->tgid_allow_cnt = env.allow_pid_cnt;
 	skel->rodata->tgid_deny_cnt = env.deny_pid_cnt;

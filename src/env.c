@@ -14,8 +14,8 @@ const char argp_program_doc[] =
 "USAGE: retsnoop [-v] [-F|-K|-M] [-T] [--lbr] [-c CASE]* [-a GLOB]* [-d GLOB]* [-e GLOB]*\n";
 
 struct env env = {
-	.ringbuf_sz = 8 * 1024 * 1024,
-	.stacks_map_sz = 4096,
+	.ringbuf_map_sz = 8 * 1024 * 1024,
+	.sessions_map_sz = 4096,
 };
 
 __attribute__((constructor))
@@ -30,6 +30,7 @@ static void init()
 #define OPT_LBR_MAX_CNT 1003
 #define OPT_DRY_RUN 1004
 #define OPT_DEBUG_FEAT 1005
+#define OPT_RINGBUF_MAP_SIZE 1006
 
 static const struct argp_option opts[] = {
 	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
@@ -98,8 +99,10 @@ static const struct argp_option opts[] = {
 	  "If extra symbolization is requested, retsnoop relies on having vmlinux with DWARF available." },
 	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
 	  "Emit non-filtered full stack traces" },
-	{ "stacks-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
-	  "Stacks map size (default 4096)" },
+	{ "sessions-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
+	  "Sessions map size (default 4096)" },
+	{ "ringbuf-map-size", OPT_RINGBUF_MAP_SIZE, "SIZE", 0,
+	  "Ringbuf map size in bytes (default 8MB)" },
 	{ "debug", OPT_DEBUG_FEAT, "FEATURE", 0,
 	  "Enable selected debug features. Any set of: multi-kprobe, full-lbr." },
 	{},
@@ -473,9 +476,17 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case OPT_STACKS_MAP_SIZE:
 		errno = 0;
-		env.stacks_map_sz = strtol(arg, NULL, 10);
-		if (errno || env.stacks_map_sz < 0) {
-			fprintf(stderr, "Invalid stacks map size: %d\n", env.stacks_map_sz);
+		env.sessions_map_sz = strtol(arg, NULL, 10);
+		if (errno || env.sessions_map_sz < 0) {
+			fprintf(stderr, "Invalid sessions map size: %d\n", env.sessions_map_sz);
+			return -EINVAL;
+		}
+		break;
+	case OPT_RINGBUF_MAP_SIZE:
+		errno = 0;
+		env.ringbuf_map_sz = strtol(arg, NULL, 10);
+		if (errno || env.ringbuf_map_sz < 0) {
+			fprintf(stderr, "Invalid ringbuf map size: %d\n", env.ringbuf_map_sz);
 			return -EINVAL;
 		}
 		break;

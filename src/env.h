@@ -88,8 +88,8 @@ struct env {
 	uint64_t deny_error_mask[(MAX_ERRNO + 1) / 64];
 
 	struct ctx ctx;
-	int ringbuf_sz;
-	int stacks_map_sz;
+	int ringbuf_map_sz;
+	int sessions_map_sz;
 
 	int cpu_cnt;
 	bool has_branch_snapshot;
