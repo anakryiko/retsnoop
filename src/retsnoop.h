@@ -73,16 +73,14 @@ struct lbr_stack {
 struct call_stack {
 	/* REC_CALL_STACK */
 	enum rec_type type;
-
-	bool defunct;
-	bool start_emitted;
+	int pid;
 
 	unsigned short func_ids[MAX_FSTACK_DEPTH];
 	long func_res[MAX_FSTACK_DEPTH];
 	long func_lat[MAX_FSTACK_DEPTH];
 	unsigned depth;
 	unsigned max_depth;
-	int pid, tgid;
+	int tgid;
 	long start_ts, emit_ts;
 	char task_comm[16], proc_comm[16];
 	bool is_err;
@@ -96,12 +94,7 @@ struct call_stack {
 	long kstack[MAX_KSTACK_DEPTH];
 	long kstack_sz;
 
-	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
-	long lbrs_sz;
-
-	int next_seq_id;
-
-	long scratch; /* for obfuscating pointers to be read as integers */
+	int last_seq_id;
 };
 
 struct func_trace_entry {

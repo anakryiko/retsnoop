@@ -36,6 +36,20 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 #define __memcpy(dst, src, sz) bpf_probe_read_kernel(dst, sz, src)
 
+struct session {
+	long scratch; /* for obfuscating pointers to be read as integers */
+
+	bool defunct;
+	bool start_emitted;
+
+	int next_seq_id;
+
+	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
+	long lbrs_sz;
+
+	struct call_stack stack;
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 } rb SEC(".maps");
@@ -43,8 +57,8 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __u32);
-	__type(value, struct call_stack);
-} stacks SEC(".maps");
+	__type(value, struct session);
+} sessions SEC(".maps");
 
 const volatile bool verbose = false;
 const volatile bool extra_verbose = false;
@@ -125,9 +139,9 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 	stack->saved_max_depth = stack->max_depth;
 }
 
-static const struct call_stack empty_stack;
+static const struct session empty_session;
 
-static bool emit_session_start(struct call_stack *sess)
+static bool emit_session_start(struct session *sess)
 {
 	struct session_start *r;
 
@@ -136,11 +150,11 @@ static bool emit_session_start(struct call_stack *sess)
 		return false;
 
 	r->type = REC_SESSION_START;
-	r->pid = sess->pid;
-	r->tgid = sess->tgid;
-	r->start_ts = sess->start_ts;
-	__builtin_memcpy(r->task_comm, sess->task_comm, sizeof(sess->task_comm));
-	__builtin_memcpy(r->proc_comm, sess->proc_comm, sizeof(sess->proc_comm));
+	r->pid = sess->stack.pid;
+	r->tgid = sess->stack.tgid;
+	r->start_ts = sess->stack.start_ts;
+	__builtin_memcpy(r->task_comm, sess->stack.task_comm, sizeof(sess->stack.task_comm));
+	__builtin_memcpy(r->proc_comm, sess->stack.proc_comm, sizeof(sess->stack.proc_comm));
 
 	bpf_ringbuf_submit(r, 0);
 
@@ -151,62 +165,63 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 {
 	u64 pid_tgid = bpf_get_current_pid_tgid();
 	u32 pid = (u32)pid_tgid;
-	struct call_stack *stack;
+	struct session *sess;
 	u64 d;
 
-	stack = bpf_map_lookup_elem(&stacks, &pid);
-	if (!stack) {
+	sess = bpf_map_lookup_elem(&sessions, &pid);
+	if (!sess) {
 		struct task_struct *tsk;
 
 		if (!(func_info(id)->flags & FUNC_IS_ENTRY))
 			return false;
 
-		bpf_map_update_elem(&stacks, &pid, &empty_stack, BPF_ANY);
-		stack = bpf_map_lookup_elem(&stacks, &pid);
-		if (!stack)
+		bpf_map_update_elem(&sessions, &pid, &empty_session, BPF_ANY);
+		sess = bpf_map_lookup_elem(&sessions, &pid);
+		if (!sess)
 			return false;
 
-		stack->type = REC_CALL_STACK;
-		stack->start_ts = bpf_ktime_get_ns();
-		stack->pid = pid;
-		stack->tgid = (u32)(pid_tgid >> 32);
-		bpf_get_current_comm(&stack->task_comm, sizeof(stack->task_comm));
+		sess->stack.type = REC_CALL_STACK;
+		sess->stack.start_ts = bpf_ktime_get_ns();
+		sess->stack.pid = pid;
+		sess->stack.tgid = (u32)(pid_tgid >> 32);
+		bpf_get_current_comm(&sess->stack.task_comm, sizeof(sess->stack.task_comm));
 		tsk = (void *)bpf_get_current_task();
-		BPF_CORE_READ_INTO(&stack->proc_comm, tsk, group_leader, comm);
+		BPF_CORE_READ_INTO(&sess->stack.proc_comm, tsk, group_leader, comm);
 
 		if (emit_func_trace) {
-			if (!emit_session_start(stack)) {
+			if (!emit_session_start(sess)) {
 				vlog("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION_START record!\n",
-				     stack->pid, stack->tgid);
-				stack->defunct = true;
+				     sess->stack.pid, sess->stack.tgid);
+				sess->defunct = true;
 				goto out_defunct;
 			} else {
-				stack->start_emitted = true;
+				sess->start_emitted = true;
 			}
 		}
 	}
 
 out_defunct:
 	/* if we failed to send out REC_SESSION_START, update depth and bail */
-	if (stack->defunct) {
-		stack->depth++;
+	if (sess->defunct) {
+		sess->stack.depth++;
 		return false;
 	}
 
-	d = stack->depth;
+	d = sess->stack.depth;
 	barrier_var(d);
 	if (d >= MAX_FSTACK_DEPTH)
 		return false;
 
-	if (stack->depth != stack->max_depth && stack->is_err)
-		save_stitch_stack(ctx, stack);
+	if (sess->stack.depth != sess->stack.max_depth && sess->stack.is_err)
+		save_stitch_stack(ctx, &sess->stack);
 
-	stack->func_ids[d] = id;
-	stack->is_err = false;
-	stack->depth = d + 1;
-	stack->max_depth = d + 1;
-	stack->func_lat[d] = bpf_ktime_get_ns();
-	stack->next_seq_id++;
+	sess->stack.func_ids[d] = id;
+	sess->stack.is_err = false;
+	sess->stack.depth = d + 1;
+	sess->stack.max_depth = d + 1;
+	sess->stack.func_lat[d] = bpf_ktime_get_ns();
+
+	sess->next_seq_id++;
 
 	if (emit_func_trace) {
 		struct func_trace_entry *fe;
@@ -218,7 +233,7 @@ out_defunct:
 		fe->type = REC_FUNC_TRACE_ENTRY;
 		fe->ts = bpf_ktime_get_ns();
 		fe->pid = pid;
-		fe->seq_id = stack->next_seq_id - 1;
+		fe->seq_id = sess->next_seq_id - 1;
 		fe->depth = d + 1;
 		fe->func_id = id;
 		fe->func_lat = 0;
@@ -234,12 +249,12 @@ skip_ft_entry:;
 		if (printk_is_sane) {
 			if (d == 0)
 				log("=== STARTING TRACING %s [COMM %s PID %d] ===",
-				    func_name, stack->task_comm, pid);
+				    func_name, sess->stack.task_comm, pid);
 			log("    ENTER %s%s [...]", spaces + 2 * ((255 - d) & 0xFF), func_name);
 		} else {
 			if (d == 0) {
 				log("=== STARTING TRACING %s [PID %d] ===", func_name, pid);
-				log("=== ...      TRACING [PID %d COMM %s] ===", pid, stack->task_comm);
+				log("=== ...      TRACING [PID %d COMM %s] ===", pid, sess->stack.task_comm);
 			}
 			log("    ENTER [%d] %s [...]", d + 1, func_name);
 		}
@@ -377,39 +392,41 @@ static __noinline void print_exit(void *ctx, __u32 d, __u32 id, long res)
 	}
 }
 
-static void reset_session(struct call_stack *stack)
+static void reset_session(struct session *sess)
 {
-	stack->defunct = false;
-	stack->start_emitted = false;
-	stack->is_err = false;
-	stack->saved_depth = 0;
-	stack->saved_max_depth = 0;
-	stack->depth = 0;
-	stack->max_depth = 0;
-	stack->kstack_sz = 0;
-	stack->lbrs_sz = 0;
+	sess->defunct = false;
+	sess->start_emitted = false;
+
+	sess->stack.is_err = false;
+	sess->stack.saved_depth = 0;
+	sess->stack.saved_max_depth = 0;
+	sess->stack.depth = 0;
+	sess->stack.max_depth = 0;
+	sess->stack.kstack_sz = 0;
+
+	sess->lbrs_sz = 0;
 }
 
-static int submit_session(void *ctx, struct call_stack *sess)
+static int submit_session(void *ctx, struct session *sess)
 {
 	bool emit_session;
 
-	sess->emit_ts = bpf_ktime_get_ns();
+	sess->stack.emit_ts = bpf_ktime_get_ns();
 
-	emit_session = sess->is_err || emit_success_stacks;
-	if (duration_ns && sess->emit_ts - sess->func_lat[0] < duration_ns)
+	emit_session = sess->stack.is_err || emit_success_stacks;
+	if (duration_ns && sess->stack.emit_ts - sess->stack.func_lat[0] < duration_ns)
 		emit_session = false;
 
 	if (emit_session) {
 		dlog("EMIT %s STACK DEPTH %d (SAVED ..%d)\n",
-		     sess->is_err ? "ERROR" : "SUCCESS",
-		     sess->max_depth, sess->saved_max_depth);
+		     sess->stack.is_err ? "ERROR" : "SUCCESS",
+		     sess->stack.max_depth, sess->stack.saved_max_depth);
 	}
 
 	if (emit_session && !sess->start_emitted) {
 		if (!emit_session_start(sess)) {
 			vlog("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION data!\n",
-			     sess->pid, sess->tgid);
+			     sess->stack.pid, sess->stack.tgid);
 			sess->defunct = true;
 			return -EINVAL;
 		}
@@ -430,20 +447,21 @@ static int submit_session(void *ctx, struct call_stack *sess)
 		}
 
 		r->type = REC_LBR_STACK;
-		r->pid = sess->pid;
+		r->pid = sess->stack.pid;
 		r->lbrs_sz = sess->lbrs_sz;
-		__memcpy(r->lbrs, sess->lbrs, sizeof(r->lbrs));
+		__memcpy(r->lbrs, sess->lbrs, sizeof(sess->lbrs));
 
 		bpf_ringbuf_submit(r, 0);
 skip_lbrs:;
 	}
 
 	if (emit_session) {
-		if (!sess->is_err)
-			sess->kstack_sz = bpf_get_stack(ctx, &sess->kstack, sizeof(sess->kstack), 0);
+		if (!sess->stack.is_err)
+			sess->stack.kstack_sz = bpf_get_stack(ctx, &sess->stack.kstack, sizeof(sess->stack.kstack), 0);
+		sess->stack.last_seq_id = sess->next_seq_id - 1;
 
 		/* might fail */
-		bpf_ringbuf_output(&rb, sess, sizeof(*sess), 0);
+		bpf_ringbuf_output(&rb, &sess->stack, sizeof(sess->stack), 0);
 	}
 
 	if (emit_session || sess->start_emitted) {
@@ -454,10 +472,10 @@ skip_lbrs:;
 			return -EINVAL;
 
 		r->type = REC_SESSION_END;
-		r->pid = sess->pid;
+		r->pid = sess->stack.pid;
 		r->emit_ts = bpf_ktime_get_ns();
 		r->ignored = !emit_session;
-		r->is_err = sess->is_err;
+		r->is_err = sess->stack.is_err;
 		r->last_seq_id = sess->next_seq_id - 1;
 		r->lbrs_sz = sess->lbrs_sz;
 
@@ -471,32 +489,32 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 {
 	const struct func_info *fi;
 	const char *func_name;
-	struct call_stack *stack;
+	struct session *sess;
 	u32 pid, exp_id, flags, fmt_sz;
 	const char *fmt;
 	bool failed;
 	u64 d, lat;
 
 	pid = (u32)bpf_get_current_pid_tgid();
-	stack = bpf_map_lookup_elem(&stacks, &pid);
-	if (!stack)
+	sess = bpf_map_lookup_elem(&sessions, &pid);
+	if (!sess)
 		return false;
 
 	/* if we failed to send out REC_SESSION_START, clean up and send nothing else */
-	if (stack->defunct) {
-		stack->depth--;
-		if (stack->depth == 0) {
-			reset_session(stack);
-			bpf_map_delete_elem(&stacks, &pid);
+	if (sess->defunct) {
+		sess->stack.depth--;
+		if (sess->stack.depth == 0) {
+			reset_session(sess);
+			bpf_map_delete_elem(&sessions, &pid);
 			vlog("DEFUNCT SESSION TID/PID %d/%d: SESSION_END, no data was collected!\n",
-			     pid, stack->tgid);
+			     pid, sess->stack.tgid);
 		}
 		return false;
 	}
 
-	stack->next_seq_id++;
+	sess->next_seq_id++;
 
-	d = stack->depth;
+	d = sess->stack.depth;
 	if (d == 0)
 		return false;
 
@@ -513,9 +531,9 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	 * for pointer-returning functions) to be interpreted as opaque
 	 * integers
 	 */
-	stack->scratch = res;
+	sess->scratch = res;
 	barrier_var(res);
-	res = stack->scratch;
+	res = sess->scratch;
 
 	if (flags & FUNC_CANT_FAIL)
 		failed = false;
@@ -527,7 +545,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	else
 		failed = IS_ERR_VALUE(res);
 
-	lat = bpf_ktime_get_ns() - stack->func_lat[d];
+	lat = bpf_ktime_get_ns() - sess->stack.func_lat[d];
 
 	if (emit_func_trace) {
 		struct func_trace_entry *fe;
@@ -539,7 +557,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 		fe->type = REC_FUNC_TRACE_EXIT;
 		fe->ts = bpf_ktime_get_ns();
 		fe->pid = pid;
-		fe->seq_id = stack->next_seq_id - 1;
+		fe->seq_id = sess->next_seq_id - 1;
 		fe->depth = d + 1;
 		fe->func_id = id;
 		fe->func_lat = lat;
@@ -551,44 +569,44 @@ skip_ft_exit:;
 	if (verbose)
 		print_exit(ctx, d, id, res);
 
-	exp_id = stack->func_ids[d];
+	exp_id = sess->stack.func_ids[d];
 	if (exp_id != id) {
 		const struct func_info *exp_fi = func_info(exp_id);
 
 		vlog("POP(0) UNEXPECTED PID %d DEPTH %d MAX DEPTH %d",
-		     pid, stack->depth, stack->max_depth);
+		     pid, sess->stack.depth, sess->stack.max_depth);
 		vlog("POP(1) UNEXPECTED GOT  ID %d ADDR %lx NAME %s",
 		     id, ip, func_name);
 		vlog("POP(2) UNEXPECTED WANT ID %u ADDR %lx NAME %s",
 		     exp_id, exp_fi->ip, exp_fi->name);
 
-		reset_session(stack);
-		bpf_map_delete_elem(&stacks, &pid);
+		reset_session(sess);
+		bpf_map_delete_elem(&sessions, &pid);
 
 		return false;
 	}
 
-	stack->func_res[d] = res;
-	stack->func_lat[d] = lat;
+	sess->stack.func_res[d] = res;
+	sess->stack.func_lat[d] = lat;
 
-	if (failed && !stack->is_err) {
-		stack->is_err = true;
-		stack->max_depth = d + 1;
-		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
-		stack->lbrs_sz = copy_lbrs(&stack->lbrs, sizeof(stack->lbrs));
-	} else if (emit_success_stacks && d + 1 == stack->max_depth) {
-		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
-		stack->lbrs_sz = copy_lbrs(&stack->lbrs, sizeof(stack->lbrs));
+	if (failed && !sess->stack.is_err) {
+		sess->stack.is_err = true;
+		sess->stack.max_depth = d + 1;
+		sess->stack.kstack_sz = bpf_get_stack(ctx, &sess->stack.kstack, sizeof(sess->stack.kstack), 0);
+		sess->lbrs_sz = copy_lbrs(&sess->lbrs, sizeof(sess->lbrs));
+	} else if (emit_success_stacks && d + 1 == sess->stack.max_depth) {
+		sess->stack.kstack_sz = bpf_get_stack(ctx, &sess->stack.kstack, sizeof(sess->stack.kstack), 0);
+		sess->lbrs_sz = copy_lbrs(&sess->lbrs, sizeof(sess->lbrs));
 	}
-	stack->depth = d;
+	sess->stack.depth = d;
 
 	/* emit last complete stack trace */
 	if (d == 0) {
 		/* can fail or do nothing for current session */
-		submit_session(ctx, stack);
+		submit_session(ctx, sess);
 
-		reset_session(stack);
-		bpf_map_delete_elem(&stacks, &pid);
+		reset_session(sess);
+		bpf_map_delete_elem(&sessions, &pid);
 	}
 
 	return true;
