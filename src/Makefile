@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BSD-2-Clause
-OUTPUT := .output
+OUTPUT ?= .output
+OUTPUT_ABS := $(abspath $(OUTPUT))
 CLANG ?= clang
 LD ?= ld
 LLVM_STRIP ?= llvm-strip
@@ -7,18 +8,19 @@ CARGO ?= cargo
 DEBUG ?=
 
 BPFTOOL_SRC := $(abspath ../bpftool/src)
-BPFTOOL_OUTPUT ?= $(abspath $(OUTPUT)/bpftool)
+BPFTOOL_OUTPUT ?= $(OUTPUT)/bpftool
+BPFTOOL_OUTPUT_ABS ?= $(abspath $(OUTPUT)/bpftool)
 BPFTOOL ?= $(BPFTOOL_OUTPUT)/bootstrap/bpftool
 
 LIBBPF_SRC := $(abspath ../libbpf/src)
-LIBBPF_OBJ ?= $(abspath $(OUTPUT)/libbpf.a)
+LIBBPF_OBJ ?= $(OUTPUT)/libbpf.a
 DEFAULT_SIDECAR := ../sidecar/target/$(if $(DEBUG),debug,release)/addr2line
 SIDECAR ?= $(DEFAULT_SIDECAR)
 SIDECAR_EMBED_NAME ?= $(subst .,_,$(subst /,_,$(SIDECAR)))
 # Use our own libbpf API headers and Linux UAPI headers distributed with
 # libbpf to avoid dependency on system-wide headers, which could be missing or
-# outdated
-INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi
+# outdated (they will be installed into $(OUTPUT))
+INCLUDES := -I$(OUTPUT) -I$(OUTPUT)/include
 CFLAGS ?= -g -Wall -O$(if $(DEBUG),0,2)
 
 ARCH ?= $(shell uname -m						\
@@ -84,15 +86,18 @@ $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT) $(OUTPUT)/tests:
 	$(call msg,MKDIR,$@)
 	$(Q)mkdir -p $@
 
+.PHONY: libbpf-headers
+libbpf-headers: | $(OUTPUT)/include
+
 # Build libbpf
 $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
 	$(call msg,LIB,$@)
 	$(Q) [ -d ../libbpf/src ] || git submodule update --init
 	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1		      \
-		    OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@)		      \
-		    INCLUDEDIR= LIBDIR= UAPIDIR=			      \
+		    PREFIX=$(OUTPUT_ABS) DESTDIR=			      \
+		    OBJDIR=$(OUTPUT_ABS)/libbpf LIBDIR=$(OUTPUT_ABS)/ 	      \
 		    EXTRA_CFLAGS="-g -O$(if $(DEBUG),0,2)"                    \
-		    install
+		    install install_uapi_headers
 
 # Build bpftool
 $(BPFTOOL): $(LIBBPF_OBJ) | $(BPFTOOL_OUTPUT)
@@ -100,9 +105,10 @@ $(BPFTOOL): $(LIBBPF_OBJ) | $(BPFTOOL_OUTPUT)
 	$(Q) [ -d ../bpftool/src ] || git submodule update --init
 	$(Q)CFLAGS= EXTRA_CFLAGS="$(CFLAGS) -Wno-sign-compare"		      \
 		$(MAKE) ARCH= CROSS_COMPILE=				      \
-			BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT)/	      \
+			BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT_ABS)/      \
 			-C $(BPFTOOL_SRC) bootstrap
 
+.PHONY: bpftool
 bpftool: $(BPFTOOL)
 	$(Q)ln -s $(BPFTOOL) bpftool
 
@@ -121,7 +127,7 @@ $(OUTPUT)/%.skel.h: $(OUTPUT)/%.bpf.o | $(OUTPUT) $(BPFTOOL)
 	$(Q)$(BPFTOOL) gen skeleton $(@:.skel.h=.bpfo) name $(notdir $*_bpf) > $@
 
 # Build application object files
-$(OUTPUT)/%.o: %.c $(wildcard *.h) | $(OUTPUT) $(OUTPUT)/tests
+$(OUTPUT)/%.o: %.c $(wildcard *.h) $(LIBBPF_OBJ) | $(OUTPUT) $(OUTPUT)/tests
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
@@ -171,7 +177,7 @@ $(OUTPUT)/tests/simfail.o: $(OUTPUT)/tests/kprobe_bad_kfunc.skel.h	\
 
 simfail: $(addprefix $(OUTPUT)/tests/,					\
 		     simfail.o)						\
-	  $(LIBBPF_OBJ)
+	 $(LIBBPF_OBJ)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) $^ -lelf -lz -o $@
 
