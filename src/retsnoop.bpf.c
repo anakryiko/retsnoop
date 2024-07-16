@@ -47,7 +47,6 @@ const volatile bool use_ringbuf = true;
 const volatile bool use_lbr = true;
 const volatile int targ_tgid = -1;
 const volatile bool emit_success_stacks = false;
-const volatile bool emit_intermediate_stacks = false;
 const volatile bool emit_func_trace = false;
 
 struct {
@@ -128,16 +127,8 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 		return;
 	}
 
-	if (emit_intermediate_stacks) {
-		/* we are partially overriding previous stack, so emit error stack, if present */
-		dlog("EMIT PARTIAL STACK DEPTH %d..%d\n", stack->depth + 1, stack->max_depth);
-
-		stack->emit_ts = bpf_ktime_get_ns();
-		output_stack(ctx, &rb, stack);
-	} else {
-		dlog("RESETTING SAVED ERR STACK %d..%d to %d..\n",
-		     stack->saved_depth, stack->saved_max_depth, stack->depth + 1);
-	}
+	dlog("RESETTING SAVED ERR STACK %d..%d to %d..\n",
+	     stack->saved_depth, stack->saved_max_depth, stack->depth + 1);
 
 	bpf_probe_read_kernel(stack->saved_ids + d, len * sizeof(stack->saved_ids[0]), stack->func_ids + d);
 	bpf_probe_read_kernel(stack->saved_res + d, len * sizeof(stack->saved_res[0]), stack->func_res + d);

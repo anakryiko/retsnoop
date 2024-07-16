@@ -97,8 +97,6 @@ static const struct argp_option opts[] = {
 	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
 	  "Set symbolization settings (-s for line info, -ss for also inline functions, -sn to disable extra symbolization). "
 	  "If extra symbolization is requested, retsnoop relies on having vmlinux with DWARF available." },
-	{ "intermediate-stacks", 'A', NULL, 0,
-	  "Emit all partial (intermediate) stack traces" },
 	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
 	  "Emit non-filtered full stack traces" },
 	{ "stacks-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
@@ -449,9 +447,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return -EINVAL;
 		}
 		env.attach_mode = ATTACH_FENTRY;
-		break;
-	case 'A':
-		env.emit_intermediate_stacks = true;
 		break;
 	case 'L':
 		errno = 0;

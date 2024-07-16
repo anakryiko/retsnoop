@@ -364,7 +364,6 @@ int main(int argc, char **argv, char **envp)
 	skel->rodata->extra_verbose = env.debug_extra;
 	skel->rodata->targ_tgid = env.pid;
 	skel->rodata->emit_success_stacks = env.emit_success_stacks;
-	skel->rodata->emit_intermediate_stacks = env.emit_intermediate_stacks;
 	skel->rodata->duration_ns = env.longer_than_ms * 1000000ULL;
 
 	memset(skel->rodata->spaces, ' ', sizeof(skel->rodata->spaces) - 1);

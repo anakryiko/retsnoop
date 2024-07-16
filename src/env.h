@@ -47,7 +47,6 @@ struct env {
 	bool dry_run;
 	bool emit_success_stacks;
 	bool emit_full_stacks;
-	bool emit_intermediate_stacks;
 	bool emit_func_trace;
 	enum attach_mode attach_mode;
 	enum symb_mode symb_mode;
