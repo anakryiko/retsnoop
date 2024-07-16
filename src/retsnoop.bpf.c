@@ -8,6 +8,10 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
+#ifndef EINVAL
+#define EINVAL 22
+#endif
+
 #define printk_is_sane (bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_snprintf))
 
 #define printk_needs_endline (!bpf_core_type_exists(struct trace_event_raw_bpf_trace_printk))
@@ -415,6 +419,54 @@ static void reset_session(struct call_stack *stack)
 	stack->lbrs_sz = 0;
 }
 
+static int submit_session(void *ctx, struct call_stack *sess)
+{
+	bool emit_session;
+
+	emit_session = sess->is_err || emit_success_stacks;
+
+	if (extra_verbose && emit_session) {
+		bpf_printk("EMIT %s STACK DEPTH %d (SAVED ..%d)\n",
+			   sess->is_err ? "ERROR" : "SUCCESS",
+			   sess->max_depth, sess->saved_max_depth);
+	}
+
+	if (emit_session && !sess->start_emitted) {
+		if (!emit_session_start(sess)) {
+			if (verbose) {
+				bpf_printk("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION data!\n",
+					   sess->pid, sess->tgid);
+			}
+			sess->defunct = true;
+			return -EINVAL;
+		}
+		sess->start_emitted = true;
+	}
+
+	if (emit_session)
+		(void)output_stack(ctx, &rb, sess);
+
+	if (emit_session || sess->start_emitted) {
+		struct session_end *r;
+
+		r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
+		if (!r)
+			return -EINVAL;
+
+		r->type = REC_SESSION_END;
+		r->pid = sess->pid;
+		r->emit_ts = bpf_ktime_get_ns();
+		r->ignored = !emit_session;
+		r->is_err = sess->is_err;
+		r->last_seq_id = sess->next_seq_id - 1;
+		r->lbrs_sz = sess->lbrs_sz;
+
+		bpf_ringbuf_submit(r, 0);
+	}
+
+	return 0;
+}
+
 static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 {
 	const struct func_info *fi;
@@ -538,57 +590,9 @@ skip_ft_exit:;
 
 	/* emit last complete stack trace */
 	if (d == 0) {
-		bool emit_stack = false;
+		/* can fail or do nothing for current session */
+		submit_session(ctx, stack);
 
-		if (stack->is_err) {
-			if (extra_verbose) {
-				bpf_printk("EMIT ERROR STACK DEPTH %d (SAVED ..%d)\n",
-					   stack->max_depth, stack->saved_max_depth);
-			}
-			emit_stack = true;
-		} else if (emit_success_stacks) {
-			if (extra_verbose) {
-				bpf_printk("EMIT SUCCESS STACK DEPTH %d (SAVED ..%d)\n",
-					   stack->max_depth, stack->saved_max_depth);
-			}
-			emit_stack = true;
-		}
-
-		if (emit_stack && !stack->start_emitted) {
-			if (!emit_session_start(stack)) {
-				if (verbose) {
-					bpf_printk("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION data!\n",
-						   stack->pid, stack->tgid);
-				}
-				stack->defunct = true;
-				goto out_defunct;
-			}
-			stack->start_emitted = true;
-		}
-
-		if (emit_stack)
-			output_stack(ctx, &rb, stack);
-
-		if (emit_stack || stack->start_emitted) {
-			struct session_end *r;
-
-			r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
-			if (!r)
-				goto skip_session_end;
-
-			r->type = REC_SESSION_END;
-			r->pid = pid;
-			r->emit_ts = bpf_ktime_get_ns();
-			r->ignored = !emit_stack;
-			r->is_err = stack->is_err;
-			r->last_seq_id = stack->next_seq_id - 1;
-			r->lbrs_sz = stack->lbrs_sz;
-
-			bpf_ringbuf_submit(r, 0);
-skip_session_end:;
-		}
-
-out_defunct:
 		reset_session(stack);
 		bpf_map_delete_elem(&stacks, &pid);
 	}
