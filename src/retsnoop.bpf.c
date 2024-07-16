@@ -419,30 +419,22 @@ static int submit_session(void *ctx, struct call_stack *sess)
 	if (emit_session && use_lbr) {
 		struct lbr_stack *r;
 
-		if (sess->lbrs_sz < 0)
+		if (sess->lbrs_sz <= 0)
 			goto skip_lbrs;
 
 		r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
-		if (r) {
-			r->type = REC_LBR_STACK;
-			r->pid = sess->pid;
-
-			if (sess->lbrs_sz) {
-				/* we already copied LBR into session, copy over */
-				r->lbrs_sz = sess->lbrs_sz;
-				if (r->lbrs_sz > 0)
-					__memcpy(r->lbrs, sess->lbrs, sizeof(r->lbrs));
-			} else {
-				/* session doesn't have LBR copied yet */
-				r->lbrs_sz = copy_lbrs(r->lbrs, sizeof(r->lbrs));
-				/* record LBR capture outcome in the session */
-				sess->lbrs_sz = r->lbrs_sz;
-			}
-
-			bpf_ringbuf_submit(r, 0);
-		} else  {
+		if (!r) {
+			/* record that we failed to submit LBR data */
 			sess->lbrs_sz = -ENOSPC;
+			goto skip_lbrs;
 		}
+
+		r->type = REC_LBR_STACK;
+		r->pid = sess->pid;
+		r->lbrs_sz = sess->lbrs_sz;
+		__memcpy(r->lbrs, sess->lbrs, sizeof(r->lbrs));
+
+		bpf_ringbuf_submit(r, 0);
 skip_lbrs:;
 	}
 
@@ -582,6 +574,9 @@ skip_ft_exit:;
 	if (failed && !stack->is_err) {
 		stack->is_err = true;
 		stack->max_depth = d + 1;
+		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
+		stack->lbrs_sz = copy_lbrs(&stack->lbrs, sizeof(stack->lbrs));
+	} else if (emit_success_stacks && d + 1 == stack->max_depth) {
 		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
 		stack->lbrs_sz = copy_lbrs(&stack->lbrs, sizeof(stack->lbrs));
 	}
