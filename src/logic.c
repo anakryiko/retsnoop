@@ -670,29 +670,28 @@ static void add_missing_records_msg(struct stack_items_cache *cache, int miss_cn
 }
 
 static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
-			     const struct call_stack *cs)
+			     int pid, int last_seq_id)
 {
-	const void *k = (const void *)(uintptr_t)cs->pid;
 	const struct mass_attacher_func_info *finfo;
 	const char *sp, *mark;
 	struct stack_item *s;
 	struct session *sess;
 	struct func_trace_item *f, *fn;
-	int i, d, last_seq_id = -1;
+	int i, d, prev_seq_id = -1;
 
-	if (!hashmap__find(&sessions_hash, k, &sess))
+	if (!hashmap__find(&sessions_hash, (long)pid, &sess))
 		return;
 
 	cache->cnt = 0;
 
-	for (i = 0; i < sess->ft_cnt; last_seq_id = f->seq_id, i++) {
+	for (i = 0; i < sess->ft_cnt; prev_seq_id = f->seq_id, i++) {
 		f = &sess->ft_entries[i];
 		finfo = mass_attacher__func(ctx->att, f->func_id);
 		d = f->depth > 0 ? f->depth : -f->depth;
 		sp = spaces + sizeof(spaces) - 1 - 4 * min(d - 1, 30);
 
-		if (f->seq_id > last_seq_id + 1)
-			add_missing_records_msg(cache, f->seq_id - last_seq_id - 1);
+		if (f->seq_id > prev_seq_id + 1)
+			add_missing_records_msg(cache, f->seq_id - prev_seq_id - 1);
 
 		s = get_stack_item(cache);
 		if (!s) {
@@ -728,8 +727,8 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 		}
 	}
 
-	if (cs->next_seq_id != last_seq_id + 1)
-		add_missing_records_msg(cache, cs->next_seq_id - last_seq_id - 1);
+	if (last_seq_id != prev_seq_id)
+		add_missing_records_msg(cache, last_seq_id - prev_seq_id);
 }
 
 static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cache)
@@ -1092,7 +1091,7 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 	 * call stack trace (depth == 0)
 	 */
 	if (env.emit_func_trace && s->depth == 0) {
-		prepare_ft_items(dctx, &stack_items1, s);
+		prepare_ft_items(dctx, &stack_items1, s->pid, s->last_seq_id);
 		print_ft_items(dctx, &stack_items1);
 	}
 
