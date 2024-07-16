@@ -39,11 +39,10 @@ struct func_info {
 
 enum rec_type {
 	REC_SESSION_START,
-	REC_SESSION_END,
-	REC_LBR_STACK,
-	REC_CALL_STACK,
 	REC_FUNC_TRACE_ENTRY,
 	REC_FUNC_TRACE_EXIT,
+	REC_LBR_STACK,
+	REC_SESSION_END,
 };
 
 struct session_start {
@@ -53,54 +52,6 @@ struct session_start {
 	int tgid;
 	long start_ts;
 	char task_comm[16], proc_comm[16];
-};
-
-struct session_end {
-	/* REC_SESSION_END */
-	enum rec_type type;
-	int pid;
-	long emit_ts;
-	bool ignored;
-	bool is_err;
-	int last_seq_id;
-	int lbrs_sz;
-	int dropped_records;
-};
-
-struct lbr_stack {
-	/* REC_LBR_STACK */
-	enum rec_type type;
-	int pid;
-
-	int lbrs_sz;
-	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
-};
-
-struct call_stack {
-	/* REC_CALL_STACK */
-	enum rec_type type;
-	int pid;
-
-	unsigned short func_ids[MAX_FSTACK_DEPTH];
-	long func_res[MAX_FSTACK_DEPTH];
-	long func_lat[MAX_FSTACK_DEPTH];
-	unsigned depth;
-	unsigned max_depth;
-	int tgid;
-	long start_ts, emit_ts;
-	char task_comm[16], proc_comm[16];
-	bool is_err;
-
-	unsigned short saved_ids[MAX_FSTACK_DEPTH];
-	long saved_res[MAX_FSTACK_DEPTH];
-	long saved_lat[MAX_FSTACK_DEPTH];
-	unsigned saved_depth;
-	unsigned saved_max_depth;
-
-	long kstack[MAX_KSTACK_DEPTH];
-	long kstack_sz;
-
-	int last_seq_id;
 };
 
 struct func_trace_entry {
@@ -116,6 +67,53 @@ struct func_trace_entry {
 
 	long func_lat;
 	long func_res;
+};
+
+struct lbr_stack {
+	/* REC_LBR_STACK */
+	enum rec_type type;
+	int pid;
+
+	int lbrs_sz;
+	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
+};
+
+/*
+ * This is currently embedded inside SESSION_END record for efficiency.
+ * Eventually, when stack trace is orthogonal and independent from other
+ * pieces of information (LBR and function trace), this might be moved outside
+ * of SESSION_END, but for now for efficiency we keep them coupled.
+ */
+struct call_stack {
+	unsigned short func_ids[MAX_FSTACK_DEPTH];
+	long func_res[MAX_FSTACK_DEPTH];
+	long func_lat[MAX_FSTACK_DEPTH];
+	unsigned depth;
+	unsigned max_depth;
+	bool is_err;
+
+	unsigned short saved_ids[MAX_FSTACK_DEPTH];
+	long saved_res[MAX_FSTACK_DEPTH];
+	long saved_lat[MAX_FSTACK_DEPTH];
+	unsigned saved_depth;
+	unsigned saved_max_depth;
+
+	long kstack[MAX_KSTACK_DEPTH];
+	long kstack_sz;
+};
+
+struct session_end {
+	/* REC_SESSION_END */
+	enum rec_type type;
+	int pid;
+	long emit_ts;
+	bool ignored;
+	bool is_err;
+	int last_seq_id;
+	int lbrs_sz;
+	int dropped_records;
+
+	struct call_stack stack;
 };
 
 #endif /* __RETSNOOP_H */

@@ -47,6 +47,10 @@ static inline void atomic_add(long *value, long n)
 }
 
 struct session {
+	int pid, tgid;
+	long start_ts;
+	char task_comm[16], proc_comm[16];
+
 	long scratch; /* for obfuscating pointers to be read as integers */
 
 	bool defunct;
@@ -173,11 +177,11 @@ static bool emit_session_start(struct session *sess)
 	}
 
 	r->type = REC_SESSION_START;
-	r->pid = sess->stack.pid;
-	r->tgid = sess->stack.tgid;
-	r->start_ts = sess->stack.start_ts;
-	__builtin_memcpy(r->task_comm, sess->stack.task_comm, sizeof(sess->stack.task_comm));
-	__builtin_memcpy(r->proc_comm, sess->stack.proc_comm, sizeof(sess->stack.proc_comm));
+	r->pid = sess->pid;
+	r->tgid = sess->tgid;
+	r->start_ts = sess->start_ts;
+	__builtin_memcpy(r->task_comm, sess->task_comm, sizeof(sess->task_comm));
+	__builtin_memcpy(r->proc_comm, sess->proc_comm, sizeof(sess->proc_comm));
 
 	bpf_ringbuf_submit(r, 0);
 
@@ -205,18 +209,17 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 			return false;
 		}
 
-		sess->stack.type = REC_CALL_STACK;
-		sess->stack.start_ts = bpf_ktime_get_ns();
-		sess->stack.pid = pid;
-		sess->stack.tgid = (u32)(pid_tgid >> 32);
-		bpf_get_current_comm(&sess->stack.task_comm, sizeof(sess->stack.task_comm));
+		sess->pid = pid;
+		sess->tgid = (u32)(pid_tgid >> 32);
+		sess->start_ts = bpf_ktime_get_ns();
+		bpf_get_current_comm(&sess->task_comm, sizeof(sess->task_comm));
 		tsk = (void *)bpf_get_current_task();
-		BPF_CORE_READ_INTO(&sess->stack.proc_comm, tsk, group_leader, comm);
+		BPF_CORE_READ_INTO(&sess->proc_comm, tsk, group_leader, comm);
 
 		if (emit_func_trace) {
 			if (!emit_session_start(sess)) {
 				vlog("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION_START record!\n",
-				     sess->stack.pid, sess->stack.tgid);
+				     sess->pid, sess->tgid);
 				sess->defunct = true;
 				goto out_defunct;
 			} else {
@@ -276,12 +279,12 @@ skip_ft_entry:;
 		if (printk_is_sane) {
 			if (d == 0)
 				log("=== STARTING TRACING %s [COMM %s PID %d] ===",
-				    func_name, sess->stack.task_comm, pid);
+				    func_name, sess->task_comm, pid);
 			log("    ENTER %s%s [...]", spaces + 2 * ((255 - d) & 0xFF), func_name);
 		} else {
 			if (d == 0) {
 				log("=== STARTING TRACING %s [PID %d] ===", func_name, pid);
-				log("=== ...      TRACING [PID %d COMM %s] ===", pid, sess->stack.task_comm);
+				log("=== ...      TRACING [PID %d COMM %s] ===", pid, sess->task_comm);
 			}
 			log("    ENTER [%d] %s [...]", d + 1, func_name);
 		}
@@ -437,11 +440,10 @@ static void reset_session(struct session *sess)
 static int submit_session(void *ctx, struct session *sess)
 {
 	bool emit_session;
-
-	sess->stack.emit_ts = bpf_ktime_get_ns();
+	u64 emit_ts = bpf_ktime_get_ns();
 
 	emit_session = sess->stack.is_err || emit_success_stacks;
-	if (duration_ns && sess->stack.emit_ts - sess->stack.func_lat[0] < duration_ns)
+	if (duration_ns && emit_ts - sess->stack.func_lat[0] < duration_ns)
 		emit_session = false;
 
 	if (emit_session) {
@@ -453,7 +455,7 @@ static int submit_session(void *ctx, struct session *sess)
 	if (emit_session && !sess->start_emitted) {
 		if (!emit_session_start(sess)) {
 			vlog("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION data!\n",
-			     sess->stack.pid, sess->stack.tgid);
+			     sess->pid, sess->tgid);
 			sess->defunct = true;
 			return -EINVAL;
 		}
@@ -475,21 +477,12 @@ static int submit_session(void *ctx, struct session *sess)
 		}
 
 		r->type = REC_LBR_STACK;
-		r->pid = sess->stack.pid;
+		r->pid = sess->pid;
 		r->lbrs_sz = sess->lbrs_sz;
 		__memcpy(r->lbrs, sess->lbrs, sizeof(sess->lbrs));
 
 		bpf_ringbuf_submit(r, 0);
 skip_lbrs:;
-	}
-
-	if (emit_session) {
-		if (!sess->stack.is_err)
-			sess->stack.kstack_sz = bpf_get_stack(ctx, &sess->stack.kstack, sizeof(sess->stack.kstack), 0);
-		sess->stack.last_seq_id = sess->next_seq_id - 1;
-
-		/* might fail */
-		bpf_ringbuf_output(&rb, &sess->stack, sizeof(sess->stack), 0);
 	}
 
 	if (emit_session || sess->start_emitted) {
@@ -502,13 +495,17 @@ skip_lbrs:;
 		}
 
 		r->type = REC_SESSION_END;
-		r->pid = sess->stack.pid;
-		r->emit_ts = bpf_ktime_get_ns();
+		r->pid = sess->pid;
+		r->emit_ts = emit_ts;
 		r->ignored = !emit_session;
 		r->is_err = sess->stack.is_err;
 		r->last_seq_id = sess->next_seq_id - 1;
 		r->lbrs_sz = sess->lbrs_sz;
 		r->dropped_records = sess->dropped_records;
+
+		/* copy over STACK_TRACE "record", if required */
+		if (emit_session)
+			__memcpy(&r->stack, &sess->stack, sizeof(sess->stack));
 
 		bpf_ringbuf_submit(r, 0);
 	}
@@ -538,7 +535,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 			reset_session(sess);
 			bpf_map_delete_elem(&sessions, &pid);
 			vlog("DEFUNCT SESSION TID/PID %d/%d: SESSION_END, no data was collected!\n",
-			     pid, sess->stack.tgid);
+			     pid, sess->tgid);
 		}
 		return false;
 	}
