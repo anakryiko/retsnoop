@@ -3,19 +3,93 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <bpf/btf.h>
 #include <linux/perf_event.h>
 #include <time.h>
 #include "retsnoop.h"
 #include "logic.h"
-#include "retsnoop.skel.h"
 #include "env.h"
 #include "ksyms.h"
 #include "addr2line.h"
 #include "mass_attacher.h"
 #include "utils.h"
 #include "hashmap.h"
+
+struct session {
+	int pid;
+	int tgid;
+	uint64_t start_ts;
+	char proc_comm[16];
+	char task_comm[16];
+
+	int ft_cnt;
+	struct func_trace_item *ft_entries;
+};
+
+static size_t session_hasher(long key, void *ctx)
+{
+	return (size_t)key;
+}
+
+static bool session_equals(long key1, long key2, void *ctx)
+{
+	return key1 == key2;
+}
+
+static struct hashmap sessions_hash = HASHMAP_INIT(session_hasher, session_equals, NULL);
+
+static void free_session(struct session *sess)
+{
+	if (!sess)
+		return;
+
+	free(sess->ft_entries);
+	free(sess);
+}
+
+static void free_sessions(void)
+{
+	struct hashmap_entry *e;
+	int bkt;
+
+	hashmap__for_each_entry(&sessions_hash, e, bkt) {
+		free_session(e->pvalue);
+	}
+
+	hashmap__clear(&sessions_hash);
+}
+
+static void purge_session(struct ctx *ctx, int pid)
+{
+	struct session *sess;
+
+	if (hashmap__delete(&sessions_hash, (long)pid, NULL, &sess))
+		free_session(sess);
+}
+
+static int handle_session_start(struct ctx *ctx, const struct session_start *r)
+{
+	struct session *sess;
+
+	purge_session(ctx, r->pid);
+
+	sess = calloc(1, sizeof(*sess));
+	if (!sess || hashmap__add(&sessions_hash, (long)r->pid, sess)) {
+		fprintf(stderr, "Failed to allocate memory for session PID %d!\n", r->pid);
+		return -ENOMEM;
+	}
+
+	sess->pid = r->pid;
+	sess->tgid = r->tgid;
+	sess->start_ts = r->start_ts;
+	memcpy(sess->proc_comm, r->proc_comm, sizeof(r->proc_comm));
+	memcpy(sess->task_comm, r->task_comm, sizeof(r->task_comm));
+
+	return 0;
+}
+
 
 #define snappendf(dst, fmt, args...)							\
 	dst##_len += snprintf(dst + dst##_len,						\
@@ -30,11 +104,6 @@ static void init(void)
 {
 	 memset(underline, '-', sizeof(underline) - 1);
 	 memset(spaces, ' ', sizeof(spaces) - 1);
-}
-
-const struct func_info *func_info(const struct ctx *ctx, __u32 id)
-{
-	return &ctx->skel->data_func_infos->func_infos[id];
 }
 
 /* logical stack trace item */
@@ -529,99 +598,24 @@ struct func_trace_item {
 	long func_res;
 };
 
-struct func_trace {
-	int pid;
-	int cnt;
-	struct func_trace_item *entries;
-};
-
-static struct hashmap *func_traces_hash;
-
-static size_t func_traces_hasher(long key, void *ctx)
-{
-	return (size_t)key;
-}
-
-static bool func_traces_equal(long key1, long key2, void *ctx)
-{
-	return key1 == key2;
-}
-
-int init_func_traces(void)
-{
-	func_traces_hash = hashmap__new(func_traces_hasher, func_traces_equal, NULL);
-	if (func_traces_hash)
-		return -ENOMEM;
-
-	return 0;
-}
-
-static void free_func_trace(struct func_trace *ft)
-{
-	if (!ft)
-		return;
-
-	free(ft->entries);
-	free(ft);
-}
-
-static void free_func_traces(void)
-{
-	struct hashmap_entry *e;
-	int bkt;
-
-	if (!func_traces_hash)
-		return;
-
-	hashmap__for_each_entry(func_traces_hash, e, bkt) {
-		free_func_trace(e->pvalue);
-	}
-
-	hashmap__free(func_traces_hash);
-}
-
-static void purge_func_trace(struct ctx *ctx, int pid)
-{
-	const void *k = (const void *)(uintptr_t)pid;
-	struct func_trace *ft;
-
-	if (!env.emit_func_trace)
-		return;
-
-	if (hashmap__delete(func_traces_hash, k, NULL, &ft))
-		free_func_trace(ft);
-}
-
-static int handle_func_trace_start(struct ctx *ctx, const struct func_trace_start *r)
-{
-	purge_func_trace(ctx, r->pid);
-
-	return 0;
-}
-
 static int handle_func_trace_entry(struct ctx *ctx, const struct func_trace_entry *r)
 {
 	const void *k = (const void *)(uintptr_t)r->pid;
-	struct func_trace *ft;
+	struct session *sess;
 	struct func_trace_item *fti;
 	void *tmp;
 
-	if (!hashmap__find(func_traces_hash, k, &ft)) {
-		ft = calloc(1, sizeof(*ft));
-		if (!ft || hashmap__add(func_traces_hash, k, ft)) {
-			fprintf(stderr, "Failed to allocate memory for new function trace entry!\n");
-			return -ENOMEM;
-		}
-
-		ft->pid = r->pid;
+	if (!hashmap__find(&sessions_hash, k, &sess)) {
+		fprintf(stderr, "Session data for PID %d not found, bug!\n", r->pid);
+		return -EINVAL;
 	}
 
-	tmp = realloc(ft->entries, (ft->cnt + 1) * sizeof(ft->entries[0]));
+	tmp = realloc(sess->ft_entries, (sess->ft_cnt + 1) * sizeof(sess->ft_entries[0]));
 	if (!tmp)
 		return -ENOMEM;
-	ft->entries = tmp;
+	sess->ft_entries = tmp;
 
-	fti = &ft->entries[ft->cnt];
+	fti = &sess->ft_entries[sess->ft_cnt];
 	fti->ts = r->ts;
 	fti->func_id = r->func_id;
 	fti->depth = r->type == REC_FUNC_TRACE_ENTRY ? r->depth : -r->depth;
@@ -629,7 +623,7 @@ static int handle_func_trace_entry(struct ctx *ctx, const struct func_trace_entr
 	fti->func_lat = r->func_lat;
 	fti->func_res = r->func_res;
 
-	ft->cnt++;
+	sess->ft_cnt++;
 
 	return 0;
 }
@@ -657,17 +651,17 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 	const struct mass_attacher_func_info *finfo;
 	const char *sp, *mark;
 	struct stack_item *s;
-	struct func_trace *ft;
+	struct session *sess;
 	struct func_trace_item *f, *fn;
 	int i, d, last_seq_id = -1;
 
-	if (!hashmap__find(func_traces_hash, k, &ft))
+	if (!hashmap__find(&sessions_hash, k, &sess))
 		return;
 
 	cache->cnt = 0;
 
-	for (i = 0; i < ft->cnt; last_seq_id = f->seq_id, i++) {
-		f = &ft->entries[i];
+	for (i = 0; i < sess->ft_cnt; last_seq_id = f->seq_id, i++) {
+		f = &sess->ft_entries[i];
 		finfo = mass_attacher__func(ctx->att, f->func_id);
 		d = f->depth > 0 ? f->depth : -f->depth;
 		sp = spaces + sizeof(spaces) - 1 - 4 * min(d - 1, 30);
@@ -682,8 +676,8 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 		}
 
 		/* see if we can collapse leaf function entry/exit into one */
-		fn = &ft->entries[i + 1];
-		if (i + 1 < ft->cnt &&
+		fn = &sess->ft_entries[i + 1];
+		if (i + 1 < sess->ft_cnt &&
 		    fn->seq_id == f->seq_id + 1 && /* consecutive items */
 		    fn->func_id == f->func_id && /* same function */
 		    f->depth > 0 && f->depth == -fn->depth /* matching entry and exit */) {
@@ -711,8 +705,6 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 
 	if (cs->next_seq_id != last_seq_id + 1)
 		add_missing_records_msg(cache, cs->next_seq_id - last_seq_id - 1);
-
-	purge_func_trace(ctx, ft->pid);
 }
 
 static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cache)
@@ -968,12 +960,12 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 	char ts1[64], ts2[64];
 
 	if (!s->is_err && !env.emit_success_stacks) {
-		purge_func_trace(dctx, s->pid);
+		purge_session(dctx, s->pid);
 		return 0;
 	}
 
 	if (s->is_err && env.has_error_filter && !should_report_stack(dctx, s)) {
-		purge_func_trace(dctx, s->pid);
+		purge_session(dctx, s->pid);
 		return 0;
 	}
 
@@ -986,13 +978,13 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 	fstack_n = filter_fstack(dctx, fstack, s);
 	if (fstack_n < 0) {
 		fprintf(stderr, "FAILURE DURING FILTERING FUNCTION STACK!!! %d\n", fstack_n);
-		purge_func_trace(dctx, s->pid);
+		purge_session(dctx, s->pid);
 		return -1;
 	}
 	kstack_n = filter_kstack(dctx, kstack, s);
 	if (kstack_n < 0) {
 		fprintf(stderr, "FAILURE DURING FILTERING KERNEL STACK!!! %d\n", kstack_n);
-		purge_func_trace(dctx, s->pid);
+		purge_session(dctx, s->pid);
 		return -1;
 	}
 	if (env.debug) {
@@ -1124,6 +1116,8 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 out:
 	printf("\n\n");
 
+	purge_session(dctx, s->pid);
+
 	return 0;
 }
 
@@ -1134,8 +1128,8 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	switch (type) {
 	case REC_CALL_STACK:
 		return handle_call_stack(ctx, data);
-	case REC_FUNC_TRACE_START:
-		return handle_func_trace_start(ctx, data);
+	case REC_SESSION_START:
+		return handle_session_start(ctx, data);
 	case REC_FUNC_TRACE_ENTRY:
 	case REC_FUNC_TRACE_EXIT:
 		return handle_func_trace_entry(ctx, data);
@@ -1148,7 +1142,7 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 __attribute__((destructor))
 static void cleanup(void)
 {
-	free_func_traces();
+	free_sessions();
 
 	free(stack_items1.items);
 	free(stack_items2.items);

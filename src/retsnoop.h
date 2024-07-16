@@ -33,15 +33,27 @@ struct func_info {
 } __attribute__((aligned(8)));
 
 enum rec_type {
+	REC_SESSION_START,
 	REC_CALL_STACK,
 	REC_FUNC_TRACE_START,
 	REC_FUNC_TRACE_ENTRY,
 	REC_FUNC_TRACE_EXIT,
 };
 
+struct session_start {
+	/* REC_SESSION_START */
+	enum rec_type type;
+	int pid;
+	int tgid;
+	long start_ts;
+	char task_comm[16], proc_comm[16];
+};
+
 struct call_stack {
 	/* REC_CALL_STACK */
 	enum rec_type type;
+
+	bool defunct;
 
 	unsigned short func_ids[MAX_FSTACK_DEPTH];
 	long func_res[MAX_FSTACK_DEPTH];
@@ -68,12 +80,6 @@ struct call_stack {
 	int next_seq_id;
 
 	long scratch; /* for obfuscating pointers to be read as integers */
-};
-
-struct func_trace_start {
-	/* REC_FUNC_TRACE_START */
-	enum rec_type type;
-	int pid;
 };
 
 struct func_trace_entry {
