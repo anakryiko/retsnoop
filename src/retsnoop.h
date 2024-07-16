@@ -35,6 +35,7 @@ struct func_info {
 enum rec_type {
 	REC_SESSION_START,
 	REC_SESSION_END,
+	REC_LBR_STACK,
 	REC_CALL_STACK,
 	REC_FUNC_TRACE_ENTRY,
 	REC_FUNC_TRACE_EXIT,
@@ -58,6 +59,15 @@ struct session_end {
 	bool is_err;
 	int last_seq_id;
 	int lbrs_sz;
+};
+
+struct lbr_stack {
+	/* REC_LBR_STACK */
+	enum rec_type type;
+	int pid;
+
+	int lbrs_sz;
+	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
 };
 
 struct call_stack {

@@ -11,6 +11,9 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 #ifndef EINVAL
 #define EINVAL 22
 #endif
+#ifndef ENOSPC
+#define ENOSPC 28
+#endif
 
 #define printk_is_sane (bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_snprintf))
 
@@ -30,6 +33,8 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 #define log(fmt, ...) bpf_printk(fmt, ##__VA_ARGS__)
 #define vlog(fmt, ...) do { if (verbose) { bpf_printk(fmt, ##__VA_ARGS__); }  } while (0)
 #define dlog(fmt, ...) do { if (extra_verbose) { bpf_printk(fmt, ##__VA_ARGS__); } } while (0)
+
+#define __memcpy(dst, src, sz) bpf_probe_read_kernel(dst, sz, src)
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -83,16 +88,6 @@ const volatile __u32 func_info_mask;
 static __always_inline const struct func_info *func_info(__u32 id)
 {
 	return &func_infos[id & func_info_mask];
-}
-
-static __always_inline int output_stack(void *ctx, void *map, struct call_stack *stack)
-{
-	if (!stack->is_err) {
-		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
-		stack->lbrs_sz = copy_lbrs(&stack->lbrs, sizeof(stack->lbrs));
-	}
-
-	return bpf_ringbuf_output(map, stack, sizeof(*stack), 0);
 }
 
 static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
@@ -421,8 +416,43 @@ static int submit_session(void *ctx, struct call_stack *sess)
 		sess->start_emitted = true;
 	}
 
-	if (emit_session)
-		(void)output_stack(ctx, &rb, sess);
+	if (emit_session && use_lbr) {
+		struct lbr_stack *r;
+
+		if (sess->lbrs_sz < 0)
+			goto skip_lbrs;
+
+		r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
+		if (r) {
+			r->type = REC_LBR_STACK;
+			r->pid = sess->pid;
+
+			if (sess->lbrs_sz) {
+				/* we already copied LBR into session, copy over */
+				r->lbrs_sz = sess->lbrs_sz;
+				if (r->lbrs_sz > 0)
+					__memcpy(r->lbrs, sess->lbrs, sizeof(r->lbrs));
+			} else {
+				/* session doesn't have LBR copied yet */
+				r->lbrs_sz = copy_lbrs(r->lbrs, sizeof(r->lbrs));
+				/* record LBR capture outcome in the session */
+				sess->lbrs_sz = r->lbrs_sz;
+			}
+
+			bpf_ringbuf_submit(r, 0);
+		} else  {
+			sess->lbrs_sz = -ENOSPC;
+		}
+skip_lbrs:;
+	}
+
+	if (emit_session) {
+		if (!sess->is_err)
+			sess->kstack_sz = bpf_get_stack(ctx, &sess->kstack, sizeof(sess->kstack), 0);
+
+		/* might fail */
+		bpf_ringbuf_output(&rb, sess, sizeof(*sess), 0);
+	}
 
 	if (emit_session || sess->start_emitted) {
 		struct session_end *r;
