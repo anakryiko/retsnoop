@@ -89,11 +89,6 @@ static __always_inline const struct func_info *func_info(__u32 id)
 
 static __always_inline int output_stack(void *ctx, void *map, struct call_stack *stack)
 {
-	stack->emit_ts = bpf_ktime_get_ns();
-
-	if (duration_ns && stack->emit_ts - stack->func_lat[0] < duration_ns)
-		return 0;
-
 	if (!stack->is_err) {
 		stack->kstack_sz = bpf_get_stack(ctx, &stack->kstack, sizeof(stack->kstack), 0);
 		stack->lbrs_sz = copy_lbrs(&stack->lbrs, sizeof(stack->lbrs));
@@ -136,6 +131,8 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 	if (emit_intermediate_stacks) {
 		/* we are partially overriding previous stack, so emit error stack, if present */
 		dlog("EMIT PARTIAL STACK DEPTH %d..%d\n", stack->depth + 1, stack->max_depth);
+
+		stack->emit_ts = bpf_ktime_get_ns();
 		output_stack(ctx, &rb, stack);
 	} else {
 		dlog("RESETTING SAVED ERR STACK %d..%d to %d..\n",
@@ -419,7 +416,11 @@ static int submit_session(void *ctx, struct call_stack *sess)
 {
 	bool emit_session;
 
+	sess->emit_ts = bpf_ktime_get_ns();
+
 	emit_session = sess->is_err || emit_success_stacks;
+	if (duration_ns && sess->emit_ts - sess->func_lat[0] < duration_ns)
+		emit_session = false;
 
 	if (emit_session) {
 		dlog("EMIT %s STACK DEPTH %d (SAVED ..%d)\n",
