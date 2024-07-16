@@ -43,7 +43,6 @@ struct {
 
 const volatile bool verbose = false;
 const volatile bool extra_verbose = false;
-const volatile bool use_ringbuf = true;
 const volatile bool use_lbr = true;
 const volatile int targ_tgid = -1;
 const volatile bool emit_success_stacks = false;
@@ -93,14 +92,7 @@ static __always_inline int output_stack(void *ctx, void *map, struct call_stack 
 		stack->lbrs_sz = copy_lbrs(&stack->lbrs, sizeof(stack->lbrs));
 	}
 
-	/* use_ringbuf is read-only variable, so verifier will detect which of
-	 * the branch is dead code and will eliminate it, so on old kernels
-	 * bpf_ringbuf_output() won't be present in the resulting code
-	 */
-	if (use_ringbuf)
-		return bpf_ringbuf_output(map, stack, sizeof(*stack), 0);
-	else
-		return bpf_perf_event_output(ctx, map, BPF_F_CURRENT_CPU, stack, sizeof(*stack));
+	return bpf_ringbuf_output(map, stack, sizeof(*stack), 0);
 }
 
 static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
