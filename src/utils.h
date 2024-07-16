@@ -22,6 +22,30 @@
 #define NAME_MOD(name, mod) name, mod ? " [" : "", mod ?: "", mod ? "]" : ""
 
 /*
+ * Atomic helpers
+ */
+
+static inline void atomic_inc(long *value)
+{
+	(void)__atomic_add_fetch(value, 1, __ATOMIC_RELAXED);
+}
+
+static inline void atomic_add(long *value, long n)
+{
+	(void)__atomic_add_fetch(value, n, __ATOMIC_RELAXED);
+}
+
+static inline long atomic_load(long *value)
+{
+	return __atomic_load_n(value, __ATOMIC_RELAXED);
+}
+
+static inline long atomic_swap(long *value, long n)
+{
+	return __atomic_exchange_n(value, n, __ATOMIC_RELAXED);
+}
+
+/*
  * Errno helpers
  */
 

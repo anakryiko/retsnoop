@@ -36,6 +36,16 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 #define __memcpy(dst, src, sz) bpf_probe_read_kernel(dst, sz, src)
 
+static inline void atomic_inc(long *value)
+{
+	(void)__atomic_add_fetch(value, 1, __ATOMIC_RELAXED);
+}
+
+static inline void atomic_add(long *value, long n)
+{
+	(void)__atomic_add_fetch(value, n, __ATOMIC_RELAXED);
+}
+
 struct session {
 	long scratch; /* for obfuscating pointers to be read as integers */
 
@@ -43,6 +53,8 @@ struct session {
 	bool start_emitted;
 
 	int next_seq_id;
+
+	int dropped_records;
 
 	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
 	long lbrs_sz;
@@ -91,9 +103,10 @@ const volatile __u64 duration_ns = -1;
 
 const volatile char spaces[512] = {};
 
+struct stats stats = {};
+
 /* provided by mass_attach.bpf.c */
 int copy_lbrs(void *dst, size_t dst_sz);
-
 
 /* dynamically sized from the user space */
 struct func_info func_infos[1] SEC(".data.func_infos");
@@ -139,6 +152,14 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 	stack->saved_max_depth = stack->max_depth;
 }
 
+static void stat_dropped_record(struct session *sess)
+{
+	if (sess->dropped_records == 0)
+		/* only count each incomplete session once */
+		atomic_inc(&stats.incomplete_sessions);
+	sess->dropped_records++;
+}
+
 static const struct session empty_session;
 
 static bool emit_session_start(struct session *sess)
@@ -146,8 +167,10 @@ static bool emit_session_start(struct session *sess)
 	struct session_start *r;
 
 	r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
-	if (!r)
+	if (!r) {
+		atomic_inc(&stats.dropped_sessions);
 		return false;
+	}
 
 	r->type = REC_SESSION_START;
 	r->pid = sess->stack.pid;
@@ -177,8 +200,10 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 
 		bpf_map_update_elem(&sessions, &pid, &empty_session, BPF_ANY);
 		sess = bpf_map_lookup_elem(&sessions, &pid);
-		if (!sess)
+		if (!sess) {
+			atomic_inc(&stats.dropped_sessions);
 			return false;
+		}
 
 		sess->stack.type = REC_CALL_STACK;
 		sess->stack.start_ts = bpf_ktime_get_ns();
@@ -227,8 +252,10 @@ out_defunct:
 		struct func_trace_entry *fe;
 
 		fe = bpf_ringbuf_reserve(&rb, sizeof(*fe), 0);
-		if (!fe)
+		if (!fe) {
+			stat_dropped_record(sess);
 			goto skip_ft_entry;
+		}
 
 		fe->type = REC_FUNC_TRACE_ENTRY;
 		fe->ts = bpf_ktime_get_ns();
@@ -442,6 +469,7 @@ static int submit_session(void *ctx, struct session *sess)
 		r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
 		if (!r) {
 			/* record that we failed to submit LBR data */
+			stat_dropped_record(sess);
 			sess->lbrs_sz = -ENOSPC;
 			goto skip_lbrs;
 		}
@@ -468,8 +496,10 @@ skip_lbrs:;
 		struct session_end *r;
 
 		r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
-		if (!r)
+		if (!r) {
+			atomic_inc(&stats.dropped_sessions);
 			return -EINVAL;
+		}
 
 		r->type = REC_SESSION_END;
 		r->pid = sess->stack.pid;
@@ -478,6 +508,7 @@ skip_lbrs:;
 		r->is_err = sess->stack.is_err;
 		r->last_seq_id = sess->next_seq_id - 1;
 		r->lbrs_sz = sess->lbrs_sz;
+		r->dropped_records = sess->dropped_records;
 
 		bpf_ringbuf_submit(r, 0);
 	}
@@ -551,8 +582,10 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 		struct func_trace_entry *fe;
 
 		fe = bpf_ringbuf_reserve(&rb, sizeof(*fe), 0);
-		if (!fe)
+		if (!fe) {
+			stat_dropped_record(sess);
 			goto skip_ft_exit;
+		}
 
 		fe->type = REC_FUNC_TRACE_EXIT;
 		fe->ts = bpf_ktime_get_ns();
@@ -580,6 +613,7 @@ skip_ft_exit:;
 		vlog("POP(2) UNEXPECTED WANT ID %u ADDR %lx NAME %s",
 		     exp_id, exp_fi->ip, exp_fi->name);
 
+		atomic_inc(&stats.dropped_sessions);
 		reset_session(sess);
 		bpf_map_delete_elem(&sessions, &pid);
 
