@@ -27,6 +27,10 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 	bpf_trace_printk(___fmt, sizeof(___fmt), ##__VA_ARGS__);	\
 })
 
+#define log(fmt, ...) bpf_printk(fmt, ##__VA_ARGS__)
+#define vlog(fmt, ...) do { if (verbose) { bpf_printk(fmt, ##__VA_ARGS__); }  } while (0)
+#define dlog(fmt, ...) do { if (extra_verbose) { bpf_printk(fmt, ##__VA_ARGS__); } } while (0)
+
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 } rb SEC(".maps");
@@ -111,14 +115,12 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 	u64 len = stack->max_depth - d;
 
 	if (d >= MAX_FSTACK_DEPTH || len >= MAX_FSTACK_DEPTH) {
-		bpf_printk("SHOULDN'T HAPPEN DEPTH %ld LEN %ld\n", d, len);
+		log("SHOULDN'T HAPPEN DEPTH %ld LEN %ld\n", d, len);
 		return;
 	}
 
-	if (extra_verbose) {
-		bpf_printk("CURRENT DEPTH %d..%d", stack->depth + 1, stack->max_depth);
-		bpf_printk("SAVED DEPTH %d..%d", stack->saved_depth, stack->saved_max_depth);
-	}
+	dlog("CURRENT DEPTH %d..%d", stack->depth + 1, stack->max_depth);
+	dlog("SAVED DEPTH %d..%d", stack->saved_depth, stack->saved_max_depth);
 
 	/* we can stitch together stack subsections */
 	if (stack->saved_depth && stack->max_depth + 1 == stack->saved_depth) {
@@ -126,20 +128,18 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 		bpf_probe_read_kernel(stack->saved_res + d, len * sizeof(stack->saved_res[0]), stack->func_res + d);
 		bpf_probe_read_kernel(stack->saved_lat + d, len * sizeof(stack->saved_lat[0]), stack->func_lat + d);
 		stack->saved_depth = stack->depth + 1;
-		if (extra_verbose)
-			bpf_printk("STITCHED STACK %d..%d to ..%d\n",
-				   stack->depth + 1, stack->max_depth, stack->saved_max_depth);
+		dlog("STITCHED STACK %d..%d to ..%d\n",
+		     stack->depth + 1, stack->max_depth, stack->saved_max_depth);
 		return;
 	}
 
 	if (emit_intermediate_stacks) {
 		/* we are partially overriding previous stack, so emit error stack, if present */
-		if (extra_verbose)
-			bpf_printk("EMIT PARTIAL STACK DEPTH %d..%d\n", stack->depth + 1, stack->max_depth);
+		dlog("EMIT PARTIAL STACK DEPTH %d..%d\n", stack->depth + 1, stack->max_depth);
 		output_stack(ctx, &rb, stack);
-	} else if (extra_verbose) {
-		bpf_printk("RESETTING SAVED ERR STACK %d..%d to %d..\n",
-			   stack->saved_depth, stack->saved_max_depth, stack->depth + 1);
+	} else {
+		dlog("RESETTING SAVED ERR STACK %d..%d to %d..\n",
+		     stack->saved_depth, stack->saved_max_depth, stack->depth + 1);
 	}
 
 	bpf_probe_read_kernel(stack->saved_ids + d, len * sizeof(stack->saved_ids[0]), stack->func_ids + d);
@@ -201,10 +201,8 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 
 		if (emit_func_trace) {
 			if (!emit_session_start(stack)) {
-				if (verbose) {
-					bpf_printk("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION_START record!\n",
-						   stack->pid, stack->tgid);
-				}
+				vlog("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION_START record!\n",
+				     stack->pid, stack->tgid);
 				stack->defunct = true;
 				goto out_defunct;
 			} else {
@@ -260,17 +258,16 @@ skip_ft_entry:;
 
 		if (printk_is_sane) {
 			if (d == 0)
-				bpf_printk("=== STARTING TRACING %s [COMM %s PID %d] ===",
-					   func_name, stack->task_comm, pid);
-			bpf_printk("    ENTER %s%s [...]", spaces + 2 * ((255 - d) & 0xFF), func_name);
+				log("=== STARTING TRACING %s [COMM %s PID %d] ===",
+				    func_name, stack->task_comm, pid);
+			log("    ENTER %s%s [...]", spaces + 2 * ((255 - d) & 0xFF), func_name);
 		} else {
 			if (d == 0) {
-				bpf_printk("=== STARTING TRACING %s [PID %d] ===", func_name, pid);
-				bpf_printk("=== ...      TRACING [PID %d COMM %s] ===", pid, stack->task_comm);
+				log("=== STARTING TRACING %s [PID %d] ===", func_name, pid);
+				log("=== ...      TRACING [PID %d COMM %s] ===", pid, stack->task_comm);
 			}
-			bpf_printk("    ENTER [%d] %s [...]", d + 1, func_name);
+			log("    ENTER [%d] %s [...]", d + 1, func_name);
 		}
-		//bpf_printk("PUSH(2) ID %d ADDR %lx NAME %s", id, ip, func_name);
 	}
 
 	return true;
@@ -403,7 +400,6 @@ static __noinline void print_exit(void *ctx, __u32 d, __u32 id, long res)
 	} else {
 		bpf_trace_printk(fmt, FMT_MAX_SZ, d + 1, func_name, res);
 	}
-	//bpf_printk("POP(1) ID %d ADDR %lx NAME %s", id, ip, func_name);
 }
 
 static void reset_session(struct call_stack *stack)
@@ -425,18 +421,16 @@ static int submit_session(void *ctx, struct call_stack *sess)
 
 	emit_session = sess->is_err || emit_success_stacks;
 
-	if (extra_verbose && emit_session) {
-		bpf_printk("EMIT %s STACK DEPTH %d (SAVED ..%d)\n",
-			   sess->is_err ? "ERROR" : "SUCCESS",
-			   sess->max_depth, sess->saved_max_depth);
+	if (emit_session) {
+		dlog("EMIT %s STACK DEPTH %d (SAVED ..%d)\n",
+		     sess->is_err ? "ERROR" : "SUCCESS",
+		     sess->max_depth, sess->saved_max_depth);
 	}
 
 	if (emit_session && !sess->start_emitted) {
 		if (!emit_session_start(sess)) {
-			if (verbose) {
-				bpf_printk("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION data!\n",
-					   sess->pid, sess->tgid);
-			}
+			vlog("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION data!\n",
+			     sess->pid, sess->tgid);
 			sess->defunct = true;
 			return -EINVAL;
 		}
@@ -488,10 +482,8 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 		if (stack->depth == 0) {
 			reset_session(stack);
 			bpf_map_delete_elem(&stacks, &pid);
-			if (verbose) {
-				bpf_printk("DEFUNCT SESSION TID/PID %d/%d: SESSION_END, no data was collected!\n",
-					   pid, stack->tgid);
-			}
+			vlog("DEFUNCT SESSION TID/PID %d/%d: SESSION_END, no data was collected!\n",
+			     pid, stack->tgid);
 		}
 		return false;
 	}
@@ -557,14 +549,12 @@ skip_ft_exit:;
 	if (exp_id != id) {
 		const struct func_info *exp_fi = func_info(exp_id);
 
-		if (verbose) {
-			bpf_printk("POP(0) UNEXPECTED PID %d DEPTH %d MAX DEPTH %d",
-				   pid, stack->depth, stack->max_depth);
-			bpf_printk("POP(1) UNEXPECTED GOT  ID %d ADDR %lx NAME %s",
-				   id, ip, func_name);
-			bpf_printk("POP(2) UNEXPECTED WANT ID %u ADDR %lx NAME %s",
-				   exp_id, exp_fi->ip, exp_fi->name);
-		}
+		vlog("POP(0) UNEXPECTED PID %d DEPTH %d MAX DEPTH %d",
+		     pid, stack->depth, stack->max_depth);
+		vlog("POP(1) UNEXPECTED GOT  ID %d ADDR %lx NAME %s",
+		     id, ip, func_name);
+		vlog("POP(2) UNEXPECTED WANT ID %u ADDR %lx NAME %s",
+		     exp_id, exp_fi->ip, exp_fi->name);
 
 		stack->depth = 0;
 		stack->max_depth = 0;
