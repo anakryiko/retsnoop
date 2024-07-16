@@ -570,12 +570,7 @@ skip_ft_exit:;
 		vlog("POP(2) UNEXPECTED WANT ID %u ADDR %lx NAME %s",
 		     exp_id, exp_fi->ip, exp_fi->name);
 
-		stack->depth = 0;
-		stack->max_depth = 0;
-		stack->is_err = false;
-		stack->kstack_sz = 0;
-		stack->lbrs_sz = 0;
-
+		reset_session(stack);
 		bpf_map_delete_elem(&stacks, &pid);
 
 		return false;
