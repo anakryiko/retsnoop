@@ -34,8 +34,8 @@ struct func_info {
 
 enum rec_type {
 	REC_SESSION_START,
+	REC_SESSION_END,
 	REC_CALL_STACK,
-	REC_FUNC_TRACE_START,
 	REC_FUNC_TRACE_ENTRY,
 	REC_FUNC_TRACE_EXIT,
 };
@@ -49,11 +49,23 @@ struct session_start {
 	char task_comm[16], proc_comm[16];
 };
 
+struct session_end {
+	/* REC_SESSION_END */
+	enum rec_type type;
+	int pid;
+	long emit_ts;
+	bool ignored;
+	bool is_err;
+	int last_seq_id;
+	int lbrs_sz;
+};
+
 struct call_stack {
 	/* REC_CALL_STACK */
 	enum rec_type type;
 
 	bool defunct;
+	bool start_emitted;
 
 	unsigned short func_ids[MAX_FSTACK_DEPTH];
 	long func_res[MAX_FSTACK_DEPTH];

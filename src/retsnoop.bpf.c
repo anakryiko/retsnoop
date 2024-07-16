@@ -148,6 +148,26 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 
 static const struct call_stack empty_stack;
 
+static bool emit_session_start(struct call_stack *sess)
+{
+	struct session_start *r;
+
+	r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
+	if (!r)
+		return false;
+
+	r->type = REC_SESSION_START;
+	r->pid = sess->pid;
+	r->tgid = sess->tgid;
+	r->start_ts = sess->start_ts;
+	__builtin_memcpy(r->task_comm, sess->task_comm, sizeof(sess->task_comm));
+	__builtin_memcpy(r->proc_comm, sess->proc_comm, sizeof(sess->proc_comm));
+
+	bpf_ringbuf_submit(r, 0);
+
+	return true;
+}
+
 static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 {
 	u64 pid_tgid = bpf_get_current_pid_tgid();
@@ -175,27 +195,17 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 		tsk = (void *)bpf_get_current_task();
 		BPF_CORE_READ_INTO(&stack->proc_comm, tsk, group_leader, comm);
 
-		{
-			struct session_start *r;
-
-			r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
-			if (!r) {
-				stack->defunct = true;
+		if (emit_func_trace) {
+			if (!emit_session_start(stack)) {
 				if (verbose) {
-					bpf_printk("DEFUNCT SESSION TID/PID %d/%d STARTED: failed to send init record!\n",
-						   pid, stack->tgid);
+					bpf_printk("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION_START record!\n",
+						   stack->pid, stack->tgid);
 				}
+				stack->defunct = true;
 				goto out_defunct;
+			} else {
+				stack->start_emitted = true;
 			}
-
-			r->type = REC_SESSION_START;
-			r->pid = stack->pid;
-			r->tgid = stack->tgid;
-			r->start_ts = stack->start_ts;
-			__builtin_memcpy(r->task_comm, stack->task_comm, sizeof(r->task_comm));
-			__builtin_memcpy(r->proc_comm, stack->proc_comm, sizeof(r->proc_comm));
-
-			bpf_ringbuf_submit(r, 0);
 		}
 	}
 
@@ -394,6 +404,8 @@ static __noinline void print_exit(void *ctx, __u32 d, __u32 id, long res)
 
 static void reset_session(struct call_stack *stack)
 {
+	stack->defunct = false;
+	stack->start_emitted = false;
 	stack->is_err = false;
 	stack->saved_depth = 0;
 	stack->saved_max_depth = 0;
@@ -425,7 +437,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 			reset_session(stack);
 			bpf_map_delete_elem(&stacks, &pid);
 			if (verbose) {
-				bpf_printk("DEFUNCT SESSION TID/PID %d/%d FINISHED: no data was collected!\n",
+				bpf_printk("DEFUNCT SESSION TID/PID %d/%d: SESSION_END, no data was collected!\n",
 					   pid, stack->tgid);
 			}
 		}
@@ -526,20 +538,57 @@ skip_ft_exit:;
 
 	/* emit last complete stack trace */
 	if (d == 0) {
+		bool emit_stack = false;
+
 		if (stack->is_err) {
 			if (extra_verbose) {
 				bpf_printk("EMIT ERROR STACK DEPTH %d (SAVED ..%d)\n",
 					   stack->max_depth, stack->saved_max_depth);
 			}
-			output_stack(ctx, &rb, stack);
+			emit_stack = true;
 		} else if (emit_success_stacks) {
 			if (extra_verbose) {
 				bpf_printk("EMIT SUCCESS STACK DEPTH %d (SAVED ..%d)\n",
 					   stack->max_depth, stack->saved_max_depth);
 			}
-			output_stack(ctx, &rb, stack);
+			emit_stack = true;
 		}
 
+		if (emit_stack && !stack->start_emitted) {
+			if (!emit_session_start(stack)) {
+				if (verbose) {
+					bpf_printk("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION data!\n",
+						   stack->pid, stack->tgid);
+				}
+				stack->defunct = true;
+				goto out_defunct;
+			}
+			stack->start_emitted = true;
+		}
+
+		if (emit_stack)
+			output_stack(ctx, &rb, stack);
+
+		if (emit_stack || stack->start_emitted) {
+			struct session_end *r;
+
+			r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
+			if (!r)
+				goto skip_session_end;
+
+			r->type = REC_SESSION_END;
+			r->pid = pid;
+			r->emit_ts = bpf_ktime_get_ns();
+			r->ignored = !emit_stack;
+			r->is_err = stack->is_err;
+			r->last_seq_id = stack->next_seq_id - 1;
+			r->lbrs_sz = stack->lbrs_sz;
+
+			bpf_ringbuf_submit(r, 0);
+skip_session_end:;
+		}
+
+out_defunct:
 		reset_session(stack);
 		bpf_map_delete_elem(&stacks, &pid);
 	}
