@@ -53,11 +53,6 @@ static int process_cu_globs()
 	return err;
 }
 
-static void handle_event_pb(void *ctx, int cpu, void *data, unsigned data_sz)
-{
-	(void)handle_event(ctx, data, data_sz);
-}
-
 static int find_vmlinux(char *path, size_t max_len, bool soft)
 {
 	const char *locations[] = {
@@ -222,13 +217,11 @@ const struct func_info *func_info(const struct ctx *ctx, __u32 id)
 
 int main(int argc, char **argv, char **envp)
 {
-	long page_size = sysconf(_SC_PAGESIZE);
 	struct mass_attacher_opts att_opts = {};
 	struct ksyms *ksyms = NULL;
 	struct mass_attacher *att = NULL;
 	struct retsnoop_bpf *skel = NULL;
 	struct ring_buffer *rb = NULL;
-	struct perf_buffer *pb = NULL;
 	int *lbr_perf_fds = NULL;
 	char vmlinux_path[1024] = {};
 	const struct ksym *stext_sym = 0;
@@ -328,6 +321,12 @@ int main(int argc, char **argv, char **envp)
 		goto cleanup_silent;
 	}
 
+	if (!env.has_ringbuf) {
+		fprintf(stderr, "Retsnoop requires BPF ringbuf (Linux 5.8+), please upgrade your kernel!\n");
+		err = -EOPNOTSUPP;
+		goto cleanup_silent;
+	}
+
 	env.cpu_cnt = libbpf_num_possible_cpus();
 	if (env.cpu_cnt <= 0) {
 		fprintf(stderr, "Failed to determine number of CPUs: %d\n", env.cpu_cnt);
@@ -343,6 +342,8 @@ int main(int argc, char **argv, char **envp)
 		goto cleanup_silent;
 	}
 
+
+	bpf_map__set_max_entries(skel->maps.rb, env.ringbuf_sz);
 	bpf_map__set_max_entries(skel->maps.stacks, env.stacks_map_sz);
 
 	skel->rodata->tgid_allow_cnt = env.allow_pid_cnt;
@@ -367,19 +368,6 @@ int main(int argc, char **argv, char **envp)
 	skel->rodata->duration_ns = env.longer_than_ms * 1000000ULL;
 
 	memset(skel->rodata->spaces, ' ', sizeof(skel->rodata->spaces) - 1);
-
-	skel->rodata->use_ringbuf = env.has_ringbuf;
-	if (env.has_ringbuf) {
-		bpf_map__set_type(skel->maps.rb, BPF_MAP_TYPE_RINGBUF);
-		bpf_map__set_key_size(skel->maps.rb, 0);
-		bpf_map__set_value_size(skel->maps.rb, 0);
-		bpf_map__set_max_entries(skel->maps.rb, env.ringbuf_sz);
-	} else {
-		bpf_map__set_type(skel->maps.rb, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
-		bpf_map__set_key_size(skel->maps.rb, 4);
-		bpf_map__set_value_size(skel->maps.rb, 4);
-		bpf_map__set_max_entries(skel->maps.rb, 0);
-	}
 
 	/* LBR detection and setup */
 	if (env.use_lbr && env.has_branch_snapshot) {
@@ -623,22 +611,11 @@ int main(int argc, char **argv, char **envp)
 	}
 
 	/* Set up ring/perf buffer polling */
-	if (env.has_ringbuf) {
-		rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, &env.ctx, NULL);
-		if (!rb) {
-			err = -1;
-			fprintf(stderr, "Failed to create ring buffer\n");
-			goto cleanup;
-		}
-	} else {
-		pb = perf_buffer__new(bpf_map__fd(skel->maps.rb),
-				      env.perfbuf_percpu_sz / page_size,
-				      handle_event_pb, NULL, &env.ctx, NULL);
-		err = libbpf_get_error(pb);
-		if (err) {
-			fprintf(stderr, "Failed to create perf buffer: %d\n", err);
-			goto cleanup;
-		}
+	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, &env.ctx, NULL);
+	if (!rb) {
+		err = -1;
+		fprintf(stderr, "Failed to create ring buffer\n");
+		goto cleanup;
 	}
 
 	/* Allow mass tracing */
@@ -649,7 +626,7 @@ int main(int argc, char **argv, char **envp)
 		printf("BPF-side logging is enabled. Use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to see logs.\n");
 	printf("Receiving data...\n");
 	while (!exiting) {
-		err = rb ? ring_buffer__poll(rb, 100) : perf_buffer__poll(pb, 100);
+		err = ring_buffer__poll(rb, 100);
 		/* Ctrl-C will cause -EINTR */
 		if (err == -EINTR) {
 			err = 0;

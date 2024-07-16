@@ -15,7 +15,6 @@ const char argp_program_doc[] =
 
 struct env env = {
 	.ringbuf_sz = 8 * 1024 * 1024,
-	.perfbuf_percpu_sz = 256 * 1024,
 	.stacks_map_sz = 4096,
 };
 

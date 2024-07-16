@@ -89,7 +89,6 @@ struct env {
 
 	struct ctx ctx;
 	int ringbuf_sz;
-	int perfbuf_percpu_sz;
 	int stacks_map_sz;
 
 	int cpu_cnt;
