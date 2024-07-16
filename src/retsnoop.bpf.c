@@ -175,17 +175,35 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 		tsk = (void *)bpf_get_current_task();
 		BPF_CORE_READ_INTO(&stack->proc_comm, tsk, group_leader, comm);
 
-		if (emit_func_trace) {
-			struct func_trace_start *r;
+		{
+			struct session_start *r;
 
 			r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
-			if (r) {
-				r->type = REC_FUNC_TRACE_START;
-				r->pid = stack->pid;
-
-				bpf_ringbuf_submit(r, 0);
+			if (!r) {
+				stack->defunct = true;
+				if (verbose) {
+					bpf_printk("DEFUNCT SESSION TID/PID %d/%d STARTED: failed to send init record!\n",
+						   pid, stack->tgid);
+				}
+				goto out_defunct;
 			}
+
+			r->type = REC_SESSION_START;
+			r->pid = stack->pid;
+			r->tgid = stack->tgid;
+			r->start_ts = stack->start_ts;
+			__builtin_memcpy(r->task_comm, stack->task_comm, sizeof(r->task_comm));
+			__builtin_memcpy(r->proc_comm, stack->proc_comm, sizeof(r->proc_comm));
+
+			bpf_ringbuf_submit(r, 0);
 		}
+	}
+
+out_defunct:
+	/* if we failed to send out REC_SESSION_START, update depth and bail */
+	if (stack->defunct) {
+		stack->depth++;
+		return false;
 	}
 
 	d = stack->depth;
@@ -374,6 +392,17 @@ static __noinline void print_exit(void *ctx, __u32 d, __u32 id, long res)
 	//bpf_printk("POP(1) ID %d ADDR %lx NAME %s", id, ip, func_name);
 }
 
+static void reset_session(struct call_stack *stack)
+{
+	stack->is_err = false;
+	stack->saved_depth = 0;
+	stack->saved_max_depth = 0;
+	stack->depth = 0;
+	stack->max_depth = 0;
+	stack->kstack_sz = 0;
+	stack->lbrs_sz = 0;
+}
+
 static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 {
 	const struct func_info *fi;
@@ -389,12 +418,26 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	if (!stack)
 		return false;
 
+	/* if we failed to send out REC_SESSION_START, clean up and send nothing else */
+	if (stack->defunct) {
+		stack->depth--;
+		if (stack->depth == 0) {
+			reset_session(stack);
+			bpf_map_delete_elem(&stacks, &pid);
+			if (verbose) {
+				bpf_printk("DEFUNCT SESSION TID/PID %d/%d FINISHED: no data was collected!\n",
+					   pid, stack->tgid);
+			}
+		}
+		return false;
+	}
+
 	stack->next_seq_id++;
 
 	d = stack->depth;
 	if (d == 0)
 		return false;
- 
+
 	d -= 1;
 	barrier_var(d);
 	if (d >= MAX_FSTACK_DEPTH)
@@ -496,14 +539,8 @@ skip_ft_exit:;
 			}
 			output_stack(ctx, &rb, stack);
 		}
-		stack->is_err = false;
-		stack->saved_depth = 0;
-		stack->saved_max_depth = 0;
-		stack->depth = 0;
-		stack->max_depth = 0;
-		stack->kstack_sz = 0;
-		stack->lbrs_sz = 0;
 
+		reset_session(stack);
 		bpf_map_delete_elem(&stacks, &pid);
 	}
 

@@ -215,6 +215,11 @@ static void sig_handler(int sig)
 	exiting = true;
 }
 
+const struct func_info *func_info(const struct ctx *ctx, __u32 id)
+{
+	return &ctx->skel->data_func_infos->func_infos[id];
+}
+
 int main(int argc, char **argv, char **envp)
 {
 	long page_size = sysconf(_SC_PAGESIZE);
@@ -402,15 +407,8 @@ int main(int argc, char **argv, char **envp)
 	if (env.use_lbr && env.verbose)
 		printf("LBR capture enabled.\n");
 
-	if (env.emit_func_trace) {
+	if (env.emit_func_trace)
 		skel->rodata->emit_func_trace = true;
-
-		err = init_func_traces();
-		if (err) {
-			fprintf(stderr, "Failed to initialize func traces state: %d\n", err);
-			goto cleanup;
-		}
-	}
 
 	att_opts.verbose = env.verbose;
 	att_opts.debug = env.debug;
