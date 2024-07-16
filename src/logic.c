@@ -24,6 +24,9 @@ struct session {
 	char proc_comm[16];
 	char task_comm[16];
 
+	int lbrs_sz;
+	struct perf_branch_entry *lbrs;
+
 	int ft_cnt;
 	struct func_trace_item *ft_entries;
 };
@@ -44,6 +47,8 @@ static void free_session(struct session *sess)
 {
 	if (!sess)
 		return;
+
+	free(sess->lbrs);
 
 	free(sess->ft_entries);
 	free(sess);
@@ -90,6 +95,33 @@ static int handle_session_start(struct ctx *ctx, const struct session_start *r)
 	return 0;
 }
 
+static int handle_lbr_stack(struct ctx *dctx, const struct lbr_stack *r)
+{
+	struct session *sess;
+
+	if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
+		fprintf(stderr, "BUG: PID %d session data not found (LBR_STACK)!\n", r->pid);
+		return -EINVAL;
+	}
+
+	if (sess->lbrs) {
+		fprintf(stderr, "BUG: PID %d session data contains LBR data already!\n", r->pid);
+		return -EINVAL;
+	}
+
+	sess->lbrs_sz = r->lbrs_sz;
+
+	if (sess->lbrs_sz > 0) {
+		sess->lbrs = malloc(sess->lbrs_sz);
+		if (!sess->lbrs) {
+			fprintf(stderr, "SESSION PID %d: failed to allocate LBR memory: %d\n", r->pid, -ENOMEM);
+			return -ENOMEM;
+		}
+		memcpy(sess->lbrs, r->lbrs, sess->lbrs_sz);
+	}
+
+	return 0;
+}
 
 #define snappendf(dst, fmt, args...)							\
 	dst##_len += snprintf(dst + dst##_len,						\
@@ -943,14 +975,76 @@ static bool lbr_matches(unsigned long addr, unsigned long start, unsigned long e
 	return start <= addr && addr < end;
 }
 
+static void output_lbrs(struct ctx *dctx, struct session *sess,
+			unsigned long fn_start, unsigned long fn_end)
+{
+	int lbr_cnt, lbr_from, lbr_to = 0;
+	int rec_cnts1[MAX_LBR_ENTRIES] = {};
+	int rec_cnts2[MAX_LBR_ENTRIES] = {};
+	bool found_useful_lbrs = false;
+	int i;
+
+	if (sess->lbrs_sz < 0) {
+		fprintf(stderr, "Failed to capture LBR entries: %d\n", sess->lbrs_sz);
+		return;
+	}
+
+	lbr_cnt = sess->lbrs_sz / sizeof(struct perf_branch_entry);
+	lbr_from = lbr_cnt - 1;
+
+	/* Filter out last few irrelevant LBRs that captured
+	 * internal BPF/kprobe/perf jumps. For that, find the
+	 * first LBR record that overlaps with the last traced
+	 * function. All the records after that are assumed
+	 * relevant.
+	 */
+	for (i = 0, lbr_to = 0; i < lbr_cnt; i++, lbr_to++) {
+		if (lbr_matches(sess->lbrs[i].from, fn_start, fn_end) ||
+		    lbr_matches(sess->lbrs[i].to, fn_start, fn_end)) {
+			found_useful_lbrs = true;
+			break;
+		}
+	}
+	if (!found_useful_lbrs ||
+	    env.emit_full_stacks || (env.debug_feats & DEBUG_FULL_LBR))
+		lbr_to = 0;
+
+	if (env.lbr_max_cnt && lbr_from - lbr_to + 1 > env.lbr_max_cnt)
+		lbr_from = min(lbr_cnt - 1, lbr_to + env.lbr_max_cnt - 1);
+
+	stack_items1.cnt = 0;
+	stack_items2.cnt = 0;
+	for (i = lbr_from; i >= lbr_to; i--) {
+		prepare_lbr_items(dctx, sess->lbrs[i].from, &stack_items1);
+		prepare_lbr_items(dctx, sess->lbrs[i].to, &stack_items2);
+
+		rec_cnts1[i] = stack_items1.cnt;
+		rec_cnts2[i] = stack_items2.cnt;
+	}
+
+	print_lbr_items(lbr_from, lbr_to,
+			&stack_items1, rec_cnts1,
+			&stack_items2, rec_cnts2);
+
+	if (!found_useful_lbrs)
+		printf("[LBR] No relevant LBR data were captured, showing unfiltered LBR stack!\n");
+}
+
 static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 {
 	static struct fstack_item fstack[MAX_FSTACK_DEPTH];
 	static struct kstack_item kstack[MAX_KSTACK_DEPTH];
 	const struct fstack_item *fitem;
 	const struct kstack_item *kitem;
+	unsigned long fn_start = 0, fn_end = 0;
 	int i, j, fstack_n, kstack_n;
 	char ts1[64], ts2[64];
+	struct session *sess;
+
+	if (!hashmap__find(&sessions_hash, (long)s->pid, &sess)) {
+		fprintf(stderr, "BUG: PID %d session data not found (CALL_STACK)!\n", s->pid);
+		return -EINVAL;
+	}
 
 	if (!s->is_err && !env.emit_success_stacks) {
 		purge_session(dctx, s->pid);
@@ -1002,67 +1096,18 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 		print_ft_items(dctx, &stack_items1);
 	}
 
-	/* LBR output */
-	if (env.use_lbr) {
-		unsigned long start = 0, end = 0;
-		int lbr_cnt, lbr_from, lbr_to = 0;
-		int rec_cnts1[MAX_LBR_ENTRIES] = {};
-		int rec_cnts2[MAX_LBR_ENTRIES] = {};
-		bool found_useful_lbrs = false;
-
-		if (s->lbrs_sz < 0) {
-			fprintf(stderr, "Failed to capture LBR entries: %ld\n", s->lbrs_sz);
-			goto out;
+	/* Determine address range of deepest nested function */
+	if (fstack_n > 0) {
+		fitem = &fstack[fstack_n - 1];
+		if (fitem->finfo->size) {
+			fn_start = fitem->finfo->addr;
+			fn_end = fitem->finfo->addr + fitem->finfo->size;
 		}
-
-		if (fstack_n > 0) {
-			fitem = &fstack[fstack_n - 1];
-			if (fitem->finfo->size) {
-				start = fitem->finfo->addr;
-				end = fitem->finfo->addr + fitem->finfo->size;
-			}
-		}
-
-		lbr_cnt = s->lbrs_sz / sizeof(struct perf_branch_entry);
-		lbr_from = lbr_cnt - 1;
-
-		/* Filter out last few irrelevant LBRs that captured
-		 * internal BPF/kprobe/perf jumps. For that, find the
-		 * first LBR record that overlaps with the last traced
-		 * function. All the records after that are assumed
-		 * relevant.
-		 */
-		for (i = 0, lbr_to = 0; i < lbr_cnt; i++, lbr_to++) {
-			if (lbr_matches(s->lbrs[i].from, start, end) ||
-			    lbr_matches(s->lbrs[i].to, start, end)) {
-				found_useful_lbrs = true;
-				break;
-			}
-		}
-		if (!found_useful_lbrs ||
-		    env.emit_full_stacks || (env.debug_feats & DEBUG_FULL_LBR))
-			lbr_to = 0;
-
-		if (env.lbr_max_cnt && lbr_from - lbr_to + 1 > env.lbr_max_cnt)
-			lbr_from = min(lbr_cnt - 1, lbr_to + env.lbr_max_cnt - 1);
-
-		stack_items1.cnt = 0;
-		stack_items2.cnt = 0;
-		for (i = lbr_from; i >= lbr_to; i--) {
-			prepare_lbr_items(dctx, s->lbrs[i].from, &stack_items1);
-			prepare_lbr_items(dctx, s->lbrs[i].to, &stack_items2);
-
-			rec_cnts1[i] = stack_items1.cnt;
-			rec_cnts2[i] = stack_items2.cnt;
-		}
-
-		print_lbr_items(lbr_from, lbr_to,
-				&stack_items1, rec_cnts1,
-				&stack_items2, rec_cnts2);
-
-		if (!found_useful_lbrs)
-			printf("[LBR] No relevant LBR data were captured, showing unfiltered LBR stack!\n");
 	}
+
+	/* LBR output */
+	if (env.use_lbr)
+		output_lbrs(dctx, sess, fn_start, fn_end);
 
 	/* Emit combined fstack/kstack + errors stack trace */
 	stack_items1.cnt = 0;
@@ -1106,7 +1151,6 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 
 	print_stack_items(&stack_items1);
 
-out:
 	printf("\n\n");
 
 	return 0;
@@ -1121,6 +1165,11 @@ static int handle_session_end(struct ctx *ctx, const struct session_end *r)
 		return -EINVAL;
 	}
 
+	if (r->lbrs_sz > 0 && !sess->lbrs)
+		fprintf(stderr, "SESSION PID %d: LBR data is missing!\n", r->pid);
+	else if (r->lbrs_sz < 0)
+		fprintf(stderr, "Failed to capture LBR entries: %d\n", r->lbrs_sz);
+
 	purge_session(ctx, r->pid);
 
 	return 0;
@@ -1133,6 +1182,8 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	switch (type) {
 	case REC_CALL_STACK:
 		return handle_call_stack(ctx, data);
+	case REC_LBR_STACK:
+		return handle_lbr_stack(ctx, data);
 	case REC_SESSION_START:
 		return handle_session_start(ctx, data);
 	case REC_SESSION_END:
