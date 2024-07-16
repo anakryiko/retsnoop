@@ -983,11 +983,6 @@ static void output_lbrs(struct ctx *dctx, struct session *sess,
 	bool found_useful_lbrs = false;
 	int i;
 
-	if (sess->lbrs_sz < 0) {
-		fprintf(stderr, "Failed to capture LBR entries: %d\n", sess->lbrs_sz);
-		return;
-	}
-
 	lbr_cnt = sess->lbrs_sz / sizeof(struct perf_branch_entry);
 	lbr_from = lbr_cnt - 1;
 
@@ -1029,84 +1024,11 @@ static void output_lbrs(struct ctx *dctx, struct session *sess,
 		printf("[LBR] No relevant LBR data were captured, showing unfiltered LBR stack!\n");
 }
 
-static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
+static int output_call_stack(struct ctx *dctx,
+			     const struct fstack_item *fstack, int fstack_n,
+			     const struct kstack_item *kstack, int kstack_n)
 {
-	static struct fstack_item fstack[MAX_FSTACK_DEPTH];
-	static struct kstack_item kstack[MAX_KSTACK_DEPTH];
-	const struct fstack_item *fitem;
-	const struct kstack_item *kitem;
-	unsigned long fn_start = 0, fn_end = 0;
-	int i, j, fstack_n, kstack_n;
-	char ts1[64], ts2[64];
-	struct session *sess;
-
-	if (!hashmap__find(&sessions_hash, (long)s->pid, &sess)) {
-		fprintf(stderr, "BUG: PID %d session data not found (CALL_STACK)!\n", s->pid);
-		return -EINVAL;
-	}
-
-	if (!s->is_err && !env.emit_success_stacks) {
-		purge_session(dctx, s->pid);
-		return 0;
-	}
-
-	if (s->is_err && env.has_error_filter && !should_report_stack(dctx, s)) {
-		purge_session(dctx, s->pid);
-		return 0;
-	}
-
-	if (env.debug) {
-		printf("GOT %s STACK (depth %u):\n", s->is_err ? "ERROR" : "SUCCESS", s->max_depth);
-		printf("DEPTH %d MAX DEPTH %d SAVED DEPTH %d MAX SAVED DEPTH %d\n",
-				s->depth, s->max_depth, s->saved_depth, s->saved_max_depth);
-	}
-
-	fstack_n = filter_fstack(dctx, fstack, s);
-	if (fstack_n < 0) {
-		fprintf(stderr, "FAILURE DURING FILTERING FUNCTION STACK!!! %d\n", fstack_n);
-		purge_session(dctx, s->pid);
-		return -1;
-	}
-	kstack_n = filter_kstack(dctx, kstack, s);
-	if (kstack_n < 0) {
-		fprintf(stderr, "FAILURE DURING FILTERING KERNEL STACK!!! %d\n", kstack_n);
-		purge_session(dctx, s->pid);
-		return -1;
-	}
-	if (env.debug) {
-		printf("FSTACK (%d items):\n", fstack_n);
-		printf("KSTACK (%d items out of original %ld):\n", kstack_n, s->kstack_sz / 8);
-	}
-
-	ts_to_str(ktime_to_ts(s->start_ts), ts1, sizeof(ts1));
-	ts_to_str(ktime_to_ts(s->emit_ts), ts2, sizeof(ts2));
-	printf("%s -> %s TID/PID %d/%d (%s/%s):\n", ts1, ts2, s->pid, s->tgid,  s->task_comm, s->proc_comm);
-
-	/* Emit more verbose outputs before more succinct and high signal output.
-	 * Func trace goes first, then LBR, then (error) stack trace, each
-	 * conditional on being enabled to be collected and output
-	 */
-
-	/* Emit detailed function calls trace, but only if we have completed
-	 * call stack trace (depth == 0)
-	 */
-	if (env.emit_func_trace && s->depth == 0) {
-		prepare_ft_items(dctx, &stack_items1, s->pid, s->last_seq_id);
-		print_ft_items(dctx, &stack_items1);
-	}
-
-	/* Determine address range of deepest nested function */
-	if (fstack_n > 0) {
-		fitem = &fstack[fstack_n - 1];
-		if (fitem->finfo->size) {
-			fn_start = fitem->finfo->addr;
-			fn_end = fitem->finfo->addr + fitem->finfo->size;
-		}
-	}
-
-	/* LBR output */
-	if (env.use_lbr)
-		output_lbrs(dctx, sess, fn_start, fn_end);
+	int i, j;
 
 	/* Emit combined fstack/kstack + errors stack trace */
 	stack_items1.cnt = 0;
@@ -1114,8 +1036,8 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 	i = 0;
 	j = 0;
 	while (i < fstack_n) {
-		fitem = &fstack[i];
-		kitem = j < kstack_n ? &kstack[j] : NULL;
+		const struct fstack_item *fitem = &fstack[i];
+		const struct kstack_item *kitem = j < kstack_n ? &kstack[j] : NULL;
 
 		if (!kitem) {
 			/* this shouldn't happen unless we got no kernel stack
@@ -1150,13 +1072,17 @@ static int handle_call_stack(struct ctx *dctx, const struct call_stack *s)
 
 	print_stack_items(&stack_items1);
 
-	printf("\n\n");
-
 	return 0;
 }
 
-static int handle_session_end(struct ctx *ctx, const struct session_end *r)
+static int handle_session_end(struct ctx *dctx, const struct session_end *r)
 {
+	static struct fstack_item fstack[MAX_FSTACK_DEPTH];
+	static struct kstack_item kstack[MAX_KSTACK_DEPTH];
+	unsigned long fn_start = 0, fn_end = 0;
+	int fstack_n, kstack_n, ret = 0;
+	char ts1[64], ts2[64];
+	const struct call_stack *s = &r->stack;
 	struct session *sess;
 
 	if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
@@ -1164,19 +1090,90 @@ static int handle_session_end(struct ctx *ctx, const struct session_end *r)
 		return -EINVAL;
 	}
 
-	if (r->lbrs_sz > 0 && !sess->lbrs)
-		printf("LBR data was dropped and is missing in this sample!\n");
-	else if (r->lbrs_sz < 0)
-		printf("Failed to capture LBR entries: %d\n", r->lbrs_sz);
+	if (r->ignored)
+		goto out_purge;
+
+	if (!s->is_err && !env.emit_success_stacks)
+		goto out_purge;
+
+	if (s->is_err && env.has_error_filter && !should_report_stack(dctx, s))
+		goto out_purge;
+
+	if (env.debug) {
+		printf("GOT %s STACK (depth %u):\n", s->is_err ? "ERROR" : "SUCCESS", s->max_depth);
+		printf("DEPTH %d MAX DEPTH %d SAVED DEPTH %d MAX SAVED DEPTH %d\n",
+				s->depth, s->max_depth, s->saved_depth, s->saved_max_depth);
+	}
+
+	fstack_n = filter_fstack(dctx, fstack, s);
+	if (fstack_n < 0) {
+		fprintf(stderr, "FAILURE DURING FILTERING FUNCTION STACK!!! %d\n", fstack_n);
+		ret = -EINVAL;
+		goto out_purge;
+	}
+	kstack_n = filter_kstack(dctx, kstack, s);
+	if (kstack_n < 0) {
+		fprintf(stderr, "FAILURE DURING FILTERING KERNEL STACK!!! %d\n", kstack_n);
+		ret = -EINVAL;
+		goto out_purge;
+	}
+	if (env.debug) {
+		printf("FSTACK (%d items):\n", fstack_n);
+		printf("KSTACK (%d items out of original %ld):\n", kstack_n, s->kstack_sz / 8);
+	}
+
+	ts_to_str(ktime_to_ts(sess->start_ts), ts1, sizeof(ts1));
+	ts_to_str(ktime_to_ts(r->emit_ts), ts2, sizeof(ts2));
+	printf("%s -> %s TID/PID %d/%d (%s/%s):\n", ts1, ts2, sess->pid, sess->tgid,
+	       sess->task_comm, sess->proc_comm);
+
+	/* Emit more verbose outputs before more succinct and high signal output.
+	 * Func trace goes first, then LBR, then (error) stack trace, each
+	 * conditional on being enabled to be collected and output
+	 */
+
+	/* Emit detailed function calls trace, but only if we have completed
+	 * call stack trace (depth == 0)
+	 */
+	if (env.emit_func_trace && s->depth == 0) {
+		prepare_ft_items(dctx, &stack_items1, sess->pid, r->last_seq_id);
+		print_ft_items(dctx, &stack_items1);
+	}
+
+	/* Determine address range of deepest nested function */
+	if (fstack_n > 0) {
+		const struct fstack_item *fitem = &fstack[fstack_n - 1];
+
+		if (fitem->finfo->size) {
+			fn_start = fitem->finfo->addr;
+			fn_end = fitem->finfo->addr + fitem->finfo->size;
+		}
+	}
+
+	/* LBR output */
+	if (env.use_lbr) {
+		if (r->lbrs_sz > 0 && !sess->lbrs)
+			printf("LBR data was dropped and is missing in this sample!\n");
+		else if (r->lbrs_sz < 0)
+			printf("Failed to capture LBR entries: %d\n", r->lbrs_sz);
+		else
+			output_lbrs(dctx, sess, fn_start, fn_end);
+	}
+
+	/* Emit combined fstack/kstack + errors stack trace */
+	output_call_stack(dctx, fstack, fstack_n, kstack, kstack_n);
 
 	if (r->dropped_records) {
 		printf("WARNING! Sample data incomplete! %d record%s dropped. Consider increasing --ringbuf-map-size.\n",
 		       r->dropped_records, r->dropped_records == 1 ? "" : "s");
 	}
 
-	purge_session(ctx, r->pid);
+	printf("\n\n");
 
-	return 0;
+out_purge:
+	purge_session(dctx, r->pid);
+
+	return ret;
 }
 
 int handle_event(void *ctx, void *data, size_t data_sz)
@@ -1192,17 +1189,15 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	}
 
 	switch (type) {
-	case REC_CALL_STACK:
-		return handle_call_stack(ctx, data);
-	case REC_LBR_STACK:
-		return handle_lbr_stack(ctx, data);
 	case REC_SESSION_START:
 		return handle_session_start(ctx, data);
-	case REC_SESSION_END:
-		return handle_session_end(ctx, data);
 	case REC_FUNC_TRACE_ENTRY:
 	case REC_FUNC_TRACE_EXIT:
 		return handle_func_trace_entry(ctx, data);
+	case REC_LBR_STACK:
+		return handle_lbr_stack(ctx, data);
+	case REC_SESSION_END:
+		return handle_session_end(ctx, data);
 	default:
 		fprintf(stderr, "Unrecognized record type %d\n", type);
 		return -ENOTSUP;
