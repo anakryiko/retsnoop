@@ -1165,9 +1165,14 @@ static int handle_session_end(struct ctx *ctx, const struct session_end *r)
 	}
 
 	if (r->lbrs_sz > 0 && !sess->lbrs)
-		fprintf(stderr, "SESSION PID %d: LBR data is missing!\n", r->pid);
+		printf("LBR data was dropped and is missing in this sample!\n");
 	else if (r->lbrs_sz < 0)
-		fprintf(stderr, "Failed to capture LBR entries: %d\n", r->lbrs_sz);
+		printf("Failed to capture LBR entries: %d\n", r->lbrs_sz);
+
+	if (r->dropped_records) {
+		printf("WARNING! Sample data incomplete! %d record%s dropped. Consider increasing --ringbuf-map-size.\n",
+		       r->dropped_records, r->dropped_records == 1 ? "" : "s");
+	}
 
 	purge_session(ctx, r->pid);
 
@@ -1177,6 +1182,14 @@ static int handle_session_end(struct ctx *ctx, const struct session_end *r)
 int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	enum rec_type type = *(enum rec_type *)data;
+	static long prev_dropped_sessions;
+	long cur_dropped_sessions = read_dropped_sessions();
+
+	if (cur_dropped_sessions != prev_dropped_sessions) {
+		printf("WARNING! %ld samples were dropped, you are missing data! Consider increasing --ringbuf-map-size.\n",
+		       cur_dropped_sessions - prev_dropped_sessions);
+		prev_dropped_sessions = cur_dropped_sessions;
+	}
 
 	switch (type) {
 	case REC_CALL_STACK:

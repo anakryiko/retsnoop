@@ -18,4 +18,6 @@ int init_func_traces(void);
 
 int handle_event(void *ctx, void *data, size_t data_sz);
 
+long read_dropped_sessions(void);
+
 #endif /* __LOGIC_H */

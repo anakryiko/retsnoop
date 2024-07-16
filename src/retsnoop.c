@@ -215,6 +215,11 @@ const struct func_info *func_info(const struct ctx *ctx, __u32 id)
 	return &ctx->skel->data_func_infos->func_infos[id];
 }
 
+long read_dropped_sessions(void)
+{
+	return atomic_load(&env.ctx.skel->bss->stats.dropped_sessions);
+}
+
 int main(int argc, char **argv, char **envp)
 {
 	struct mass_attacher_opts att_opts = {};
@@ -639,6 +644,18 @@ int main(int argc, char **argv, char **envp)
 
 cleanup:
 	printf("\nDetaching...\n");
+
+	if (env.ctx.skel && env.ctx.skel->bss) {
+		long dropped_sessions = read_dropped_sessions();
+		long incomplete_sessions = atomic_load(&env.ctx.skel->bss->stats.incomplete_sessions);
+
+		if (dropped_sessions || incomplete_sessions) {
+			fprintf(stderr, "WARNING! There were dropped or incomplete data. Output might be incomplete!\n");
+			fprintf(stderr, "%-20s %ld\n", "DROPPED SAMPLES:", dropped_sessions);
+			fprintf(stderr, "%-20s %ld\n", "INCOMPLETE SAMPLES:", incomplete_sessions);
+		}
+	}
+
 cleanup_silent:
 	fflush(stdout);
 

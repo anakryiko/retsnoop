@@ -17,6 +17,11 @@
 
 #define TASK_COMM_LEN 16
 
+struct stats {
+	long dropped_sessions;
+	long incomplete_sessions;
+};
+
 enum func_flags {
 	FUNC_IS_ENTRY = 0x1,
 	FUNC_CANT_FAIL = 0x2,
@@ -59,6 +64,7 @@ struct session_end {
 	bool is_err;
 	int last_seq_id;
 	int lbrs_sz;
+	int dropped_records;
 };
 
 struct lbr_stack {
