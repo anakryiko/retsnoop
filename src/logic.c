@@ -4,10 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 #include <errno.h>
 #include <bpf/btf.h>
 #include <linux/perf_event.h>
-#include <time.h>
 #include "retsnoop.h"
 #include "logic.h"
 #include "env.h"
@@ -16,20 +16,6 @@
 #include "mass_attacher.h"
 #include "utils.h"
 #include "hashmap.h"
-
-struct session {
-	int pid;
-	int tgid;
-	uint64_t start_ts;
-	char proc_comm[16];
-	char task_comm[16];
-
-	int lbrs_sz;
-	struct perf_branch_entry *lbrs;
-
-	int ft_cnt;
-	struct func_trace_item *ft_entries;
-};
 
 static size_t session_hasher(long key, void *ctx)
 {
@@ -95,15 +81,8 @@ static int handle_session_start(struct ctx *ctx, const struct session_start *r)
 	return 0;
 }
 
-static int handle_lbr_stack(struct ctx *dctx, const struct lbr_stack *r)
+static int handle_lbr_stack(struct ctx *dctx, struct session *sess, const struct lbr_stack *r)
 {
-	struct session *sess;
-
-	if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
-		fprintf(stderr, "BUG: PID %d session data not found (LBR_STACK)!\n", r->pid);
-		return -EINVAL;
-	}
-
 	if (sess->lbrs) {
 		fprintf(stderr, "BUG: PID %d session data contains LBR data already!\n", r->pid);
 		return -EINVAL;
@@ -122,11 +101,6 @@ static int handle_lbr_stack(struct ctx *dctx, const struct lbr_stack *r)
 
 	return 0;
 }
-
-#define snappendf(dst, fmt, args...)							\
-	dst##_len += snprintf(dst + dst##_len,						\
-			      sizeof(dst) < dst##_len ? 0 : sizeof(dst) - dst##_len,	\
-			      fmt, ##args)
 
 static char underline[512]; /* fill be filled with header underline char */
 static char spaces[512]; /* fill be filled with spaces */
@@ -629,26 +603,11 @@ static void prepare_func_res(struct stack_item *s, long res, enum func_flags fun
 	}
 }
 
-struct func_trace_item {
-	long ts;
-	long func_lat;
-	int func_id;
-	int depth; /* 1-based, negative means exit from function */
-	int seq_id;
-	long func_res;
-};
-
-static int handle_func_trace_entry(struct ctx *ctx, const struct func_trace_entry *r)
+static int handle_func_trace_entry(struct ctx *ctx, struct session *sess,
+				   const struct func_trace_entry *r)
 {
-	struct session *sess;
 	struct func_trace_item *fti;
 	void *tmp;
-
-	if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
-		fprintf(stderr, "BUG: PID %d session data not found (%s)!\n", r->pid,
-			r->type == REC_FUNC_TRACE_ENTRY ? "FUNC_TRACE_ENTRY" : "FUNC_TRACE_EXIT");
-		return -EINVAL;
-	}
 
 	tmp = realloc(sess->ft_entries, (sess->ft_cnt + 1) * sizeof(sess->ft_entries[0]));
 	if (!tmp)
@@ -1094,7 +1053,7 @@ static int output_call_stack(struct ctx *dctx,
 	return 0;
 }
 
-static int handle_session_end(struct ctx *dctx, const struct session_end *r)
+static int handle_session_end(struct ctx *dctx, struct session *sess, const struct session_end *r)
 {
 	static struct fstack_item fstack[MAX_FSTACK_DEPTH];
 	static struct kstack_item kstack[MAX_KSTACK_DEPTH];
@@ -1102,12 +1061,6 @@ static int handle_session_end(struct ctx *dctx, const struct session_end *r)
 	int fstack_n, kstack_n, ret = 0;
 	char ts1[64], ts2[64];
 	const struct call_stack *s = &r->stack;
-	struct session *sess;
-
-	if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
-		fprintf(stderr, "BUG: PID %d session data not found (SESSION_END)!\n", r->pid);
-		return -EINVAL;
-	}
 
 	if (r->ignored)
 		goto out_purge;
@@ -1200,6 +1153,7 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	enum rec_type type = *(enum rec_type *)data;
 	static long prev_dropped_sessions;
 	long cur_dropped_sessions = read_dropped_sessions();
+	struct session *sess;
 
 	if (cur_dropped_sessions != prev_dropped_sessions) {
 		printf("WARNING! %ld samples were dropped, you are missing data! Consider increasing --ringbuf-map-size.\n",
@@ -1211,12 +1165,34 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	case REC_SESSION_START:
 		return handle_session_start(ctx, data);
 	case REC_FUNC_TRACE_ENTRY:
-	case REC_FUNC_TRACE_EXIT:
-		return handle_func_trace_entry(ctx, data);
-	case REC_LBR_STACK:
-		return handle_lbr_stack(ctx, data);
-	case REC_SESSION_END:
-		return handle_session_end(ctx, data);
+	case REC_FUNC_TRACE_EXIT: {
+		const struct func_trace_entry *r = data;
+
+		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
+			fprintf(stderr, "BUG: PID %d session data not found (%s)!\n", r->pid,
+				r->type == REC_FUNC_TRACE_ENTRY ? "FUNC_TRACE_ENTRY" : "FUNC_TRACE_EXIT");
+			return -EINVAL;
+		}
+		return handle_func_trace_entry(ctx, sess, r);
+	}
+	case REC_LBR_STACK: {
+		const struct lbr_stack *r = data;
+
+		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
+			fprintf(stderr, "BUG: PID %d session data not found (LBR_STACK)!\n", r->pid);
+			return -EINVAL;
+		}
+		return handle_lbr_stack(ctx, sess, r);
+	}
+	case REC_SESSION_END: {
+		const struct session_end *r = data;
+
+		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
+			fprintf(stderr, "BUG: PID %d session data not found (SESSION_END)!\n", r->pid);
+			return -EINVAL;
+		}
+		return handle_session_end(ctx, sess, r);
+	}
 	default:
 		fprintf(stderr, "Unrecognized record type %d\n", type);
 		return -ENOTSUP;
