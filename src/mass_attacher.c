@@ -46,12 +46,13 @@
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
-#define log(fmt, ...) printf(fmt, ##__VA_ARGS__)
+/* redefine attacher-specific vlog(), dlog(), ddlog() */
+#undef vlog
 #define vlog(fmt, ...) do { if (att->verbose) { printf(fmt, ##__VA_ARGS__); } } while (0)
+#undef dlog
 #define dlog(fmt, ...) do { if (att->debug) { printf(fmt, ##__VA_ARGS__); } } while (0)
+#undef ddlog
 #define ddlog(fmt, ...) do { if (att->debug_extra) { printf(fmt, ##__VA_ARGS__); } } while (0)
-
-#define elog(fmt, ...) fprintf(stderr, fmt, ##__VA_ARGS__)
 
 static const char *enforced_deny_globs[] = {
 	/* we use it for recursion protection */

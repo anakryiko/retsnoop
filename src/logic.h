@@ -31,14 +31,54 @@ struct session {
 	struct func_trace_item *ft_entries;
 };
 
+/*
+ * Typical output in "default" mode:
+ *                      entry_SYSCALL_64_after_hwframe+0x44  (arch/x86/entry/entry_64.S:112:0)
+ *                      do_syscall_64+0x2d                   (arch/x86/entry/common.c:46:12)
+ *    11us [-ENOENT]    __x64_sys_bpf+0x1c                   (kernel/bpf/syscall.c:4749:1)
+ *    10us [-ENOENT]    __sys_bpf+0x1a42                     (kernel/bpf/syscall.c:4632:9)
+ *                      . map_lookup_elem                    (kernel/bpf/syscall.c:1113:5)
+ * !   0us [-ENOENT]    bpf_map_copy_value
+ *
+ */
+struct stack_item {
+	char marks[2]; /* spaces or '!' and/or '*' */
+
+	char dur[20];  /* duration, e.g. '11us' or '...' for incomplete stack */
+	int dur_len;   /* number of characters used for duration output */
+
+	char err[24];  /* returned error, e.g., '-ENOENT' or '...' for incomplete stack */
+	int err_len;   /* number of characters used for error output */
+
+	/* resolved symbol name, but also can include:
+	 *   - full captured address, if --full-stacks option is enabled;
+	 *   - inline marker, '. ', prepended to symbol name;
+	 *   - offset within function, like '+0x1c'.
+	 * Examples:
+	 *   - 'ffffffff81c00068 entry_SYSCALL_64_after_hwframe+0x44';
+	 *   - '__x64_sys_bpf+0x1c';
+	 *   - '. map_lookup_elem'.
+	 */
+	char sym[124];
+	int sym_len;
+
+	/* source code location of resolved function, e.g.:
+	 *   - 'kernel/bpf/syscall.c:4749:1';
+	 *   - 'arch/x86/entry/entry_64.S:112:0'.
+	 * Could also have prepended original function name if it doesn't
+	 * match resolved kernel symbol, e.g.:
+	 *   'my_actual_func @ arch/x86/entry/entry_64.S:112:0'.
+	 */
+	char src[252];
+	int src_len;
+};
+
 const struct func_info *func_info(const struct ctx *ctx, __u32 id);
 
 enum func_flags;
 
 int func_flags(const char *func_name, const struct btf *btf, int btf_id);
 void format_func_flags(char *buf, size_t buf_sz, enum func_flags flags);
-
-int init_func_traces(void);
 
 int handle_event(void *ctx, void *data, size_t data_sz);
 
