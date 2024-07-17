@@ -46,6 +46,13 @@
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
+#define log(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#define vlog(fmt, ...) do { if (att->verbose) { printf(fmt, ##__VA_ARGS__); } } while (0)
+#define dlog(fmt, ...) do { if (att->debug) { printf(fmt, ##__VA_ARGS__); } } while (0)
+#define ddlog(fmt, ...) do { if (att->debug_extra) { printf(fmt, ##__VA_ARGS__); } } while (0)
+
+#define elog(fmt, ...) fprintf(stderr, fmt, ##__VA_ARGS__)
+
 static const char *enforced_deny_globs[] = {
 	/* we use it for recursion protection */
 	"bpf_get_smp_processor_id",
@@ -179,8 +186,8 @@ struct mass_attacher *mass_attacher__new(struct SKEL_NAME *skel, struct ksyms *k
 		err = glob_set__add_glob(&att->globs, enforced_deny_globs[i], NULL,
 					 GLOB_DENY | GLOB_INTERNAL);
 		if (err) {
-			fprintf(stderr, "Failed to add enforced deny glob '%s': %d\n",
-				enforced_deny_globs[i], err);
+			elog("Failed to add enforced deny glob '%s': %d\n",
+			     enforced_deny_globs[i], err);
 			mass_attacher__free(att);
 			return NULL;
 		}
@@ -274,8 +281,8 @@ static void *resize_map(struct bpf_map *map, size_t elem_cnt)
 
 	err = bpf_map__set_value_size(map, elem_cnt * elem_sz);
 	if (err) {
-		fprintf(stderr, "Failed to dynamically size BPF map '%s' to %zu elements with total size %zu: %d\n",
-			bpf_map__name(map), elem_cnt, elem_cnt * elem_sz, err);
+		elog("Failed to dynamically size BPF map '%s' to %zu elements with total size %zu: %d\n",
+		     bpf_map__name(map), elem_cnt, elem_cnt * elem_sz, err);
 		return NULL;
 	}
 
@@ -290,28 +297,28 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	/* Load and cache /proc/kallsyms for IP <-> kfunc mapping */
 	att->ksyms = ksyms__load();
 	if (!att->ksyms) {
-		fprintf(stderr, "Failed to load /proc/kallsyms\n");
+		elog("Failed to load /proc/kallsyms\n");
 		return -EINVAL;
 	}
 
 	/* Bump RLIMIT_MEMLOCK to allow BPF sub-system to do anything */
 	err = bump_rlimit(RLIMIT_MEMLOCK, RLIM_INFINITY);
 	if (err) {
-		fprintf(stderr, "Failed to set RLIM_MEMLOCK. Won't be able to load BPF programs: %d\n", err);
+		elog("Failed to set RLIM_MEMLOCK. Won't be able to load BPF programs: %d\n", err);
 		return err;
 	}
 
 	/* Allow opening lots of BPF programs */
 	err = bump_rlimit(RLIMIT_NOFILE, att->max_fileno_rlimit ?: 300000);
 	if (err) {
-		fprintf(stderr, "Failed to set RLIM_NOFILE. Won't be able to attach many BPF programs: %d\n", err);
+		elog("Failed to set RLIM_NOFILE. Won't be able to attach many BPF programs: %d\n", err);
 		return err;
 	}
 
 	/* Detect supported features and calibrate kretprobe IP extraction */
 	err = calibrate_features(att);
 	if (err) {
-		fprintf(stderr, "Failed to perform feature calibration: %d\n", err);
+		elog("Failed to perform feature calibration: %d\n", err);
 		return err;
 	}
 
@@ -323,8 +330,8 @@ int mass_attacher__prepare(struct mass_attacher *att)
 			err = glob_set__add_glob(&att->globs, sleepable_deny_globs[i], NULL,
 						 GLOB_DENY | GLOB_INTERNAL);
 			if (err) {
-				fprintf(stderr, "Failed to add enforced deny glob '%s': %d\n",
-					sleepable_deny_globs[i], err);
+				elog("Failed to add enforced deny glob '%s': %d\n",
+				     sleepable_deny_globs[i], err);
 				return err;
 			}
 		}
@@ -352,7 +359,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	/* Load names of attachable kprobes matching glob specs */
 	err = load_matching_kprobes(att);
 	if (err) {
-		fprintf(stderr, "Failed to read the list of available kprobes: %d\n", err);
+		elog("Failed to read the list of available kprobes: %d\n", err);
 		return err;
 	}
 
@@ -382,11 +389,10 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	att->vmlinux_btf = libbpf_find_kernel_btf();
 	err = libbpf_get_error(att->vmlinux_btf);
 	if (err) {
-		fprintf(stderr, "Failed to load vmlinux BTF: %d\n", err);
+		elog("Failed to load vmlinux BTF: %d\n", err);
 		return -EINVAL;
 	}
-	if (att->verbose)
-		printf("Loaded BTF for [vmlinux].\n");
+	vlog("Loaded BTF for [vmlinux].\n");
 
 	n = btf__type_cnt(att->vmlinux_btf);
 	for (i = 1; i < n; i++) {
@@ -406,8 +412,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		/* check if we have a matching attachable kprobe */
 		kp = find_kprobe(att, func_name, NULL);
 		if (!kp) {
-			if (att->verbose)
-				printf("Function '%s' is not an attachable kprobe, skipping.\n", func_name);
+			vlog("Function '%s' is not an attachable kprobe, skipping.\n", func_name);
 			continue;
 		}
 
@@ -441,12 +446,10 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		btf = btf__load_module_btf(mod, att->vmlinux_btf);
 		if (!btf) {
 			err = -errno;
-			if (att->verbose)
-				printf("Failed to load BTF for module [%s]: %d\n", mod, err);
+			vlog("Failed to load BTF for module [%s]: %d\n", mod, err);
 			continue;
 		}
-		if (att->verbose)
-			printf("Loaded BTF for module [%s].\n", mod);
+		vlog("Loaded BTF for module [%s].\n", mod);
 		tmp = realloc(att->mod_btfs, (att->mod_btf_cnt + 1) * sizeof(*att->mod_btfs));
 		if (!tmp)
 			return -ENOMEM;
@@ -471,8 +474,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 			/* check if we have a matching attachable kprobe */
 			kp = find_kprobe(att, func_name, mod);
 			if (!kp) {
-				if (att->verbose)
-					printf("Function '%s [%s]' is not an attachable kprobe, skipping.\n", func_name, mod);
+				vlog("Function '%s [%s]' is not an attachable kprobe, skipping.\n", func_name, mod);
 				continue;
 			}
 
@@ -500,7 +502,7 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	}
 
 	if (att->func_cnt == 0) {
-		fprintf(stderr, "No matching functions found.\n");
+		elog("No matching functions found.\n");
 		return -ENOENT;
 	}
 
@@ -517,10 +519,8 @@ int mass_attacher__prepare(struct mass_attacher *att)
 				bpf_program__set_attach_target(att->fexits[i], 0, finfo->name);
 				bpf_program__set_attach_target(att->fexit_voids[i], 0, finfo->name);
 
-				if (att->debug) {
-					printf("Found total %d functions with %d arguments.\n",
-					       att->func_info_cnts[i], i);
-				}
+				dlog("Found total %d functions with %d arguments.\n",
+				     att->func_info_cnts[i], i);
 			} else {
 				bpf_program__set_autoload(att->fentries[i], false);
 				bpf_program__set_autoload(att->fexits[i], false);
@@ -539,23 +539,21 @@ int mass_attacher__prepare(struct mass_attacher *att)
 		}
 	}
 
-	if (att->verbose) {
-		printf("Found %d attachable functions in total.\n", att->func_cnt);
-		printf("Skipped %d functions in total.\n", att->func_skip_cnt);
+	vlog("Found %d attachable functions in total.\n", att->func_cnt);
+	vlog("Skipped %d functions in total.\n", att->func_skip_cnt);
 
-		if (att->debug) {
-			for (i = 0; i < att->globs.glob_cnt; i++) {
-				struct glob_spec *g = &att->globs.globs[i];
+	if (att->debug) {
+		for (i = 0; i < att->globs.glob_cnt; i++) {
+			struct glob_spec *g = &att->globs.globs[i];
 
-				if ((g->flags & GLOB_INTERNAL) && !att->debug_extra)
-					continue;
+			if ((g->flags & GLOB_INTERNAL) && !att->debug_extra)
+				continue;
 
-				printf("%s glob '%s%s%s%s'%s matched %d functions.\n",
-				       (g->flags & GLOB_ALLOW) ? "Allow" : "Deny",
-				       NAME_MOD(g->glob, g->mod_glob),
-				       (g->flags & GLOB_INTERNAL) ? " (internal)" : "",
-				       g->matches);
-			}
+			log("%s glob '%s%s%s%s'%s matched %d functions.\n",
+			    (g->flags & GLOB_ALLOW) ? "Allow" : "Deny",
+			    NAME_MOD(g->glob, g->mod_glob),
+			    (g->flags & GLOB_INTERNAL) ? " (internal)" : "",
+			    g->matches);
 		}
 	}
 
@@ -574,7 +572,7 @@ static int calibrate_features(struct mass_attacher *att)
 
 	skel = calib_feat_bpf__open_and_load();
 	if (!skel) {
-		fprintf(stderr, "Failed to load feature calibration skeleton\n");
+		elog("Failed to load feature calibration skeleton\n");
 		return -EFAULT;
 	}
 
@@ -582,7 +580,7 @@ static int calibrate_features(struct mass_attacher *att)
 
 	err = calib_feat_bpf__attach(skel);
 	if (err) {
-		fprintf(stderr, "Failed to attach feature calibration skeleton\n");
+		elog("Failed to attach feature calibration skeleton\n");
 		goto err_out;
 	}
 
@@ -590,12 +588,12 @@ static int calibrate_features(struct mass_attacher *att)
 	syscall(__NR_nanosleep, NULL, NULL);
 
 	if (!skel->bss->calib_entry_happened || !skel->bss->calib_exit_happened) {
-		fprintf(stderr, "Calibration failure, BPF probes weren't triggered!\n");
+		elog("Calibration failure, BPF probes weren't triggered!\n");
 		goto err_out;
 	}
 
 	if (!skel->bss->has_bpf_get_func_ip && skel->bss->kret_ip_off == 0) {
-		fprintf(stderr, "Failed to calibrate kretprobe func IP extraction.\n");
+		elog("Failed to calibrate kretprobe func IP extraction.\n");
 		goto err_out;
 	}
 
@@ -641,9 +639,8 @@ static int prepare_func(struct mass_attacher *att, struct kprobe_info *kp,
 
 	ksym_it = ksyms__get_symbol_iter(att->ksyms, kp->name, kp->mod, KSYM_FUNC);
 	if (!ksym_it) {
-		if (att->debug_extra)
-			printf("Function '%s%s%s%s' not found in /proc/kallsyms! Skipping.\n",
-			       NAME_MOD(kp->name, kp->mod));
+		ddlog("Function '%s%s%s%s' not found in /proc/kallsyms! Skipping.\n",
+		      NAME_MOD(kp->name, kp->mod));
 		att->func_skip_cnt++;
 		return 0;
 	}
@@ -654,34 +651,28 @@ static int prepare_func(struct mass_attacher *att, struct kprobe_info *kp,
 	}
 
 	if (kp->cnt != ksym_cnt) {
-		printf("Function '%s%s%s%s' has mismatched %d ksyms vs %d attachable kprobe entries, skipping.\n",
-		       NAME_MOD(kp->name, kp->mod), ksym_cnt, kp->cnt);
+		log("Function '%s%s%s%s' has mismatched %d ksyms vs %d attachable kprobe entries, skipping.\n",
+		    NAME_MOD(kp->name, kp->mod), ksym_cnt, kp->cnt);
 		att->func_skip_cnt += ksym_cnt;
 		return 0;
 	}
 
 	if (att->use_fentries && !is_func_type_ok(btf, btf_id)) {
-		if (att->debug) {
-			printf("Function '%s%s%s%s' has prototype incompatible with fentry/fexit, skipping.\n",
-			       NAME_MOD(kp->name, kp->mod));
-		}
+		dlog("Function '%s%s%s%s' has prototype incompatible with fentry/fexit, skipping.\n",
+		     NAME_MOD(kp->name, kp->mod));
 		att->func_skip_cnt += ksym_cnt;
 		return 0;
 	}
 	if (att->use_fentries && ksym_cnt > 1) {
-		if (att->verbose) {
-			printf("Function '%s%s%s%s' has multiple (%d) ambiguous instances and is incompatible with fentry/fexit, skipping.\n",
-			       NAME_MOD(kp->name, kp->mod), ksym_cnt);
-		}
+		vlog("Function '%s%s%s%s' has multiple (%d) ambiguous instances and is incompatible with fentry/fexit, skipping.\n",
+		     NAME_MOD(kp->name, kp->mod), ksym_cnt);
 		att->func_skip_cnt += ksym_cnt;
 		return 0;
 	}
 
 	if (att->max_func_cnt && att->func_cnt + ksym_cnt > att->max_func_cnt) {
-		if (att->verbose) {
-			fprintf(stderr, "Maximum allowed number of functions (%d) reached, skipping the rest.\n",
-			        att->max_func_cnt);
-		}
+		vlog("Maximum allowed number of functions (%d) reached, skipping the rest.\n",
+		     att->max_func_cnt);
 		return -E2BIG;
 	}
 
@@ -714,10 +705,8 @@ static int prepare_func(struct mass_attacher *att, struct kprobe_info *kp,
 
 		att->func_cnt++;
 
-		if (att->debug_extra) {
-			printf("Found function '%s%s%s%s' at address 0x%lx...\n",
-			       NAME_MOD(kp->name, kp->mod), ksym->addr);
-		}
+		ddlog("Found function '%s%s%s%s' at address 0x%lx...\n",
+		      NAME_MOD(kp->name, kp->mod), ksym->addr);
 	}
 
 	return 0;
@@ -796,7 +785,7 @@ static int load_matching_kprobes(struct mass_attacher *att)
 	f = fopen(fname, "r");
 	if (!f) {
 		err = -errno;
-		fprintf(stderr, "Failed to open %s: %d\n", fname, err);
+		elog("Failed to open %s: %d\n", fname, err);
 		return err;
 	}
 
@@ -846,10 +835,8 @@ static int load_matching_kprobes(struct mass_attacher *att)
 			if (glob_idx >= 0) {
 				g = &att->globs.globs[glob_idx];
 				g->matches++;
-				if (att->debug_extra) {
-					printf("Function '%s%s%s%s' is allowed by '%s%s%s%s' glob.\n",
-					       NAME_MOD(name, mod), NAME_MOD(g->glob, g->mod_glob));
-				}
+				ddlog("Function '%s%s%s%s' is allowed by '%s%s%s%s' glob.\n",
+				      NAME_MOD(name, mod), NAME_MOD(g->glob, g->mod_glob));
 			}
 
 			i++; /* keep kprobe */
@@ -857,10 +844,8 @@ static int load_matching_kprobes(struct mass_attacher *att)
 			if (glob_idx >= 0) {
 				g = &att->globs.globs[glob_idx];
 				g->matches++;
-				if (att->debug_extra) {
-					printf("Function '%s%s%s%s' is denied by '%s%s%s%s' glob.\n",
-					       NAME_MOD(name, mod), NAME_MOD(g->glob, g->mod_glob));
-				}
+				ddlog("Function '%s%s%s%s' is denied by '%s%s%s%s' glob.\n",
+				      NAME_MOD(name, mod), NAME_MOD(g->glob, g->mod_glob));
 			}
 
 			/* clean up memory and swap in last element */
@@ -894,10 +879,8 @@ static int load_matching_kprobes(struct mass_attacher *att)
 	/* it could be that globs filtered out all discovered kprobes */
 	att->kprobe_cnt = att->kprobe_cnt ? i + 1 : 0;
 
-	if (att->verbose) {
-		printf("Discovered %d available kprobes, filtered down to %d, and compacted to %d unique names!\n",
-		       orig_cnt, filter_cnt, att->kprobe_cnt);
-	}
+	vlog("Discovered %d available kprobes, filtered down to %d, and compacted to %d unique names!\n",
+	     orig_cnt, filter_cnt, att->kprobe_cnt);
 
 	return 0;
 }
@@ -920,12 +903,12 @@ int mass_attacher__load(struct mass_attacher *att)
 	cur_attacher = NULL;
 
 	if (err) {
-		fprintf(stderr, "Failed to load and verify BPF skeleton\n");
+		elog("Failed to load and verify BPF skeleton\n");
 		return err;
 	}
 
-	if (att->use_fentries && att->debug)
-		printf("Preparing %d BPF program copies...\n", att->func_cnt * 2);
+	if (att->use_fentries)
+		dlog("Preparing %d BPF program copies...\n", att->func_cnt * 2);
 
 	if (att->dry_run)
 		return 0;
@@ -945,8 +928,8 @@ int mass_attacher__load(struct mass_attacher *att)
 			err = bpf_map_update_elem(map_fd, &func_addr, &i, 0);
 			if (err) {
 				err = -errno;
-				fprintf(stderr, "Failed to add 0x%lx -> '%s' lookup entry to BPF map: %d\n",
-					func_addr, func_name, err);
+				elog("Failed to add 0x%lx -> '%s' lookup entry to BPF map: %d\n",
+				     func_addr, func_name, err);
 				return err;
 			}
 		}
@@ -956,7 +939,7 @@ int mass_attacher__load(struct mass_attacher *att)
 
 			err = clone_prog(att->fentries[finfo->arg_cnt], btf_fd, finfo->btf_id);
 			if (err < 0) {
-				fprintf(stderr, "Failed to clone FENTRY BPF program for function '%s': %d\n", func_name, err);
+				elog("Failed to clone FENTRY BPF program for function '%s': %d\n", func_name, err);
 				return err;
 			}
 			finfo->fentry_prog_fd = err;
@@ -966,7 +949,7 @@ int mass_attacher__load(struct mass_attacher *att)
 			else
 				err = clone_prog(att->fexits[finfo->arg_cnt], btf_fd, finfo->btf_id);
 			if (err < 0) {
-				fprintf(stderr, "Failed to clone FEXIT BPF program for function '%s': %d\n", func_name, err);
+				elog("Failed to clone FEXIT BPF program for function '%s': %d\n", func_name, err);
 				return err;
 			}
 			finfo->fexit_prog_fd = err;
@@ -1022,9 +1005,9 @@ static void debug_multi_kprobe(struct mass_attacher *att, unsigned long *addrs,
 		int err;
 
 		err = -errno;
-		printf("DEBUG: KPROBE.MULTI can't attach to func #%d (%s%s%s%s) at addr %lx using %s: %d\n",
-		       l + 1, NAME_MOD(finfo->name, finfo->module), finfo->addr,
-		       addrs ? "addrs" : "syms", err);
+		log("DEBUG: KPROBE.MULTI can't attach to func #%d (%s%s%s%s) at addr %lx using %s: %d\n",
+		    l + 1, NAME_MOD(finfo->name, finfo->module), finfo->addr,
+		    addrs ? "addrs" : "syms", err);
 		return;
 	}
 
@@ -1071,8 +1054,8 @@ int mass_attacher__attach(struct mass_attacher *att)
 			prog_fd = att->func_infos[i].fentry_prog_fd;
 			err = bpf_raw_tracepoint_open(NULL, prog_fd);
 			if (err < 0) {
-				fprintf(stderr, "Failed to attach FENTRY prog (fd %d) for func #%d (%s%s%s%s) at addr %lx: %d\n",
-					prog_fd, i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, -errno);
+				elog("Failed to attach FENTRY prog (fd %d) for func #%d (%s%s%s%s) at addr %lx: %d\n",
+				     prog_fd, i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, -errno);
 				goto err_out;
 			}
 			att->func_infos[i].fentry_link_fd = err;
@@ -1080,8 +1063,8 @@ int mass_attacher__attach(struct mass_attacher *att)
 			prog_fd = att->func_infos[i].fexit_prog_fd;
 			err = bpf_raw_tracepoint_open(NULL, prog_fd);
 			if (err < 0) {
-				fprintf(stderr, "Failed to attach FEXIT prog (fd %d) for func #%d (%s%s%s%s) at addr %lx: %d\n",
-					prog_fd, i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, -errno);
+				elog("Failed to attach FEXIT prog (fd %d) for func #%d (%s%s%s%s) at addr %lx: %d\n",
+				     prog_fd, i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, -errno);
 				goto err_out;
 			}
 			att->func_infos[i].fexit_link_fd = err;
@@ -1100,8 +1083,8 @@ int mass_attacher__attach(struct mass_attacher *att)
 									     func_name, &kprobe_opts);
 			err = libbpf_get_error(finfo->kentry_link);
 			if (err) {
-				fprintf(stderr, "Failed to attach KPROBE prog for func #%d (%s%s%s%s) at addr %lx: %d\n",
-					i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, err);
+				elog("Failed to attach KPROBE prog for func #%d (%s%s%s%s) at addr %lx: %d\n",
+				     i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, err);
 				goto err_out;
 			}
 
@@ -1112,8 +1095,8 @@ int mass_attacher__attach(struct mass_attacher *att)
 									    func_name, &kprobe_opts);
 			err = libbpf_get_error(finfo->kexit_link);
 			if (err) {
-				fprintf(stderr, "Failed to attach KRETPROBE prog for func #%d (%s%s%s%s) at addr %lx: %d\n",
-					i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, err);
+				elog("Failed to attach KRETPROBE prog for func #%d (%s%s%s%s) at addr %lx: %d\n",
+				     i + 1, NAME_MOD(finfo->name, finfo->module), func_addr, err);
 				goto err_out;
 			}
 		}
@@ -1124,13 +1107,14 @@ skip_attach:
 
 			format_func_flags(flags_buf, sizeof(flags_buf),
 					  att->skel->data_func_infos->func_infos[i].flags);
-			printf("Attached%s to function #%d '%s%s%s%s' (addr 0x%lx, btf id %d, flags %s).\n",
-			       att->dry_run ? " (dry run)" : "", i + 1,
-			       NAME_MOD(finfo->name, finfo->module), func_addr, finfo->btf_id,
-			       flags_buf);
+			log("Attached%s to function #%d '%s%s%s%s' (addr 0x%lx, btf id %d, flags %s).\n",
+			    att->dry_run ? " (dry run)" : "", i + 1,
+			    NAME_MOD(finfo->name, finfo->module), func_addr, finfo->btf_id,
+			    flags_buf);
 		} else if (att->verbose) {
-			printf("Attached%s to function #%d '%s%s%s%s'.\n",
-			att->dry_run ? " (dry run)" : "", i + 1, NAME_MOD(finfo->name, finfo->module));
+			log("Attached%s to function #%d '%s%s%s%s'.\n",
+			    att->dry_run ? " (dry run)" : "", i + 1,
+			    NAME_MOD(finfo->name, finfo->module));
 		}
 	}
 
@@ -1158,8 +1142,8 @@ skip_attach:
 			libbpf_print_fn_t old_print_fn;
 
 			err = -errno;
-			fprintf(stderr, "Going to debug failing KPROBE.MULTI attachment to %d functions with error: %d...\n",
-				att->func_cnt, err);
+			elog("Going to debug failing KPROBE.MULTI attachment to %d functions with error: %d...\n",
+			     att->func_cnt, err);
 
 			old_print_fn = libbpf_set_print(libbpf_noop_print_fn);
 			debug_multi_kprobe(att, addrs, NULL, 0, att->func_cnt - 1);
@@ -1175,8 +1159,8 @@ skip_attach:
 		}
 		if (!multi_link) {
 			err = -errno;
-			fprintf(stderr, "Failed to multi-attach KPROBE.MULTI prog to %d functions: %d\n",
-				att->func_cnt, err);
+			elog("Failed to multi-attach KPROBE.MULTI prog to %d functions: %d\n",
+			     att->func_cnt, err);
 			goto err_out;
 		}
 		att->kentry_multi_link = multi_link;
@@ -1186,17 +1170,15 @@ skip_attach:
 								   NULL, &multi_opts);
 		if (!multi_link) {
 			err = -errno;
-			fprintf(stderr, "Failed to multi-attach KRETPROBE.MULTI prog to %d functions: %d\n",
-				att->func_cnt, err);
+			elog("Failed to multi-attach KRETPROBE.MULTI prog to %d functions: %d\n",
+			     att->func_cnt, err);
 			goto err_out;
 		}
 		att->kexit_multi_link = multi_link;
 	}
 
-	if (att->verbose) {
-		printf("Total %d kernel functions attached%s successfully!\n",
-			att->func_cnt, att->dry_run ? " (dry run)" : "");
-	}
+	vlog("Total %d kernel functions attached%s successfully!\n",
+	     att->func_cnt, att->dry_run ? " (dry run)" : "");
 
 	free(cookies);
 	free(addrs);
