@@ -421,6 +421,21 @@ static int detect_linux_src_loc(const char *path)
 	return 0;
 }
 
+/* strip out column number in "kernel/bpf/syscall.c:5670:1" */
+static void strip_out_column_num(char *file_linenum)
+{
+	int off1, off2, n, col;
+
+	n = sscanf(file_linenum, "%*[^:]:%*d%n:%d%n", &off1, &col, &off2);
+	/* sscanf doesn't report %n "matches" */
+	if (n != 1)
+		return;
+	n = strlen(file_linenum);
+	if (off2 != n)
+		return;
+	file_linenum[off1] = '\0';
+}
+
 /*
  * Typical output in "default" mode:
  *                      entry_SYSCALL_64_after_hwframe+0x44  (arch/x86/entry/entry_64.S:112:0)
@@ -825,6 +840,7 @@ static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem
 		snappendf(s->sym, "+0x%lx", kitem->addr - kitem->ksym->addr);
 	if (symb_cnt) {
 		line_off = detect_linux_src_loc(resp->line);
+		strip_out_column_num(resp->line + line_off);
 
 		snappendf(s->src, "(");
 		if (strcmp(fname, resp->fname) != 0)
@@ -841,6 +857,7 @@ static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem
 		}
 
 		line_off = detect_linux_src_loc(resp->line);
+		strip_out_column_num(resp->line + line_off);
 
 		snappendf(s->sym, "%*s. %s", env.emit_full_stacks ? 18 : 0, "", resp->fname);
 		snappendf(s->src, "(%s)", resp->line + line_off);
@@ -901,6 +918,7 @@ static void prepare_lbr_items(struct ctx *ctx, long addr, struct stack_items_cac
 
 	resp = &resps[symb_cnt - 1];
 	line_off = detect_linux_src_loc(resp->line);
+	strip_out_column_num(resp->line + line_off);
 
 	snappendf(s->src, "(");
 	if (strcmp(ksym->name, resp->fname) != 0)
@@ -909,6 +927,7 @@ static void prepare_lbr_items(struct ctx *ctx, long addr, struct stack_items_cac
 
 	for (i = 1, resp--; i < symb_cnt; i++, resp--) {
 		line_off = detect_linux_src_loc(resp->line);
+		strip_out_column_num(resp->line + line_off);
 
 		s = get_stack_item(cache);
 		if (!s) {
