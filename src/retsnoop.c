@@ -513,7 +513,7 @@ int main(int argc, char **argv, char **envp)
 		const struct glob *glob = &env.entry_globs[i];
 		bool matched = false;
 
-		for (j = 0, n = mass_attacher__func_cnt(att); j < n; j++) {
+		for (j = 0; j < n; j++) {
 			const struct mass_attacher_func_info *finfo = mass_attacher__func(att, j);
 
 			if (full_glob_matches(glob->name, glob->mod, finfo->name, finfo->module)) {

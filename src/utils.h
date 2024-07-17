@@ -13,6 +13,28 @@
 #define min(x, y) ((x) < (y) ? (x): (y))
 #define max(x, y) ((x) < (y) ? (y): (x))
 
+/*
+ * Logging helpers
+ */
+
+#ifndef elog
+#define elog(fmt, ...) fprintf(stderr, fmt, ##__VA_ARGS__)
+#endif
+
+#ifndef log
+#define log(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#endif
+#ifndef vlog
+#define vlog(fmt, ...) do { if (env.verbose) { printf(fmt, ##__VA_ARGS__); } } while (0)
+#endif
+#ifndef dlog
+#define dlog(fmt, ...) do { if (env.debug) { printf(fmt, ##__VA_ARGS__); } } while (0)
+#endif
+
+/*
+ * Formatting helpers
+ */
+
 /* Macro to output glob or kprobe full display name in the form of either:
  *   - 'name', if mod is NULL;
  *   - 'name [mod]', if mod is not NULL;
