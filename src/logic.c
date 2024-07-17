@@ -662,7 +662,7 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 		f = &sess->ft_entries[i];
 		finfo = mass_attacher__func(ctx->att, f->func_id);
 		d = f->depth > 0 ? f->depth : -f->depth;
-		sp = spaces + sizeof(spaces) - 1 - 4 * min(d - 1, 30);
+		sp = spaces + sizeof(spaces) - 1 - 4 * min(d - 1, 20);
 
 		if (f->seq_id > prev_seq_id + 1)
 			add_missing_records_msg(cache, f->seq_id - prev_seq_id - 1);

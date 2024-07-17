@@ -21,6 +21,16 @@
  */
 #define NAME_MOD(name, mod) name, mod ? " [" : "", mod ?: "", mod ? "]" : ""
 
+#define snappendf(dst, fmt, args...)							\
+	dst##_len += snprintf(dst + dst##_len,						\
+			      sizeof(dst) < dst##_len ? 0 : sizeof(dst) - dst##_len,	\
+			      fmt, ##args)
+
+#define vsnappendf(dst, fmt, args)							\
+	dst##_len += vsnprintf(dst + dst##_len,						\
+			       sizeof(dst) < dst##_len ? 0 : sizeof(dst) - dst##_len,	\
+			       fmt, args)
+
 /*
  * Atomic helpers
  */
