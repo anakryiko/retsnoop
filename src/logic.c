@@ -31,8 +31,15 @@ static struct hashmap sessions_hash = HASHMAP_INIT(session_hasher, session_equal
 
 static void free_session(struct session *sess)
 {
+	int i;
+
 	if (!sess)
 		return;
+
+	for (i = 0; i < sess->fn_args_cnt; i++) {
+		free(sess->fn_args_entries[i].arg_data);
+	}
+	free(sess->fn_args_entries);
 
 	free(sess->lbrs);
 
@@ -609,7 +616,8 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 	struct stack_item *s;
 	struct session *sess;
 	struct func_trace_item *f, *fn;
-	int i, d, prev_seq_id = -1;
+	int i, d, prev_seq_id = -1, orig_seq_id;
+	int args_idx = 0;
 
 	if (!hashmap__find(&sessions_hash, (long)pid, &sess))
 		return;
@@ -632,6 +640,7 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 		}
 
 		/* see if we can collapse leaf function entry/exit into one */
+		orig_seq_id = f->seq_id;
 		fn = &sess->ft_entries[i + 1];
 		if (i + 1 < sess->ft_cnt &&
 		    fn->seq_id == f->seq_id + 1 && /* consecutive items */
@@ -648,14 +657,36 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 		else			  /* exit */
 			mark = "\u2190 "; /* unicode <- character */
 
-		/* store function name and space indentation in src, as we
-		 * might need a bunch of extra space due to deep nestedness
+		/* store function name and space indentation in sym, it should
+		 * be enough even with deep nestedness levels (we cap them)
 		 */
-		snappendf(s->src, "%s%s%s", sp, mark, finfo->name);
+		snappendf(s->sym, "%s%s%s", sp, mark, finfo->name);
 
 		if (f->depth < 0) {
 			snappendf(s->dur, "%.3fus", f->func_lat / 1000.0);
 			prepare_func_res(s, f->func_res, func_info(ctx, f->func_id)->flags);
+		}
+
+		if (env.capture_args) {
+			struct func_args_item *fai = NULL;
+			bool args_found = false;;
+
+			while (args_idx < sess->fn_args_cnt) {
+				fai = &sess->fn_args_entries[args_idx];
+				if (fai->seq_id > orig_seq_id)
+					break;
+				/* advance regardless if we found a match or not */
+				args_idx++;
+				if (fai->seq_id == orig_seq_id) {
+					args_found = true;
+					break;
+				}
+			}
+
+			if (args_found)
+				prepare_fn_args_data(ctx, s, f->func_id, fai);
+			else if (f->depth > 0) /* func entry */
+				snappendf(s->src, "... missing ...");
 		}
 	}
 
@@ -665,7 +696,7 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 
 static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cache)
 {
-	int dur_len = 5, res_len = 0, src_len = 0, i;
+	int dur_len = 5, res_len = 0, sym_len = 0, arg_len = 0, i;
 	const struct stack_item *s;
 
 	printf("\n");
@@ -674,29 +705,46 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 	for (i = 0, s = cache->items; i < cache->cnt; i++, s++) {
 		dur_len = max(dur_len, s->dur_len);
 		res_len = max(res_len, s->err_len);
-		src_len = max(src_len, s->src_len);
+		sym_len = max(sym_len, s->sym_len);
+		arg_len = max(arg_len, s->src_len);
 	}
 	/* the whole +2 and -2 business is due to the use of unicode characters */
-	src_len = max(src_len, 2 + sizeof("FUNCTION CALL TRACE") - 1);
-	res_len = max(res_len, sizeof("RESULT") - 1);
 	dur_len = max(dur_len, sizeof("DURATION") - 1);
+	res_len = max(res_len, sizeof("RESULT") - 1);
+	sym_len = max(sym_len, 2 + sizeof("FUNCTION CALL TRACE") - 1);
+	arg_len = max(arg_len, sizeof("ARGS") - 1);
+	/* but truncate to maximum buffer sizes */
+	dur_len = min(dur_len, sizeof(s->dur));
+	res_len = min(res_len, sizeof(s->err));
+	sym_len = min(sym_len, sizeof(s->sym));
+	arg_len = min(arg_len, sizeof(s->src));
 
-	printf("%-*s   %-*s  %*s\n",
-	       src_len - 2, "FUNCTION CALL TRACE",
-	       res_len, "RESULT", dur_len, "DURATION");
-	printf("%-.*s   %-.*s  %.*s\n",
-	       src_len - 2, underline,
+	printf("%-*s   %-*s  %*s",
+	       sym_len - 2, "FUNCTION CALL TRACE",
+	       res_len, "RESULT",
+	       dur_len, "DURATION");
+	if (env.capture_args)
+		printf("  %-*s", arg_len, "ARGS");
+	printf("\n");
+
+	printf("%-.*s   %-.*s  %.*s",
+	       sym_len - 2, underline,
 	       res_len, underline,
 	       dur_len, underline);
+	if (env.capture_args)
+		printf("  %-.*s", arg_len, underline);
+	printf("\n");
 
 	/* emit line by line taking into account calculated lengths of each column */
 	for (i = 0, s = cache->items; i < cache->cnt; i++, s++) {
-		printf("%-*s   %-*s  %*s\n",
-		       src_len, s->src,
+		printf("%-*s   %-*s  %*s",
+		       sym_len, s->sym,
 		       res_len, s->err,
 		       dur_len, s->dur);
+		if (env.capture_args)
+			printf("  %-*s", arg_len, s->src);
+		printf("\n");
 	}
-
 }
 
 static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem,
@@ -1133,6 +1181,15 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 		}
 		return handle_func_trace_entry(ctx, sess, r);
 	}
+	case REC_FUNC_ARGS_CAPTURE: {
+		struct func_args_capture *r = data;
+
+		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
+			fprintf(stderr, "BUG: PID %d session data not found (FUNC_ARGS_CAPTURE)!\n", r->pid);
+			return -EINVAL;
+		}
+		return handle_func_args_capture(ctx, sess, r);
+	}
 	case REC_LBR_STACK: {
 		const struct lbr_stack *r = data;
 
@@ -1158,14 +1215,14 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 }
 
 __attribute__((constructor))
-static void init(void)
+static void logic_init(void)
 {
 	 memset(underline, '-', sizeof(underline) - 1);
 	 memset(spaces, ' ', sizeof(spaces) - 1);
 }
 
 __attribute__((destructor))
-static void cleanup(void)
+static void logic_cleanup(void)
 {
 	free_sessions();
 

@@ -208,6 +208,9 @@ static volatile sig_atomic_t exiting;
 static void sig_handler(int sig)
 {
 	exiting = true;
+
+	signal(SIGINT, SIG_DFL);
+	signal(SIGTERM, SIG_DFL);
 }
 
 const struct func_info *func_info(const struct ctx *ctx, __u32 id)
@@ -326,18 +329,25 @@ int main(int argc, char **argv, char **envp)
 		goto cleanup_silent;
 	}
 
-	if (!env.has_ringbuf) {
-		fprintf(stderr, "Retsnoop requires BPF ringbuf (Linux 5.8+), please upgrade your kernel!\n");
-		err = -EOPNOTSUPP;
-		goto cleanup_silent;
-	}
-
 	env.cpu_cnt = libbpf_num_possible_cpus();
 	if (env.cpu_cnt <= 0) {
 		fprintf(stderr, "Failed to determine number of CPUs: %d\n", env.cpu_cnt);
 		err = -EINVAL;
 		goto cleanup_silent;
 	}
+
+	if (!env.has_ringbuf) {
+		fprintf(stderr, "Retsnoop requires BPF ringbuf (Linux 5.8+), please upgrade your kernel!\n");
+		err = -EOPNOTSUPP;
+		goto cleanup_silent;
+	}
+#ifndef __x86_64__
+	if (env.capture_args) {
+		elog("Function arguments capture is only supported on x86-64 architecture!\n");
+		err = -EOPNOTSUPP;
+		goto cleanup_silent;
+	}
+#endif
 
 	/* Open BPF skeleton */
 	env.ctx.skel = skel = retsnoop_bpf__open();
@@ -398,8 +408,10 @@ int main(int argc, char **argv, char **envp)
 	if (env.use_lbr && env.verbose)
 		printf("LBR capture enabled.\n");
 
-	if (env.emit_func_trace)
-		skel->rodata->emit_func_trace = true;
+	skel->rodata->emit_func_trace = env.emit_func_trace;
+
+	skel->rodata->capture_args = env.capture_args;
+	skel->rodata->use_kprobes = env.attach_mode != ATTACH_FENTRY;
 
 	att_opts.verbose = env.verbose;
 	att_opts.debug = env.debug;
@@ -478,6 +490,19 @@ int main(int argc, char **argv, char **envp)
 	}
 	skel->data_func_infos = bpf_map__initial_value(skel->maps.data_func_infos, &tmp_n);
 
+	if (env.capture_args) {
+		for (i = 0; i < n; i++) {
+			const struct mass_attacher_func_info *finfo;
+
+			finfo = mass_attacher__func(att, i);
+			err = prepare_fn_args_specs(i, finfo);
+			if (err) {
+				elog("Failed to preprocess function argument specs: %d\n", err);
+				goto cleanup_silent;
+			}
+		}
+	}
+
 	for (i = 0; i < n; i++) {
 		const struct mass_attacher_func_info *finfo;
 		const struct glob *glob;
@@ -507,6 +532,14 @@ int main(int argc, char **argv, char **envp)
 		fi->name[MAX_FUNC_NAME_LEN - 1] = '\0';
 		fi->ip = finfo->addr;
 		fi->flags = flags;
+
+		if (env.capture_args) {
+			const struct func_args_info *fn_args = func_args_info(i);
+
+			for (j = 0; j < fn_args->arg_spec_cnt; j++) {
+				fi->arg_specs[j] = fn_args->arg_specs[j].arg_flags;
+			}
+		}
 	}
 
 	for (i = 0; i < env.entry_glob_cnt; i++) {
@@ -605,6 +638,7 @@ int main(int argc, char **argv, char **envp)
 		goto cleanup_silent;
 	}
 
+	signal(SIGTERM, sig_handler);
 	signal(SIGINT, sig_handler);
 
 	env.ctx.att = att;

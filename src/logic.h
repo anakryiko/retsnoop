@@ -7,6 +7,7 @@
 #include "utils.h"
 #include "env.h"
 #include <linux/perf_event.h>
+#include "retsnoop.h"
 
 struct func_trace_item {
 	long ts;
@@ -17,6 +18,14 @@ struct func_trace_item {
 	long func_res;
 };
 
+struct func_args_item {
+	int func_id;
+	int seq_id;
+	short data_len;
+	short arg_lens[MAX_FUNC_ARG_SPEC_CNT];
+	char *arg_data;
+};
+
 struct session {
 	int pid;
 	int tgid;
@@ -24,11 +33,27 @@ struct session {
 	char proc_comm[16];
 	char task_comm[16];
 
-	int lbrs_sz;
 	struct perf_branch_entry *lbrs;
+	int lbrs_sz;
 
 	int ft_cnt;
 	struct func_trace_item *ft_entries;
+
+	struct func_args_item *fn_args_entries;
+	int fn_args_cnt;
+};
+
+struct func_arg_spec {
+	const char *name;
+	int btf_id, pointee_btf_id;
+	enum func_arg_flags arg_flags;
+};
+
+struct func_args_info {
+	struct func_arg_spec arg_specs[MAX_FUNC_ARG_SPEC_CNT];
+	int arg_spec_cnt;
+	const struct btf *btf; /* WARNING: references mass_attacher's BTFs */
+	struct btf_dump *dumper; /* WARNING: shared among multiple infos */
 };
 
 /*
@@ -83,5 +108,21 @@ void format_func_flags(char *buf, size_t buf_sz, enum func_flags flags);
 int handle_event(void *ctx, void *data, size_t data_sz);
 
 long read_dropped_sessions(void);
+
+/*
+ * Function args capture
+ */
+
+const struct func_args_info *func_args_info(int func_id);
+
+struct mass_attacher_func_info;
+int prepare_fn_args_specs(int func_idx, const struct mass_attacher_func_info *finfo);
+
+struct func_args_capture;
+int handle_func_args_capture(struct ctx *ctx, struct session *sess,
+			     const struct func_args_capture *r);
+
+void prepare_fn_args_data(struct ctx *ctx, struct stack_item *s, int func_id,
+			  struct func_args_item *fai);
 
 #endif /* __LOGIC_H */

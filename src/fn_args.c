@@ -1,0 +1,458 @@
+// SPDX-License-Identifier: BSD-2-Clause
+/* Copyright (c) 2024 Meta Platforms, Inc. */
+#include <ctype.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <bpf/btf.h>
+#include <linux/ptrace.h>
+#include "mass_attacher.h"
+#include "utils.h"
+#include "logic.h"
+#include "hashmap.h"
+#include "retsnoop.h"
+
+static struct func_args_info *fn_infos;
+static int fn_info_cnt, fn_info_cap;
+
+static const struct btf *last_btf;
+static struct btf_dump *last_dumper;
+
+static struct stack_item *dump_cur_si;
+
+static void btf_dump_cb(void *ctx, const char *fmt, va_list args)
+{
+	vsnappendf(dump_cur_si->src, fmt, args);
+}
+
+const struct func_args_info *func_args_info(int func_id)
+{
+	return &fn_infos[func_id];
+}
+
+static const struct btf_type *btf_strip_mods_and_typedes(const struct btf *btf, int id, int *res_id)
+{
+	const struct btf_type *t;
+
+	t = btf__type_by_id(btf, id);
+	while (btf_is_mod(t) || btf_is_typedef(t)) {
+		id = t->type;
+		t = btf__type_by_id(btf, id);
+	}
+	if (res_id)
+		*res_id = id;
+	return t;
+}
+
+static bool btf_is_fixed_sized(const struct btf *btf, const struct btf_type *t)
+{
+	return btf_is_int(t) || btf_is_any_enum(t) || btf_is_composite(t);
+}
+
+static bool btf_is_char(const struct btf *btf, const struct btf_type *t)
+{
+	if (!btf_is_int(t))
+		return false;
+	if (btf_int_encoding(t) & BTF_INT_CHAR) /* one can hope, but compilers don't set this */
+		return true;
+	return strcmp(btf__name_by_offset(btf, t->name_off), "char") == 0;
+}
+
+#ifdef __x86_64__
+static bool is_arg_in_reg(int arg_idx, const char **reg_name)
+{
+	switch (arg_idx) {
+	case 0: return *reg_name = "rdi", true;
+	case 1: return *reg_name = "rsi", true;
+	case 2: return *reg_name = "rdx", true;
+	case 3: return *reg_name = "rcx", true;
+	case 4: return *reg_name = "r8", true;
+	case 5: return *reg_name = "r9", true;
+	default: return *reg_name = "<inval>", false;
+	}
+}
+#else
+static bool is_arg_in_reg(int arg_idx, const char **reg_name)
+{
+	*reg_name = "<unsupported>";
+	return false;
+}
+#endif
+
+static int realign_stack_off(int stack_off)
+{
+	return (stack_off + 7) / 8 * 8;
+}
+
+/* Prepare specifications of function arguments capture (happening on BPF side)
+ * and post-processing (happening on user space side)
+ */
+int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *finfo)
+{
+	struct func_args_info *fn_args;
+	struct func_arg_spec *spec;
+	const struct btf_param *p;
+	const struct btf_type *fn_t, *t;
+	int i, n, reg_idx = 0;
+	int stack_off = 8; /* 8 bytes for return address */
+
+	if (func_id >= fn_info_cnt) {
+		int new_cap = max((func_id + 1) * 4 / 3, 16);
+		void *tmp;
+
+		tmp = realloc(fn_infos, new_cap * sizeof(*fn_infos));
+		if (!tmp)
+			return -ENOMEM;
+		fn_infos = tmp;
+
+		memset(fn_infos + fn_info_cnt, 0, (new_cap - fn_info_cnt) * sizeof(*fn_infos));
+
+		fn_info_cnt = func_id + 1;
+		fn_info_cap = new_cap;
+	}
+	fn_args = &fn_infos[func_id];
+
+	dlog("Function '%s%s%s%s' args spec:", NAME_MOD(finfo->name, finfo->module));
+
+	if (!finfo->btf || finfo->btf_id == 0) {
+		const char *reg_name;
+
+		/* no BTF information, fallback to generic arch convention */
+		fn_args->arg_spec_cnt = 6;
+		for (i = 0; is_arg_in_reg(i, &reg_name); i++) {
+			spec = &fn_args->arg_specs[i];
+
+			spec->btf_id = 0;
+			spec->arg_flags = FUNC_ARG_REG | 8;
+			spec->arg_flags |= i << FUNC_ARG_REGIDX_SHIFT;
+
+			dlog(" arg#%d=%s", i, reg_name);
+		}
+		dlog(" (NO BTF INFO)\n");
+		return 0;
+	}
+
+	fn_t = btf__type_by_id(finfo->btf, finfo->btf_id); /* FUNC */
+	fn_t = btf__type_by_id(finfo->btf, fn_t->type); /* FUNC_PROTO */
+
+	n = btf_vlen(fn_t);
+	if (n > MAX_FUNC_ARG_SPEC_CNT)
+		n = MAX_FUNC_ARG_SPEC_CNT;
+
+	fn_args->arg_spec_cnt = n;
+
+	for (i = 0; i < n; i++) {
+		int btf_id, data_len, true_len;
+		const char *reg1_name, *reg2_name;
+
+		p = btf_params(fn_t) + i;
+		spec = &fn_args->arg_specs[i];
+
+		spec->name = btf__name_by_offset(finfo->btf, p->name_off);
+		spec->btf_id = p->type;
+		spec->pointee_btf_id = 0;
+
+		if (spec->btf_id == 0) {
+			/* we don't know what to do with vararg argument */
+			dlog(" (vararg)");
+			spec->btf_id = 0;
+			/* keep arg_flags non-zero, but don't set any of
+			 * {REG, REG_PAIR, STACK} flags; BPF side will
+			 * just skip this arg
+			 */
+			spec->arg_flags = FUNC_ARG_VARARG;
+			continue;
+		}
+
+		dlog(" %s=(", spec->name);
+
+		t = btf_strip_mods_and_typedes(finfo->btf, spec->btf_id, &btf_id);
+		if (btf_is_fixed_sized(finfo->btf, t) || btf_is_ptr(t)) {
+			true_len = btf_is_ptr(t) ? 8 : t->size;
+			data_len = true_len < MAX_FUNC_ARG_LEN ? true_len : MAX_FUNC_ARG_LEN;
+
+			if (true_len <= 8 && is_arg_in_reg(reg_idx, &reg1_name)) {
+				/* fits in one register */
+				spec->arg_flags = FUNC_ARG_REG | data_len;
+				spec->arg_flags |= reg_idx << FUNC_ARG_REGIDX_SHIFT;
+				dlog("%s", reg1_name);
+				reg_idx += 1;
+			} else if (true_len <= 16 &&
+				   is_arg_in_reg(reg_idx, &reg1_name) &&
+				   is_arg_in_reg(reg_idx + 1, &reg2_name)) {
+				/* passed in a pair of registers */
+				spec->arg_flags = FUNC_ARG_REG_PAIR | data_len;
+				spec->arg_flags |= reg_idx << FUNC_ARG_REGIDX_SHIFT;
+				reg_idx += 2;
+				dlog("%s:%s", reg1_name, reg2_name);
+			} else {
+				/* passed on the stack */
+				if (stack_off > FUNC_ARG_STACKOFF_MAX) {
+					dlog("fp+%d(TOO LARGE!!!)", stack_off);
+					stack_off = realign_stack_off(stack_off + true_len);
+					spec->arg_flags = FUNC_ARG_STACKOFF_2BIG;
+					goto skip_arg;
+				} else {
+					spec->arg_flags = FUNC_ARG_STACK | data_len;
+					spec->arg_flags |= stack_off << FUNC_ARG_STACKOFF_SHIFT;
+					dlog("fp+%d", stack_off);
+					stack_off = realign_stack_off(stack_off + true_len);
+				}
+			}
+		} else {
+			/* unrecognized, read raw 8 byte value, assume single register */
+			true_len = data_len = -1;
+			dlog("!!!UNKNOWN ARG #%d KIND %d!!!", i, btf_kind(t));
+			spec->arg_flags = FUNC_ARG_UNKN; /* skip it */
+		}
+
+		if (btf_is_ptr(t)) {
+			dlog("->");
+
+			spec->arg_flags &= ~FUNC_ARG_LEN_MASK;
+
+			/* NOTE: we fill out spec->pointee_btf_id */
+			t = btf_strip_mods_and_typedes(finfo->btf, t->type, &spec->pointee_btf_id);
+			if (btf_is_char(finfo->btf, t)) {
+				/* varlen string */
+				true_len = -1; /* mark that it's variable-length, for logging */
+				data_len = MAX_FUNC_ARG_STR_LEN;
+				spec->arg_flags |= FUNC_ARG_PTR | FUNC_ARG_STR | data_len;
+				spec->pointee_btf_id = -1; /* special string marker */
+				dlog("str");
+			} else if (btf_is_fixed_sized(finfo->btf, t)) {
+				true_len = t->size;
+				data_len = true_len < MAX_FUNC_ARG_LEN ? true_len : MAX_FUNC_ARG_LEN;
+				spec->arg_flags |= FUNC_ARG_PTR | data_len;
+				dlog("ptr_id=%d", spec->pointee_btf_id);
+			} else {
+				/* generic pointer, treat as u64 */
+				true_len = data_len = 8; /* sizeof(void *), assume 64-bit */
+				spec->arg_flags |= data_len; /* NOTE: no FUNC_ARG_PTR flags */
+				spec->pointee_btf_id = 0; /* raw pointer doesn't set pointee */
+				dlog("raw");
+			}
+		}
+
+skip_arg:
+		if (data_len < 0) /* unknown */
+			dlog(",len=??");
+		else if (true_len < 0) /* variable-sized */
+			dlog(",len=varlen(%d)", data_len);
+		else if (true_len != data_len) /* truncated */
+			dlog(",len=%d(%d)", true_len, data_len);
+		else /* full data */
+			dlog(",len=%d", data_len);
+
+		dlog(",btf_id=%d)", spec->btf_id);
+	}
+
+	dlog("\n");
+
+	if (last_btf != finfo->btf) {
+		int err;
+
+		last_btf = finfo->btf;
+		last_dumper = btf_dump__new(last_btf, btf_dump_cb, NULL, NULL);
+		if (!last_dumper) {
+			err = -errno;
+			elog("Failed to instantiate BTF dumper: %d\n", err);
+			return err;
+		}
+	}
+	fn_args->btf = last_btf;
+	fn_args->dumper = last_dumper;
+
+	return 0;
+}
+
+int handle_func_args_capture(struct ctx *ctx, struct session *sess,
+			     const struct func_args_capture *r)
+{
+	struct func_args_item *fai;
+	void *tmp;
+
+	tmp = realloc(sess->fn_args_entries, (sess->fn_args_cnt + 1) * sizeof(sess->fn_args_entries[0]));
+	if (!tmp)
+		return -ENOMEM;
+	sess->fn_args_entries = tmp;
+
+	fai = &sess->fn_args_entries[sess->fn_args_cnt];
+	fai->func_id = r->func_id;
+	fai->seq_id = r->seq_id;
+	fai->data_len = r->data_len;
+	fai->arg_data = malloc(fai->data_len);
+	memcpy(fai->arg_lens, r->arg_lens, sizeof(r->arg_lens));
+	if (!fai->arg_data)
+		return -ENOMEM;
+	memcpy(fai->arg_data, r->arg_data, r->data_len);
+
+	sess->fn_args_cnt++;
+
+	return 0;
+}
+
+static int fetch_int_value(void *data, int len, bool is_signed, long long *value)
+{
+	if (is_signed) {
+		switch (len) {
+		case 1: return *value = *(signed char *)data, 0;
+		case 2: return *value = *(signed short *)data, 0;
+		case 4: return *value = *(signed int *)data, 0;
+		case 8: return *value = *(signed long long *)data, 0;
+		default: return *value = 0, -EINVAL;
+		}
+	} else {
+		switch (len) {
+		case 1: return *value = *(unsigned char *)data, 0;
+		case 2: return *value = *(unsigned short *)data, 0;
+		case 4: return *value = *(unsigned int *)data, 0;
+		case 8: return *value = *(unsigned long long *)data, 0;
+		default: return *value = 0, -EINVAL;
+		}
+	}
+}
+
+static void sanitize_string(char *s, size_t len)
+{
+	int i;
+
+	for (i = 0; i < len; i++) {
+		if (!isprint(s[i]))
+			s[i] = ' ';
+	}
+	s[len - 1] = '\0';
+}
+
+static void smart_print_int(struct stack_item *s, bool is_bool, bool is_signed, long long value)
+{
+	if (is_bool && value >= 0 && value <= 1)
+		snappendf(s->src, "%s", value ? "true" : "false");
+	else if (is_signed && value < 1024 * 1024 /* random heuristic */)
+		snappendf(s->src, "%lld", value);
+	else if ((unsigned long)value < 1024 * 1024)
+		snappendf(s->src, "%llu", (unsigned long long)value);
+	else
+		snappendf(s->src, "0x%llx", value);
+}
+
+static void prepare_fn_arg(struct stack_item *s,
+			   const struct func_args_info *fn_args,
+			   const struct func_arg_spec *spec,
+			   void *data, size_t data_len)
+{
+	LIBBPF_OPTS(btf_dump_type_data_opts, opts);
+	const struct btf_type *t;
+	int err;
+
+	if (!fn_args->btf) {
+		/* fallback "raw registers" mode, data_len should be 8 */
+		smart_print_int(s, false /*!is_bool*/, false /*!is_signed*/, *(long long *)data);
+		return;
+	}
+
+	t = btf_strip_mods_and_typedes(fn_args->btf, spec->btf_id, NULL);
+
+	/* for common case of plain integer, skip dumper verboseness and complexity */
+	if (btf_is_int(t)) {
+		long long value;
+		bool is_signed = btf_int_encoding(t) & BTF_INT_SIGNED;
+		bool is_bool = btf_int_encoding(t) & BTF_INT_BOOL;
+
+		if (fetch_int_value(data, data_len, is_signed, &value) == 0) {
+			smart_print_int(s, is_bool, is_signed, value);
+			return;
+		}
+	}
+
+	if (spec->pointee_btf_id < 0) {
+		/* variable-length string */
+		sanitize_string(data, data_len);
+		snappendf(s->src, "'%s'", (char *)data);
+		return;
+	}
+
+	if (spec->pointee_btf_id) /* append pointer mark */
+		snappendf(s->src, "&");
+
+	/* XXX: make configurable by user */
+	opts.indent_str = "  ";
+	opts.indent_level = 0;
+	opts.compact = true;
+	opts.skip_names = false;
+	/* opts.skip_types = true; -- NOT YET ADDED TO UPSTREAM LIBBPF */
+	opts.emit_zeroes = false;
+
+	dump_cur_si = s;
+	err = btf_dump__dump_type_data(fn_args->dumper,
+				       spec->pointee_btf_id ?: spec->btf_id,
+				       data, data_len, &opts);
+	if (err == -E2BIG) {
+		/* truncated data */
+		snappendf(s->src, "...");
+	} else if (err < 0) {
+		/* unexpected error */
+		elog("Failed to BTF dump: %d\n", err);
+		snappendf(s->src, "...DUMP ERR=%d...", err);
+	}
+}
+
+void prepare_fn_args_data(struct ctx *ctx, struct stack_item *s, int func_id,
+			  struct func_args_item *fai)
+{
+	const struct func_args_info *fn_args = &fn_infos[func_id];
+	int i, len;
+	void *data = fai->arg_data;
+
+	for (i = 0; i < fn_args->arg_spec_cnt; i++) {
+		if (fn_args->btf)
+			snappendf(s->src, "%s%s=", i == 0 ? "" : " ", fn_args->arg_specs[i].name);
+		else /* "raw" BTF-less mode */
+			snappendf(s->src, "%sarg%d=", i == 0 ? "" : " ", i); 
+
+		len = fai->arg_lens[i];
+		if (len == 0) {
+			/* we encode special conditions in REGIDX mask */
+			switch (fn_args->arg_specs[i].arg_flags & FUNC_ARG_REGIDX_MASK) {
+			case FUNC_ARG_VARARG:
+				snappendf(s->src, "(vararg)");
+				break;
+			case FUNC_ARG_UNKN:
+				snappendf(s->src, "(unsupp)");
+				break;
+			case FUNC_ARG_STACKOFF_2BIG:
+				snappendf(s->src, "(stack-too-far)");
+				break;
+			default:
+				snappendf(s->src, "(skipped)");
+			}
+		} else if (len == -ENODATA) {
+			snappendf(s->src, "NULL");
+		} else if (len == -ENOSPC) {
+			snappendf(s->src, "(trunc)");
+		} else if (len < 0) {
+			snappendf(s->src, "ERR:%d", len);
+		} else {
+			prepare_fn_arg(s, fn_args, &fn_args->arg_specs[i], data, len);
+			data += (len + 7) / 8 * 8;
+		}
+	}
+}
+
+__attribute__((destructor))
+static void fn_args_cleanup(void)
+{
+	int i;
+
+	last_dumper = NULL;
+	for (i = 0; i < fn_info_cnt; i++) {
+		if (fn_infos[i].dumper == last_dumper)
+			continue;
+
+		last_dumper = fn_infos[i].dumper;
+		btf_dump__free(last_dumper);
+	}
+
+	free(fn_infos);
+}

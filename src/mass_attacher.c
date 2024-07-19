@@ -14,6 +14,7 @@
 #include "mass_attacher.h"
 #include "ksyms.h"
 #include "calib_feat.skel.h"
+#include "retsnoop.h"
 #include "utils.h"
 #include "logic.h"
 
