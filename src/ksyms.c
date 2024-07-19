@@ -17,6 +17,11 @@ struct ksyms {
 	int strs_cap;
 };
 
+static bool is_ksym_func(char sym_type)
+{
+	return sym_type == 't' || sym_type == 'T' || sym_type == 'w' || sym_type == 'W';
+}
+
 static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, const char *mod,
 			     unsigned long addr, char sym_type)
 {
@@ -59,8 +64,8 @@ static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, const char *
 		ksym->module = NULL;
 	ksym->addr = addr;
 	/* mark which symbols are functions for post-processing */
-	ksym->size = (sym_type == 't' || sym_type == 'T') ? (unsigned long)-1 : 0;
-	ksym->kind = (sym_type == 't' || sym_type == 'T') ? KSYM_FUNC : KSYM_DATA;
+	ksym->size = is_ksym_func(sym_type) ? (unsigned long)-1 : 0;
+	ksym->kind = is_ksym_func(sym_type) ? KSYM_FUNC : KSYM_DATA;
 
 	memcpy(ksyms->strs + ksyms->strs_sz, name, name_len);
 	ksyms->strs_sz += name_len;
