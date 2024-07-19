@@ -91,6 +91,9 @@ static const struct argp_option opts[] = {
 	{ "allow-errors", 'x', "ERROR", 0, "Record stacks only with specified errors" },
 	{ "deny-errors", 'X', "ERROR", 0, "Ignore stacks that have specified errors" },
 
+	/* Extra data capture specifications */
+	{ "capture-args", 'A', NULL, 0, "Capture and emit function arguments" },
+
 	/* Misc settings */
 	{ "kernel", 'k',
 	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
@@ -470,6 +473,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			fprintf(stderr, "Invalid LBR maximum count: %d\n", env.lbr_max_cnt);
 			return -EINVAL;
 		}
+		break;
+	case 'A':
+		env.capture_args = true;
 		break;
 	case OPT_FULL_STACKS:
 		env.emit_full_stacks = true;

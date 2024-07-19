@@ -8,13 +8,6 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-#ifndef EINVAL
-#define EINVAL 22
-#endif
-#ifndef ENOSPC
-#define ENOSPC 28
-#endif
-
 #define printk_is_sane (bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_snprintf))
 
 #define printk_needs_endline (!bpf_core_type_exists(struct trace_event_raw_bpf_trace_printk))
@@ -81,7 +74,9 @@ const volatile bool extra_verbose = false;
 const volatile bool use_lbr = true;
 const volatile int targ_tgid = -1;
 const volatile bool emit_success_stacks = false;
-const volatile bool emit_func_trace = false;
+const volatile bool emit_func_trace = true;
+const volatile bool capture_args = true;
+const volatile bool use_kprobes = true;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -109,6 +104,14 @@ const volatile char spaces[512] = {};
 
 struct stats stats = {};
 
+static void stat_dropped_record(struct session *sess)
+{
+	if (sess->dropped_records == 0)
+		/* only count each incomplete session once */
+		atomic_inc(&stats.incomplete_sessions);
+	sess->dropped_records++;
+}
+
 /* provided by mass_attach.bpf.c */
 int copy_lbrs(void *dst, size_t dst_sz);
 
@@ -116,9 +119,176 @@ int copy_lbrs(void *dst, size_t dst_sz);
 struct func_info func_infos[1] SEC(".data.func_infos");
 const volatile __u32 func_info_mask;
 
-static __always_inline const struct func_info *func_info(__u32 id)
+static __always_inline const struct func_info *func_info(u32 id)
 {
 	return &func_infos[id & func_info_mask];
+}
+
+#ifdef __TARGET_ARCH_x86
+static u64 get_arg_reg_value(void *ctx, u32 arg_idx)
+{
+	if (use_kprobes) {
+		struct pt_regs *regs = ctx;
+
+		switch (arg_idx) {
+			case 0: return PT_REGS_PARM1(regs);
+			case 1: return PT_REGS_PARM2(regs);
+			case 2: return PT_REGS_PARM3(regs);
+			case 3: return PT_REGS_PARM4(regs);
+			case 4: return PT_REGS_PARM5(regs);
+			case 5: return PT_REGS_PARM6(regs);
+			default: return 0;
+		}
+	} else {
+		u64 *args = ctx, val;
+
+		bpf_probe_read_kernel(&val, sizeof(val), &args[arg_idx]);
+		return val;
+	}
+}
+
+static __always_inline u64 get_stack_pointer(void *ctx)
+{
+	u64 sp;
+
+	if (use_kprobes) {
+		sp = PT_REGS_SP((struct pt_regs *)ctx);
+		barrier_var(sp);
+	} else {
+		/* current FENTRY doesn't support attaching to functions that
+		 * pass arguments on the stack, so we don't really need to
+		 * implement this
+		 */
+		sp = 0;
+		barrier_var(sp);
+	}
+
+	return sp;
+}
+#else /* !__TARGET_ARCH_x86 */
+static u64 get_arg_reg_value(void *ctx, u32 arg_idx) { return 0; }
+static u64 get_stack_pointer(void *ctx) { return 0; }
+#endif
+
+static __always_inline u64 coerce_size(u64 val, int sz)
+{
+	int shift = (8 - sz) * 8;
+	return (val << shift) >> shift;
+}
+
+static __always_inline bool is_kernel_addr(void *addr)
+{
+	return (long)addr <= 0;
+}
+
+static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u32 len, bool is_str)
+{
+	size_t data_off;
+	int err;
+
+	if (data == NULL) {
+		r->arg_lens[arg_idx] = -ENODATA;
+		return;
+	}
+
+	data_off = r->data_len;
+	barrier_var(data_off); /* prevent compiler from re-reading it */
+
+	if (data_off >= MAX_FUNC_ARGS_DATA_SZ) {
+		r->arg_lens[arg_idx] = -ENOSPC;
+		return;
+	}
+
+	if (len > MAX_FUNC_ARG_LEN) /* truncate, if necessary */
+		len = MAX_FUNC_ARG_LEN;
+
+	if (is_str) {
+		if (is_kernel_addr(data))
+			err = bpf_probe_read_kernel_str(r->arg_data + data_off, len, data);
+		else
+			err = bpf_probe_read_user_str(r->arg_data + data_off, len, data);
+	} else {
+		if (is_kernel_addr(data))
+			err = bpf_probe_read_kernel(r->arg_data + data_off, len, data);
+		else
+			err = bpf_probe_read_user(r->arg_data + data_off, len, data);
+	}
+	if (err < 0) {
+		r->arg_lens[arg_idx] = err;
+		return;
+	}
+
+	len = is_str ? err : len;
+	r->data_len += (len + 7) / 8 * 8;
+	r->arg_lens[arg_idx] = len;
+}
+
+static __noinline void record_args(void *ctx, struct session *sess, u32 func_id, u32 seq_id)
+{
+	struct func_args_capture *r;
+	const struct func_info *fi;
+	u64 i;
+
+	r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
+	if (!r) {
+		stat_dropped_record(sess);
+		return;
+	}
+
+	r->type = REC_FUNC_ARGS_CAPTURE;
+	r->pid = sess->pid;
+	r->seq_id = seq_id;
+	r->func_id = func_id;
+	r->data_len = 0;
+
+	fi = func_info(func_id);
+	for (i = 0; i < MAX_FUNC_ARG_SPEC_CNT; i++) {
+		u32 spec = fi->arg_specs[i], reg_idx, off;
+		u16 len = spec & FUNC_ARG_LEN_MASK;
+		void *data_ptr = NULL;
+		u64 vals[2];
+		int err;
+
+		if (spec == 0)
+			break;
+
+		if (len == 0) {
+			r->arg_lens[i] = 0;
+			continue;
+		}
+
+		if (spec & FUNC_ARG_REG) {
+			reg_idx = (spec & FUNC_ARG_REGIDX_MASK) >> FUNC_ARG_REGIDX_SHIFT;
+			vals[0] = coerce_size(get_arg_reg_value(ctx, reg_idx), len);
+			if (spec & FUNC_ARG_PTR)
+				data_ptr = (void *)vals[0];
+			else
+				data_ptr = vals;
+		} else if (spec & FUNC_ARG_STACK) {
+			off = (spec & FUNC_ARG_STACKOFF_MASK) >> FUNC_ARG_STACKOFF_SHIFT;
+			vals[0] = get_stack_pointer(ctx) + off;
+			if (spec & FUNC_ARG_PTR) {
+				/* the pointer value itself is on the stack */
+				err = bpf_probe_read_kernel(&vals[0], 8, (void *)vals[0]);
+				if (err) {
+					r->arg_lens[i] = err;
+					continue;
+				}
+			}
+			data_ptr = (void *)vals[0];
+		} else if (spec & FUNC_ARG_REG_PAIR) {
+			reg_idx = (spec & FUNC_ARG_REGIDX_MASK) >> FUNC_ARG_REGIDX_SHIFT;
+			vals[0] = get_arg_reg_value(ctx, reg_idx);
+			vals[1] = get_arg_reg_value(ctx, reg_idx + 1);
+			vals[1] = coerce_size(vals[1], len - 8);
+			data_ptr = (void *)vals;
+			/* FUNC_ARG_PTR is meaningless for REG_PAIR */
+		}
+
+		capture_arg(r, i, data_ptr, len, (spec & FUNC_ARG_STR) == FUNC_ARG_STR);
+	}
+
+	bpf_ringbuf_submit(r, 0);
 }
 
 static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
@@ -154,14 +324,6 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 
 	stack->saved_depth = stack->depth + 1;
 	stack->saved_max_depth = stack->max_depth;
-}
-
-static void stat_dropped_record(struct session *sess)
-{
-	if (sess->dropped_records == 0)
-		/* only count each incomplete session once */
-		atomic_inc(&stats.incomplete_sessions);
-	sess->dropped_records++;
 }
 
 static const struct session empty_session;
@@ -272,6 +434,9 @@ out_defunct:
 		bpf_ringbuf_submit(fe, 0);
 skip_ft_entry:;
 	}
+
+	if (capture_args)
+		record_args(ctx, sess, id, sess->next_seq_id - 1);
 
 	if (verbose) {
 		const char *func_name = func_info(id)->name;

@@ -5,6 +5,8 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <linux/perf_event.h>
+#include "retsnoop.h"
 
 struct btf;
 struct bpf_link;

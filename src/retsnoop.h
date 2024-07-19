@@ -31,16 +31,52 @@ enum func_flags {
 	FUNC_RET_VOID = 0x20,
 };
 
+#define MAX_FUNC_ARG_SPEC_CNT 12
+#define MAX_FUNC_ARGS_DATA_SZ 2048
+#define MAX_FUNC_ARG_LEN 64
+#define MAX_FUNC_ARG_STR_LEN MAX_FUNC_ARG_LEN
+
+enum func_arg_flags {
+	/* lowest 12 bits */
+	FUNC_ARG_LEN_MASK = 0x0fff,	/* 4KB bytes max */
+
+	/* next 4 bits */
+	FUNC_ARG_REG = 0x1000,		/* read specified register */
+	FUNC_ARG_REG_PAIR = 0x2000,	/* read specified register */
+	FUNC_ARG_STACK = 0x4000,	/* read stack at specified offset */
+	FUNC_ARG_PTR = 0x8000,		/* pointer indirection */
+
+	/* "varlen string" marker, uses impossible REG_PAIR + PTR combination */
+	FUNC_ARG_STR = FUNC_ARG_PTR | FUNC_ARG_REG_PAIR,
+
+	/* for REG_PAIR/REG we encode the first/only argument register index */
+	FUNC_ARG_REGIDX_MASK = 0x00ff0000,	/* 1st argument register index */
+	FUNC_ARG_REGIDX_SHIFT = 16,
+
+	/* for STACK we have one big offset */
+	FUNC_ARG_STACKOFF_MASK = 0xffff0000,	/* stack offset */
+	FUNC_ARG_STACKOFF_SHIFT = 16,
+	FUNC_ARG_STACKOFF_MAX = FUNC_ARG_STACKOFF_MASK >> FUNC_ARG_STACKOFF_SHIFT,
+
+	/* special "skip arg" values, uses special REGIDX value */
+	FUNC_ARG_VARARG			= 0x00fe0000,
+	FUNC_ARG_UNKN			= 0x00fd0000,
+	FUNC_ARG_STACKOFF_2BIG		= 0x00fc0000,
+};
+
 struct func_info {
 	char name[MAX_FUNC_NAME_LEN];
 	__u64 ip;
 	enum func_flags flags;
+	/* set of enum func_arg_flags + capture length */
+	unsigned arg_specs[MAX_FUNC_ARG_SPEC_CNT];
 } __attribute__((aligned(8)));
 
 enum rec_type {
 	REC_SESSION_START,
 	REC_FUNC_TRACE_ENTRY,
 	REC_FUNC_TRACE_EXIT,
+	REC_FUNC_ARGS_CAPTURE,
 	REC_LBR_STACK,
 	REC_SESSION_END,
 };
@@ -67,6 +103,18 @@ struct func_trace_entry {
 
 	long func_lat;
 	long func_res;
+};
+
+struct func_args_capture {
+	/* REC_FUNC_ARGS_CAPTURE */
+	enum rec_type type;
+	int pid;
+	int seq_id;
+	unsigned short func_id;
+	unsigned short data_len;
+	short arg_lens[MAX_FUNC_ARG_SPEC_CNT];
+	/* we waste MAX_FUNC_ARG_LEN to be able to deal with verifier */
+	char arg_data[MAX_FUNC_ARGS_DATA_SZ + MAX_FUNC_ARG_LEN];
 };
 
 struct lbr_stack {
@@ -115,5 +163,18 @@ struct session_end {
 
 	struct call_stack stack;
 };
+
+#ifndef EINVAL
+#define EINVAL 22
+#endif
+#ifndef ENOSPC
+#define ENOSPC 28
+#endif
+#ifndef ENODATA
+#define ENODATA 61
+#endif
+#ifndef ENOMSG
+#define ENOMSG 42
+#endif
 
 #endif /* __RETSNOOP_H */

@@ -48,6 +48,7 @@ struct env {
 	bool emit_success_stacks;
 	bool emit_full_stacks;
 	bool emit_func_trace;
+	bool capture_args;
 	enum attach_mode attach_mode;
 	enum symb_mode symb_mode;
 	enum debug_feat debug_feats;

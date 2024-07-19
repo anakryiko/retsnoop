@@ -159,6 +159,7 @@ retsnoop: override CFLAGS += -DSKEL_NAME=retsnoop_bpf			\
 retsnoop: $(addprefix $(OUTPUT)/,					\
 		      retsnoop.o					\
 		      logic.o 						\
+		      fn_args.o 					\
 		      env.o						\
 		      ksyms.o						\
 		      utils.o						\
