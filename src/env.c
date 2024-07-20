@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: BSD-2-Clause
 /* Copyright (c) 2024 Meta Platforms, Inc. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <argp.h>
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <linux/perf_event.h>
 #include "env.h"
@@ -19,7 +23,7 @@ struct env env = {
 };
 
 __attribute__((constructor))
-static void init()
+static void env_init()
 {
 	/* set allowed error mask to all 1s (enabled by default) */
 	memset(env.allow_error_mask, 0xFF, sizeof(env.allow_error_mask));
@@ -102,15 +106,37 @@ static const struct argp_option opts[] = {
 	  "Enable selected debug features. Any set of: multi-kprobe, full-lbr." },
 	{ "bpf-logs", 'l', NULL, 0,
 	  "Emit BPF-side logs (use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to read)" },
+	{ "config", 'C', "CONFIG", 0, "Specify extra configuration parameters." },
 
 	/* Help, version, logging, dry-run, etc */
 	{ .flags = OPTION_DOC, "USAGE, HELP, VERSION\n=========================" },
 	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
-	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
-	  "Verbose output (use -vv for debug-level verbosity, -vvv for libbpf debug log)" },
+	{ "verbose", 'v', NULL, 0,
+	  "Verbose output (use -vv for debug-level verbosity, -vvv for extra debug log)" },
 	{ "version", 'V', NULL, 0,
 	  "Print out retsnoop version." },
 	{},
+};
+
+struct cfg_spec;
+
+typedef int (*cfg_parse_fn)(const struct cfg_spec *cfg, const char *arg, void *ctx);
+
+struct cfg_spec {
+	const char *group;
+	const char *key;
+	const char *desc;
+	cfg_parse_fn parse_fn;
+	void *ctx;
+};
+
+static int cfg_symb_mode(const struct cfg_spec *cfg, const char *value, void *ctx);
+static int cfg_int_pos(const struct cfg_spec *cfg, const char *arg, void *ctx);
+
+static struct cfg_spec cfg_specs[] = {
+	{ "bpf", "ringbuf-size", "ringbuf map size", cfg_int_pos, &env.ringbuf_map_sz },
+	{ "bpf", "sessions-size", "sessions map size", cfg_int_pos, &env.sessions_map_sz },
+	{ "fmt", "symbolization-mode", "symbolization mode", cfg_symb_mode, NULL },
 };
 
 /* PRESETS */
@@ -257,6 +283,45 @@ static enum debug_feat parse_debug_arg(const char *arg)
 	return -EINVAL;
 }
 
+static enum debug_feat parse_config_arg(const char *arg)
+{
+	const char *g, *k, *v;
+	int grp_len, key_len;
+	int i;
+
+	g = arg;
+	k = strchr(arg, '.');
+	if (!k) {
+		elog("Invalid configuration value '%s', expected format is 'group.key=value'\n", arg);
+		return -EINVAL;
+	}
+	k++;
+	v = strchr(arg, '=');
+	if (!v) {
+		elog("Invalid configuration value '%s', expected format is 'group.key=value'\n", arg);
+		return -EINVAL;
+	}
+	v++;
+
+	grp_len = k - g - 1;
+	key_len = v - k - 1;
+
+	for (i = 0; i < ARRAY_SIZE(cfg_specs); i++) {
+		struct cfg_spec *cfg = &cfg_specs[i];
+
+		if (strncmp(cfg->group, g, grp_len) != 0 || cfg->group[grp_len] != '\0' ||
+		    strncmp(cfg->key, k, key_len) != 0 || cfg->key[key_len] != '\0')
+			continue;
+
+		return cfg->parse_fn(cfg, v, cfg->ctx);
+	}
+
+	elog("Config '%.*s.%.*s' unrecognized!\n", grp_len, g, key_len, k);
+
+	return -ESRCH;
+}
+
+
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
 	int i, j, err;
@@ -269,20 +334,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.show_version = true;
 		break;
 	case 'v':
-		env.verbose = true;
-		if (arg) {
-			if (strcmp(arg, "v") == 0) {
-				env.debug = true;
-			} else if (strcmp(arg, "vv") == 0) {
-				env.debug = true;
-				env.debug_extra = true;
-			} else {
-				fprintf(stderr,
-					"Unrecognized verbosity setting '%s', only -v, -vv, and -vvv are supported\n",
-					arg);
-				return -EINVAL;
-			}
-		}
+		if (!env.verbose)
+			env.verbose = true;
+		else if (!env.debug)
+			env.debug = true;
+		else if (!env.debug_extra)
+			env.debug_extra = true;
 		break;
 	case 'l':
 		env.bpf_logs = true;
@@ -501,6 +558,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case OPT_DRY_RUN:
 		env.dry_run = true;
 		break;
+	case 'C':
+		if (parse_config_arg(arg))
+			return -EINVAL;
+		break;
 	case OPT_DEBUG_FEAT:
 		if (parse_debug_arg(arg))
 			return -EINVAL;
@@ -514,9 +575,62 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
+static int cfg_int_pos(const struct cfg_spec *cfg, const char *arg, void *ctx)
+{
+	int *dst = ctx;
+
+	errno = 0;
+	*dst = strtol(arg, NULL, 10);
+	if (errno || *dst <= 0) {
+		fprintf(stderr, "Invalid %s: '%s', should be a valid positive integer.\n",
+			cfg->desc, arg);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int cfg_symb_mode(const struct cfg_spec *cfg, const char *value, void *ctx)
+{
+	if (strcmp(value, "linenum") == 0 || strcmp(value, "l") == 0) {
+		env.symb_mode = SYMB_LINEINFO;
+	} else if (strcmp(value, "none") == 0 || strcmp(value, "n") == 0) {
+		env.symb_mode = SYMB_NONE;
+	} else if (strcmp(value, "inlines") == 0 || strcmp(value, "s") == 0) {
+		env.symb_mode |= SYMB_INLINES;
+	} else {
+		elog("Unrecognized stack symbolization mode: '%s'. Only 'none', 'linenum', or 'inlines' values are supported.\n",
+		     value);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static char *help_filter(int key, const char *text, void *input)
+{
+	if (key == 'C') {
+		char *msg = NULL;
+		FILE *f;
+		size_t msg_sz, i;
+
+		f = open_memstream(&msg, &msg_sz);
+		if (!f)
+			return (char *)text;
+
+		fprintf(f, "%s\nSupported values:", text);
+		for (i = 0; i < ARRAY_SIZE(cfg_specs); i++) {
+			fprintf(f, "\n  %s.%s", cfg_specs[i].group, cfg_specs[i].key);
+		}
+		fclose(f);
+		return msg;
+	}
+	return (char *)text;
+}
+
 const struct argp argp = {
 	.options = opts,
 	.parser = parse_arg,
 	.doc = argp_program_doc,
+	.help_filter = help_filter,
 };
 
