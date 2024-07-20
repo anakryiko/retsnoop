@@ -11,7 +11,7 @@ const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
 "retsnoop tool shows kernel call stacks based on specified function filters.\n"
 "\n"
-"USAGE: retsnoop [-v] [-F|-K|-M] [-T] [--lbr] [-c CASE]* [-a GLOB]* [-d GLOB]* [-e GLOB]*\n";
+"USAGE: retsnoop [-v] [-B] [-T] [-A] [-e GLOB]* [-a GLOB]* [-d GLOB]*\n";
 
 struct env env = {
 	.ringbuf_map_sz = 8 * 1024 * 1024,
@@ -33,25 +33,8 @@ static void init()
 #define OPT_RINGBUF_MAP_SIZE 1006
 
 static const struct argp_option opts[] = {
-	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
-	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
-	  "Verbose output (use -vv for debug-level verbosity, -vvv for libbpf debug log)" },
-	{ "version", 'V', NULL, 0,
-	  "Print out retsnoop version." },
-	{ "bpf-logs", 'l', NULL, 0,
-	  "Emit BPF-side logs (use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to read)" },
-	{ "dry-run", OPT_DRY_RUN, NULL, 0,
-	  "Perform a dry run (don't actually load and attach BPF programs)" },
-
-	/* Attach mechanism specification */
-	{ "kprobes-multi", 'M', NULL, 0,
-	  "Use multi-attach kprobes/kretprobes, if supported; fall back to single-attach kprobes/kretprobes, otherwise" },
-	{ "kprobes", 'K', NULL, 0,
-	  "Use single-attach kprobes/kretprobes" },
-	{ "fentries", 'F', NULL, 0,
-	  "Use fentries/fexits instead of kprobes/kretprobes" },
-
-	/* Target functions specification */
+	 /* Target functions specification */
+	{ .flags = OPTION_DOC, "TARGETING\n=========================" },
 	{ "case", 'c', "CASE", 0,
 	  "Use a pre-defined set of entry/allow/deny globs for a given use case (supported cases: bpf, perf)" },
 	{ "entry", 'e', "GLOB", 0,
@@ -61,21 +44,30 @@ static const struct argp_option opts[] = {
 	{ "deny", 'd', "GLOB", 0,
 	  "Glob for denied functions ignored during error stack trace collection" },
 
-	/* Function calls trace mode settings */
+	/* Running mode configuration */
+	{ .flags = OPTION_DOC, "RUNMODE\n=========================" },
 	{ "trace", 'T', NULL, 0, "Capture and emit function call traces" },
-
-	/* LBR mode settings */
-	{ "lbr", 'R', "SPEC", OPTION_ARG_OPTIONAL,
-	  "Capture and print LBR entries. You can also tune which LBR records are captured "
+	{ "capture-args", 'A', NULL, 0, "Capture and emit function arguments" },
+	{ "lbr", 'B', "SPEC", OPTION_ARG_OPTIONAL,
+	  "Capture and print LBR entries.\n"
+	  "You can also tune which LBR records are captured "
 	  "by specifying raw LBR flags or using their symbolic aliases: "
-	  "any, any_call, any_return (default), cond, call, ind_call, ind_jump, call_stack, "
-	  "abort_tx, in_tx, no_tx. "
+	  "any, any_call, any_return (default), cond, call, ind_call, ind_jump, "
+	  "call_stack, abort_tx, in_tx, no_tx."
 	  "See enum perf_branch_sample_type in perf_event UAPI (include/uapi/linux/perf_event.h). "
 	  "You can combine multiple of them by using --lbr argument multiple times." },
-	{ "lbr-max-count", OPT_LBR_MAX_CNT, "N", 0,
-	  "Limit number of printed LBRs to N" },
+	{ "dry-run", OPT_DRY_RUN, NULL, 0,
+	  "Perform a dry run (don't actually load and attach BPF programs)" },
+	/* Attach mechanism specification */
+	{ "kprobes-multi", 'M', NULL, 0,
+	  "Use multi-attach kprobes/kretprobes, if supported; fall back to single-attach kprobes/kretprobes, otherwise" },
+	{ "kprobes", 'K', NULL, 0,
+	  "Use single-attach kprobes/kretprobes" },
+	{ "fentries", 'F', NULL, 0,
+	  "Use fentries/fexits instead of kprobes/kretprobes" },
 
 	/* Stack filtering specification */
+	{ .flags = OPTION_DOC, "FILTERING\n=========================" },
 	{ "pid", 'p', "PID", 0,
 	  "Only trace given PID. Can be specified multiple times" },
 	{ "no-pid", 'P', "PID", 0,
@@ -91,10 +83,8 @@ static const struct argp_option opts[] = {
 	{ "allow-errors", 'x', "ERROR", 0, "Record stacks only with specified errors" },
 	{ "deny-errors", 'X', "ERROR", 0, "Ignore stacks that have specified errors" },
 
-	/* Extra data capture specifications */
-	{ "capture-args", 'A', NULL, 0, "Capture and emit function arguments" },
-
 	/* Misc settings */
+	{ .flags = OPTION_DOC, "ADVANCED\n=========================" },
 	{ "kernel", 'k',
 	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
 	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
@@ -102,12 +92,24 @@ static const struct argp_option opts[] = {
 	  "If extra symbolization is requested, retsnoop relies on having vmlinux with DWARF available." },
 	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
 	  "Emit non-filtered full stack traces" },
-	{ "sessions-map-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
+	{ "sessions-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
 	  "Sessions map size (default 4096)" },
-	{ "ringbuf-map-size", OPT_RINGBUF_MAP_SIZE, "SIZE", 0,
+	{ "ringbuf-size", OPT_RINGBUF_MAP_SIZE, "SIZE", 0,
 	  "Ringbuf map size in bytes (default 8MB)" },
+	{ "lbr-max-count", OPT_LBR_MAX_CNT, "N", 0,
+	  "Limit number of printed LBRs to N" },
 	{ "debug", OPT_DEBUG_FEAT, "FEATURE", 0,
 	  "Enable selected debug features. Any set of: multi-kprobe, full-lbr." },
+	{ "bpf-logs", 'l', NULL, 0,
+	  "Emit BPF-side logs (use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to read)" },
+
+	/* Help, version, logging, dry-run, etc */
+	{ .flags = OPTION_DOC, "USAGE, HELP, VERSION\n=========================" },
+	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
+	{ "verbose", 'v', "LEVEL", OPTION_ARG_OPTIONAL,
+	  "Verbose output (use -vv for debug-level verbosity, -vvv for libbpf debug log)" },
+	{ "version", 'V', NULL, 0,
+	  "Print out retsnoop version." },
 	{},
 };
 
@@ -461,7 +463,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return -EINVAL;
 		}
 		break;
-	case 'R':
+	case 'B':
 		env.use_lbr = true;
 		if (arg && parse_lbr_arg(arg))
 			return -EINVAL;
