@@ -49,7 +49,6 @@ static int cfg_symb_mode(const struct cfg_spec *cfg, const char *value, void *ct
 static int cfg_int_pos(const struct cfg_spec *cfg, const char *arg, void *ctx);
 static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *ctx);
 
-#define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
 #define OPT_DRY_RUN 1004
 #define OPT_DEBUG_FEAT 1005
@@ -114,8 +113,6 @@ static const struct argp_option opts[] = {
 	  "\t-sn to disable extra symbolization.\n"
 	  "If extra symbolization is requested, retsnoop relies on having\n"
 	  "vmlinux with DWARF available" },
-	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
-	  "Emit non-filtered full stack traces" },
 	{ "debug", OPT_DEBUG_FEAT, "FEATURE", 0,
 	  "Enable selected debug features.\nSupported: multi-kprobe, full-lbr, bpf" },
 
@@ -141,6 +138,7 @@ static struct cfg_spec cfg_specs[] = {
 	   "\tIncrease if you experience dropped data. By default is set to 8MB." },
 	{ "bpf", "sessions-size", "sessions map size", cfg_int_pos, &env.sessions_map_sz,
 	  "BPF sessions map capacity (defaults to 4096)" },
+
 	{ "fmt", "stack-trace-mode", "symbolization mode", cfg_symb_mode, &env.symb_mode,
 	  "Stack symbolization mode",
 	  "Stack symbolization mode.\n"
@@ -149,6 +147,12 @@ static struct cfg_spec cfg_specs[] = {
 	  "\t    none    - no source code info, no inline functions;\n"
 	  "\t    linenum - source code info (file:line), no inline functions;\n"
 	  "\t    inlines - source code info and inline functions." },
+	{ "fmt", "stack-emit-all", "value", cfg_bool, &env.stack_emit_all,
+	  "Emit all stack stace/LBR entries (turning off relevancy filtering)" },
+	{ "fmt", "stack-emit-addrs", "value", cfg_bool, &env.stack_emit_addrs,
+	  "Emit raw captured stack trace/LBR addresses (in addition to symbols)" },
+	{ "fmt", "stack-dec-offs", "value", cfg_bool, &env.stack_dec_offs,
+	  "Emit stack trace/LBR function offsets in decimal (by default, it's in hex)" },
 	{ "fmt", "lbr-max-count", "LBR max count", cfg_int_pos, &env.lbr_max_cnt,
 	  "Limit number of printed LBRs to N" },
 };
@@ -539,9 +543,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'A':
 		env.capture_args = true;
-		break;
-	case OPT_FULL_STACKS:
-		env.emit_full_stacks = true;
 		break;
 	case OPT_STACKS_MAP_SIZE:
 		errno = 0;
