@@ -10,6 +10,9 @@
 #include <linux/perf_event.h>
 #include "env.h"
 
+#define DEFAULT_RINGBUF_SZ 8 * 1024 * 1024
+#define DEFAULT_SESSIONS_SZ 4096
+
 const char *argp_program_version = "retsnoop v0.9.8";
 const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
@@ -18,8 +21,8 @@ const char argp_program_doc[] =
 "USAGE: retsnoop [-v] [-B] [-T] [-A] [-e GLOB]* [-a GLOB]* [-d GLOB]*\n";
 
 struct env env = {
-	.ringbuf_map_sz = 8 * 1024 * 1024,
-	.sessions_map_sz = 4096,
+	.ringbuf_map_sz = DEFAULT_RINGBUF_SZ,
+	.sessions_map_sz = DEFAULT_SESSIONS_SZ,
 };
 
 __attribute__((constructor))
@@ -28,13 +31,30 @@ static void env_init()
 	/* set allowed error mask to all 1s (enabled by default) */
 	memset(env.allow_error_mask, 0xFF, sizeof(env.allow_error_mask));
 }
+struct cfg_spec;
+
+typedef int (*cfg_parse_fn)(const struct cfg_spec *cfg, const char *arg, void *ctx);
+
+struct cfg_spec {
+	const char *group;
+	const char *key;
+	const char *name;
+	cfg_parse_fn parse_fn;
+	void *ctx;
+	const char *short_help;
+	const char *help;
+};
+
+static int cfg_symb_mode(const struct cfg_spec *cfg, const char *value, void *ctx);
+static int cfg_int_pos(const struct cfg_spec *cfg, const char *arg, void *ctx);
+static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *ctx);
 
 #define OPT_FULL_STACKS 1001
 #define OPT_STACKS_MAP_SIZE 1002
-#define OPT_LBR_MAX_CNT 1003
 #define OPT_DRY_RUN 1004
 #define OPT_DEBUG_FEAT 1005
 #define OPT_RINGBUF_MAP_SIZE 1006
+#define OPT_CONFIG_HELP 1007
 
 static const struct argp_option opts[] = {
 	 /* Target functions specification */
@@ -53,90 +73,84 @@ static const struct argp_option opts[] = {
 	{ "trace", 'T', NULL, 0, "Capture and emit function call traces" },
 	{ "capture-args", 'A', NULL, 0, "Capture and emit function arguments" },
 	{ "lbr", 'B', "SPEC", OPTION_ARG_OPTIONAL,
-	  "Capture and print LBR entries.\n"
-	  "You can also tune which LBR records are captured "
-	  "by specifying raw LBR flags or using their symbolic aliases: "
-	  "any, any_call, any_return (default), cond, call, ind_call, ind_jump, "
-	  "call_stack, abort_tx, in_tx, no_tx."
-	  "See enum perf_branch_sample_type in perf_event UAPI (include/uapi/linux/perf_event.h). "
-	  "You can combine multiple of them by using --lbr argument multiple times." },
+	  "Capture and print LBR (Last Branch Record) entries (defaults to any_return). "
+	  "Exact set of captured LBR records can be specified using "
+	  "raw LBR flags value (hex or decimal) or through symbolic aliases: "
+	  "any_return (default), any, any_call, cond, call, ind_call, ind_jump, "
+	  "call_stack, abort_tx, in_tx, no_tx. "
+	  "You can combine multiple of them by using --lbr argument multiple times. "
+	  "See perf_branch_sample_type in perf_event UAPI (include/uapi/linux/perf_event.h)" },
 	{ "dry-run", OPT_DRY_RUN, NULL, 0,
-	  "Perform a dry run (don't actually load and attach BPF programs)" },
+	  "Perform a dry run: don't actually load and attach BPF programs, but report all the steps and data" },
 	/* Attach mechanism specification */
 	{ "kprobes-multi", 'M', NULL, 0,
 	  "Use multi-attach kprobes/kretprobes, if supported; fall back to single-attach kprobes/kretprobes, otherwise" },
-	{ "kprobes", 'K', NULL, 0,
-	  "Use single-attach kprobes/kretprobes" },
-	{ "fentries", 'F', NULL, 0,
-	  "Use fentries/fexits instead of kprobes/kretprobes" },
+	{ "kprobes", 'K', NULL, 0, "Use single-attach kprobes/kretprobes" },
+	{ "fentries", 'F', NULL, 0, "Use fentries/fexits instead of kprobes/kretprobes" },
 
 	/* Stack filtering specification */
 	{ .flags = OPTION_DOC, "FILTERING\n=========================" },
 	{ "pid", 'p', "PID", 0,
-	  "Only trace given PID. Can be specified multiple times" },
+	  "Only trace given PID" },
 	{ "no-pid", 'P', "PID", 0,
-	  "Skip tracing given PID. Can be specified multiple times" },
-	{ "comm", 'n', "COMM", 0,
-	  "Only trace processes with given name (COMM). Can be specified multiple times" },
-	{ "no-comm", 'N', "COMM", 0,
-	  "Skip tracing processes with given name (COMM). Can be specified multiple times" },
+	  "Skip tracing given PID" },
+	{ "comm", 'n', "NAME", 0,
+	  "Only trace processes with given name" },
+	{ "no-comm", 'N', "NAME", 0,
+	  "Skip tracing processes with given name" },
 	{ "longer", 'L', "MS", 0,
 	  "Only emit stacks that took at least a given amount of milliseconds" },
-	{ "success-stacks", 'S', NULL, 0,
-	  "Emit any stack, successful or not" },
+	{ "success-stacks", 'S', NULL, 0, "Emit any stack, successful or not" },
 	{ "allow-errors", 'x', "ERROR", 0, "Record stacks only with specified errors" },
 	{ "deny-errors", 'X', "ERROR", 0, "Ignore stacks that have specified errors" },
 
-	/* Misc settings */
+	/* Misc more rarely used/advanced settings */
 	{ .flags = OPTION_DOC, "ADVANCED\n=========================" },
-	{ "kernel", 'k',
-	  "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
+	{ "kernel", 'k', "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
 	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
-	  "Set symbolization settings (-s for line info, -ss for also inline functions, -sn to disable extra symbolization). "
-	  "If extra symbolization is requested, retsnoop relies on having vmlinux with DWARF available." },
+	  "Set stack symbolization mode:\n"
+	  "\t-s for line info,\n"
+	  "\t-ss for also inline functions,\n"
+	  "\t-sn to disable extra symbolization.\n"
+	  "If extra symbolization is requested, retsnoop relies on having\n"
+	  "vmlinux with DWARF available" },
 	{ "full-stacks", OPT_FULL_STACKS, NULL, 0,
 	  "Emit non-filtered full stack traces" },
-	{ "sessions-size", OPT_STACKS_MAP_SIZE, "SIZE", 0,
-	  "Sessions map size (default 4096)" },
-	{ "ringbuf-size", OPT_RINGBUF_MAP_SIZE, "SIZE", 0,
-	  "Ringbuf map size in bytes (default 8MB)" },
-	{ "lbr-max-count", OPT_LBR_MAX_CNT, "N", 0,
-	  "Limit number of printed LBRs to N" },
 	{ "debug", OPT_DEBUG_FEAT, "FEATURE", 0,
-	  "Enable selected debug features. Any set of: multi-kprobe, full-lbr." },
-	{ "bpf-logs", 'l', NULL, 0,
-	  "Emit BPF-side logs (use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to read)" },
-	{ "config", 'C', "CONFIG", 0, "Specify extra configuration parameters." },
+	  "Enable selected debug features.\nSupported: multi-kprobe, full-lbr, bpf" },
+
+	/* Extra config settings */
+	{ .flags = OPTION_DOC, "EXTRA CONFIGURATION\n=========================" },
+	{ "config", 'C', "CONFIG", 0, "Specify extra configuration parameters:" },
+	{ "config-help", OPT_CONFIG_HELP, NULL, 0, "Output support full config parameters help" },
 
 	/* Help, version, logging, dry-run, etc */
 	{ .flags = OPTION_DOC, "USAGE, HELP, VERSION\n=========================" },
-	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
+	{ "help", 'h', NULL, 0, "Show the full help" },
 	{ "verbose", 'v', NULL, 0,
 	  "Verbose output (use -vv for debug-level verbosity, -vvv for extra debug log)" },
 	{ "version", 'V', NULL, 0,
-	  "Print out retsnoop version." },
+	  "Print out retsnoop version" },
 	{},
 };
 
-struct cfg_spec;
-
-typedef int (*cfg_parse_fn)(const struct cfg_spec *cfg, const char *arg, void *ctx);
-
-struct cfg_spec {
-	const char *group;
-	const char *key;
-	const char *desc;
-	cfg_parse_fn parse_fn;
-	void *ctx;
-};
-
-static int cfg_symb_mode(const struct cfg_spec *cfg, const char *value, void *ctx);
-static int cfg_int_pos(const struct cfg_spec *cfg, const char *arg, void *ctx);
-
 static struct cfg_spec cfg_specs[] = {
-	{ "bpf", "ringbuf-size", "ringbuf map size", cfg_int_pos, &env.ringbuf_map_sz },
-	{ "bpf", "sessions-size", "sessions map size", cfg_int_pos, &env.sessions_map_sz },
-	{ "fmt", "symbolization-mode", "symbolization mode", cfg_symb_mode, NULL },
+	{ "bpf", "ringbuf-size", "ringbuf map size", cfg_int_pos, &env.ringbuf_map_sz,
+	  "BPF ringbuf size (defaults to 8MB)",
+	  "BPF ringbuf size in bytes.\n"
+	   "\tIncrease if you experience dropped data. By default is set to 8MB." },
+	{ "bpf", "sessions-size", "sessions map size", cfg_int_pos, &env.sessions_map_sz,
+	  "BPF sessions map capacity (defaults to 4096)" },
+	{ "fmt", "stack-trace-mode", "symbolization mode", cfg_symb_mode, &env.symb_mode,
+	  "Stack symbolization mode",
+	  "Stack symbolization mode.\n"
+	  "\tDetermines how much processing is done for stack symbolization\n"
+	  "\tand what kind of extra information is included in stack traces:\n"
+	  "\t    none    - no source code info, no inline functions;\n"
+	  "\t    linenum - source code info (file:line), no inline functions;\n"
+	  "\t    inlines - source code info and inline functions." },
+	{ "fmt", "lbr-max-count", "LBR max count", cfg_int_pos, &env.lbr_max_cnt,
+	  "Limit number of printed LBRs to N" },
 };
 
 /* PRESETS */
@@ -271,6 +285,7 @@ static enum debug_feat parse_debug_arg(const char *arg)
 	} table[] = {
 		{"multi-kprobe", DEBUG_MULTI_KPROBE},
 		{"full-lbr", DEBUG_FULL_LBR},
+		{"bpf", DEBUG_BPF},
 	};
 
 	for (i = 0; i < ARRAY_SIZE(table); i++) {
@@ -340,9 +355,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.debug = true;
 		else if (!env.debug_extra)
 			env.debug_extra = true;
-		break;
-	case 'l':
-		env.bpf_logs = true;
 		break;
 	case 'T':
 		env.emit_func_trace = true;
@@ -525,14 +537,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		if (arg && parse_lbr_arg(arg))
 			return -EINVAL;
 		break;
-	case OPT_LBR_MAX_CNT:
-		errno = 0;
-		env.lbr_max_cnt = strtol(arg, NULL, 10);
-		if (errno || env.lbr_max_cnt < 0) {
-			fprintf(stderr, "Invalid LBR maximum count: %d\n", env.lbr_max_cnt);
-			return -EINVAL;
-		}
-		break;
 	case 'A':
 		env.capture_args = true;
 		break;
@@ -562,6 +566,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		if (parse_config_arg(arg))
 			return -EINVAL;
 		break;
+	case OPT_CONFIG_HELP:
+		env.show_config_help = true;
+		break;
 	case OPT_DEBUG_FEAT:
 		if (parse_debug_arg(arg))
 			return -EINVAL;
@@ -583,7 +590,24 @@ static int cfg_int_pos(const struct cfg_spec *cfg, const char *arg, void *ctx)
 	*dst = strtol(arg, NULL, 10);
 	if (errno || *dst <= 0) {
 		fprintf(stderr, "Invalid %s: '%s', should be a valid positive integer.\n",
-			cfg->desc, arg);
+			cfg->name, arg);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *ctx)
+{
+	bool *dst = ctx;
+
+	if (strcasecmp(arg, "true") == 0 || strcmp(arg, "1") == 0) {
+		*dst = true;
+	} else if (strcasecmp(arg, "false") == 0 || strcmp(arg, "0") == 0) {
+		*dst = false;
+	} else {
+		elog("Invalid %s: '%s', should be a 'true' or 1 for enabling the option; 'false' or 0 for disabling it.\n",
+		     cfg->name, arg);
 		return -EINVAL;
 	}
 
@@ -592,18 +616,36 @@ static int cfg_int_pos(const struct cfg_spec *cfg, const char *arg, void *ctx)
 
 static int cfg_symb_mode(const struct cfg_spec *cfg, const char *value, void *ctx)
 {
+	enum symb_mode *mode = ctx;
+
 	if (strcmp(value, "linenum") == 0 || strcmp(value, "l") == 0) {
-		env.symb_mode = SYMB_LINEINFO;
+		*mode = SYMB_LINEINFO;
 	} else if (strcmp(value, "none") == 0 || strcmp(value, "n") == 0) {
-		env.symb_mode = SYMB_NONE;
+		*mode = SYMB_NONE;
 	} else if (strcmp(value, "inlines") == 0 || strcmp(value, "s") == 0) {
-		env.symb_mode |= SYMB_INLINES;
+		*mode |= SYMB_INLINES;
 	} else {
 		elog("Unrecognized stack symbolization mode: '%s'. Only 'none', 'linenum', or 'inlines' values are supported.\n",
 		     value);
 		return -EINVAL;
 	}
 	return 0;
+}
+
+void print_config_help_message(void)
+{
+	int i;
+
+	log("It's possible to customize various retsnoop's internal implementation details.\n");
+	log("This can be done by specifying one or multiple extra parameters using\n");
+	log("--config KEY=VALUE CLI arguments.\n\n");
+
+	log("Supported configuration parameters:\n");
+	for (i = 0; i < ARRAY_SIZE(cfg_specs); i++) {
+		log("  %s.%s - %s\n",
+		    cfg_specs[i].group, cfg_specs[i].key,
+		    cfg_specs[i].help ?: cfg_specs[i].short_help);
+	}
 }
 
 static char *help_filter(int key, const char *text, void *input)
@@ -617,9 +659,10 @@ static char *help_filter(int key, const char *text, void *input)
 		if (!f)
 			return (char *)text;
 
-		fprintf(f, "%s\nSupported values:", text);
+		fprintf(f, "%s", text);
 		for (i = 0; i < ARRAY_SIZE(cfg_specs); i++) {
-			fprintf(f, "\n  %s.%s", cfg_specs[i].group, cfg_specs[i].key);
+			fprintf(f, "\n%s.%s - %s",
+				cfg_specs[i].group, cfg_specs[i].key, cfg_specs[i].short_help);
 		}
 		fclose(f);
 		return msg;
