@@ -47,11 +47,9 @@ struct env {
 	bool debug_extra;
 	bool dry_run;
 	bool emit_success_stacks;
-	bool emit_full_stacks;
 	bool emit_func_trace;
 	bool capture_args;
 	enum attach_mode attach_mode;
-	enum symb_mode symb_mode;
 	enum debug_feat debug_feats;
 	bool use_lbr;
 	long lbr_flags;
@@ -59,6 +57,12 @@ struct env {
 	const char *vmlinux_path;
 	int pid;
 	int longer_than_ms;
+
+	/* Stack symbolization settings */
+	enum symb_mode symb_mode;
+	bool stack_emit_all;
+	bool stack_emit_addrs;
+	bool stack_dec_offs;
 
 	struct glob *allow_globs;
 	struct glob *deny_globs;

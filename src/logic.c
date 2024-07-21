@@ -345,7 +345,7 @@ static int filter_kstack(struct ctx *ctx, struct kstack_item *r, const struct ca
 		if (i + 2 < n && is_bpf_tramp(&r[i + 1])
 		    && r[i].ksym == r[i + 2].ksym
 		    && r[i].addr - r[i].ksym->addr == FTRACE_OFFSET) {
-			if (env.emit_full_stacks) {
+			if (env.stack_emit_all) {
 				item->filtered = true;
 				p++;
 				continue;
@@ -365,7 +365,7 @@ static int filter_kstack(struct ctx *ctx, struct kstack_item *r, const struct ca
 		 */
 		if (is_bpf_tramp(&r[i]) || is_bpf_prog(&r[i])
 		    || strcmp(r[i].ksym->name, "bpf_get_stack_raw_tp") == 0) {
-			if (env.emit_full_stacks) {
+			if (env.stack_emit_all) {
 				item->filtered = true;
 				p++;
 				continue;
@@ -787,7 +787,7 @@ static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem
 		prepare_func_res(s, fitem->res, fitem->flags);
 	}
 
-	if (env.emit_full_stacks) {
+	if (env.stack_emit_addrs) {
 		if (kitem)
 			snappendf(s->sym, "%c%016lx ", kitem->filtered ? '~' : ' ',  kitem->addr);
 		else
@@ -801,8 +801,10 @@ static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem
 	else
 		fname = "";
 	snappendf(s->sym, "%s", fname);
-	if (kitem && kitem->ksym)
-		snappendf(s->sym, "+0x%lx", kitem->addr - kitem->ksym->addr);
+	if (kitem && kitem->ksym) {
+		snappendf(s->sym, env.stack_dec_offs ? "+%lu" : "+0x%lx",
+			  kitem->addr - kitem->ksym->addr);
+	}
 	if (symb_cnt) {
 		line_off = detect_linux_src_loc(resp->line);
 		strip_out_column_num(resp->line + line_off);
@@ -824,7 +826,7 @@ static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem
 		line_off = detect_linux_src_loc(resp->line);
 		strip_out_column_num(resp->line + line_off);
 
-		snappendf(s->sym, "%*s. %s", env.emit_full_stacks ? 18 : 0, "", resp->fname);
+		snappendf(s->sym, "%*s. %s", env.stack_emit_addrs ? 18 : 0, "", resp->fname);
 		snappendf(s->src, "(%s)", resp->line + line_off);
 	}
 }
@@ -867,12 +869,13 @@ static void prepare_lbr_items(struct ctx *ctx, long addr, struct stack_items_cac
 		return;
 	}
 
-	if (env.emit_full_stacks)
+	if (env.stack_emit_addrs)
 		snappendf(s->sym, "%016lx ", addr);
 
 	ksym = ksyms__map_addr(ctx->ksyms, addr);
 	if (ksym)
-		snappendf(s->sym, "%s+0x%lx", ksym->name, addr - ksym->addr);
+		snappendf(s->sym, env.stack_dec_offs ? "%s+%lu" : "%s+0x%lx",
+			  ksym->name, addr - ksym->addr);
 
 	if (!ctx->a2l || env.symb_mode == SYMB_NONE)
 		return;
@@ -899,7 +902,7 @@ static void prepare_lbr_items(struct ctx *ctx, long addr, struct stack_items_cac
 			fprintf(stderr, "Ran out of formatting space, some data will be omitted!\n");
 			return;
 		}
-		if (env.emit_full_stacks)
+		if (env.stack_emit_addrs)
 			snappendf(s->sym, "%*s ", 16, "");
 		snappendf(s->sym, ". %s", resp->fname);
 		snappendf(s->src, "(%s)", resp->line + line_off);
@@ -984,7 +987,7 @@ static void output_lbrs(struct ctx *dctx, struct session *sess,
 		}
 	}
 	if (!found_useful_lbrs ||
-	    env.emit_full_stacks || (env.debug_feats & DEBUG_FULL_LBR))
+	    env.stack_emit_all || (env.debug_feats & DEBUG_FULL_LBR))
 		lbr_to = 0;
 
 	if (env.lbr_max_cnt && lbr_from - lbr_to + 1 > env.lbr_max_cnt)
