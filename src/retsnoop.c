@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <signal.h>
 #include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
 #include <bpf/bpf.h>
@@ -241,7 +242,8 @@ int main(int argc, char **argv, char **envp)
 		fprintf(stderr, "Failed to set output mode to line-buffered!\n");
 
 	/* Parse command line arguments */
-	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
+	setenv("ARGP_HELP_FMT", "rmargin=99", 0 /* !overwrite */);
+	err = argp_parse(&argp, argc, argv, ARGP_NO_HELP, NULL, NULL);
 	if (err)
 		return -1;
 
@@ -255,6 +257,11 @@ int main(int argc, char **argv, char **envp)
 				return 1;
 			}
 		}
+		return 0;
+	}
+
+	if (env.show_config_help) {
+		print_config_help_message();
 		return 0;
 	}
 
@@ -375,8 +382,8 @@ int main(int argc, char **argv, char **envp)
 	}
 
 	/* turn on extra bpf_printk()'s on BPF side */
-	skel->rodata->verbose = env.bpf_logs;
-	skel->rodata->extra_verbose = env.debug_extra;
+	skel->rodata->verbose = env.debug_feats & DEBUG_BPF;
+	skel->rodata->extra_verbose = (env.debug_feats & DEBUG_BPF) && env.debug_extra;
 	skel->rodata->targ_tgid = env.pid;
 	skel->rodata->emit_success_stacks = env.emit_success_stacks;
 	skel->rodata->duration_ns = env.longer_than_ms * 1000000ULL;
@@ -660,8 +667,8 @@ int main(int argc, char **argv, char **envp)
 	mass_attacher__activate(att);
 
 	/* Process events */
-	if (env.bpf_logs)
-		printf("BPF-side logging is enabled. Use `sudo cat /sys/kernel/debug/tracing/trace_pipe` to see logs.\n");
+	if (env.debug_feats & DEBUG_BPF)
+		printf("BPF-side logging is enabled. Use `sudo cat /sys/kernel/tracing/trace_pipe` to see logs.\n");
 	printf("Receiving data...\n");
 	while (!exiting) {
 		err = ring_buffer__poll(rb, 100);

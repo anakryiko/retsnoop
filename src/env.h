@@ -36,14 +36,15 @@ enum debug_feat {
 	DEBUG_NONE = 0x00,
 	DEBUG_MULTI_KPROBE = 0x01,
 	DEBUG_FULL_LBR = 0x02,
+	DEBUG_BPF = 0x04,
 };
 
 struct env {
 	bool show_version;
+	bool show_config_help;
 	bool verbose;
 	bool debug;
 	bool debug_extra;
-	bool bpf_logs;
 	bool dry_run;
 	bool emit_success_stacks;
 	bool emit_full_stacks;
@@ -100,5 +101,7 @@ struct env {
 
 extern struct env env;
 extern const struct argp argp;
+
+void print_config_help_message(void);
 
 #endif /* __ENV_H */
