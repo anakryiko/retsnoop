@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <bpf/btf.h>
 #include <linux/ptrace.h>
+#include "env.h"
 #include "mass_attacher.h"
 #include "utils.h"
 #include "logic.h"
@@ -376,13 +377,20 @@ static void prepare_fn_arg(struct fmt_buf *b,
 	if (spec->pointee_btf_id) /* append pointer mark */
 		bnappendf(b, "&");
 
-	/* XXX: make configurable by user */
-	opts.indent_str = "  ";
-	opts.indent_level = 0;
-	opts.compact = true;
-	opts.skip_names = false;
-	/* opts.skip_types = true; -- NOT YET ADDED TO UPSTREAM LIBBPF */
 	opts.emit_zeroes = false;
+	if (env.args_fmt_mode == ARGS_FMT_VERBOSE) {
+		opts.indent_str = "    ";
+		opts.indent_level = 1;
+		opts.compact = false;
+		opts.skip_names = false;
+		opts.skip_types = true;
+	} else {
+		opts.indent_str = "";
+		opts.indent_level = 0;
+		opts.compact = true;
+		opts.skip_names = false;
+		opts.skip_types = true;
+	}
 
 	dump_cur_fmt_buf = b;
 	err = btf_dump__dump_type_data(fn_args->dumper,
@@ -393,25 +401,34 @@ static void prepare_fn_arg(struct fmt_buf *b,
 		bnappendf(b, "\u2026");
 	} else if (err < 0) {
 		/* unexpected error */
-		elog("Failed to BTF dump: %d\n", err);
 		bnappendf(b, "...DUMP ERR=%d...", err);
 	}
 }
 
-void prepare_fn_args_data(struct ctx *ctx, struct stack_item *s, int func_id,
-			  struct func_args_item *fai)
+void emit_fn_args_data(struct ctx *ctx, FILE *f, struct stack_item *s,
+		       int func_id, struct func_args_item *fai)
 {
 	const struct func_args_info *fn_args = &fn_infos[func_id];
 	int i, len;
 	void *data = fai->arg_data;
 
 	for (i = 0; i < fn_args->arg_spec_cnt; i++) {
-		struct fmt_buf b = FMT_SUBBUF(s->src, env.args_fmt_max_arg_width);
+		int width_lim = env.args_fmt_max_arg_width;
+		struct fmt_buf b;
 
+		/* verbose args output mode doesn't have width limit */
+		if (env.args_fmt_mode == ARGS_FMT_VERBOSE)
+			width_lim = 0;
+		b = FMT_FILE(f, s->src, width_lim);
+
+		if (env.args_fmt_mode == ARGS_FMT_COMPACT)
+			fprintf(f, "%s", i == 0 ? "" : " ");
+		else /* emit Unicode's slightly smaller-sized '>' as a marker of an argument */
+			fprintf(f, "\n    \u203A ");
 		if (fn_args->btf)
-			bnappendf(&b, "%s%s=", i == 0 ? "" : " ", fn_args->arg_specs[i].name);
+			fprintf(f, "%s=", fn_args->arg_specs[i].name);
 		else /* "raw" BTF-less mode */
-			bnappendf(&b, "%sarg%d=", i == 0 ? "" : " ", i); 
+			fprintf(f, "arg%d=", i); 
 
 		len = fai->arg_lens[i];
 		if (len == 0) {
@@ -440,11 +457,11 @@ void prepare_fn_args_data(struct ctx *ctx, struct stack_item *s, int func_id,
 			data += (len + 7) / 8 * 8;
 		}
 
-		/* do we need (and can we fit) Unicode horizontal ellipsis
-		 * (single-character triple dot) to show truncated output?
+		/* append Unicode horizontal ellipsis (single-character triple dots)
+		 * if output was truncated to mark its truncation visually
 		 */
-		if (b.sublen > b.max_sublen && b.max_sublen >= 2)
-			snappendf(s->src, "%s", UNICODE_HELLIP);
+		if (width_lim && b.sublen > b.max_sublen)
+			fprintf(f, "%s", UNICODE_HELLIP);
 	}
 }
 
