@@ -19,11 +19,11 @@ static int fn_info_cnt, fn_info_cap;
 static const struct btf *last_btf;
 static struct btf_dump *last_dumper;
 
-static struct stack_item *dump_cur_si;
+static struct fmt_buf *dump_cur_fmt_buf;
 
 static void btf_dump_cb(void *ctx, const char *fmt, va_list args)
 {
-	vsnappendf(dump_cur_si->src, fmt, args);
+	vbnappendf(dump_cur_fmt_buf, fmt, args);
 }
 
 const struct func_args_info *func_args_info(int func_id)
@@ -325,19 +325,19 @@ static void sanitize_string(char *s, size_t len)
 	s[len - 1] = '\0';
 }
 
-static void smart_print_int(struct stack_item *s, bool is_bool, bool is_signed, long long value)
+static void smart_print_int(struct fmt_buf *b, bool is_bool, bool is_signed, long long value)
 {
 	if (is_bool && value >= 0 && value <= 1)
-		snappendf(s->src, "%s", value ? "true" : "false");
+		bnappendf(b, "%s", value ? "true" : "false");
 	else if (is_signed && value < 1024 * 1024 /* random heuristic */)
-		snappendf(s->src, "%lld", value);
+		bnappendf(b, "%lld", value);
 	else if ((unsigned long)value < 1024 * 1024)
-		snappendf(s->src, "%llu", (unsigned long long)value);
+		bnappendf(b, "%llu", (unsigned long long)value);
 	else
-		snappendf(s->src, "0x%llx", value);
+		bnappendf(b, "0x%llx", value);
 }
 
-static void prepare_fn_arg(struct stack_item *s,
+static void prepare_fn_arg(struct fmt_buf *b,
 			   const struct func_args_info *fn_args,
 			   const struct func_arg_spec *spec,
 			   void *data, size_t data_len)
@@ -348,7 +348,7 @@ static void prepare_fn_arg(struct stack_item *s,
 
 	if (!fn_args->btf) {
 		/* fallback "raw registers" mode, data_len should be 8 */
-		smart_print_int(s, false /*!is_bool*/, false /*!is_signed*/, *(long long *)data);
+		smart_print_int(b, false /*!is_bool*/, false /*!is_signed*/, *(long long *)data);
 		return;
 	}
 
@@ -361,7 +361,7 @@ static void prepare_fn_arg(struct stack_item *s,
 		bool is_bool = btf_int_encoding(t) & BTF_INT_BOOL;
 
 		if (fetch_int_value(data, data_len, is_signed, &value) == 0) {
-			smart_print_int(s, is_bool, is_signed, value);
+			smart_print_int(b, is_bool, is_signed, value);
 			return;
 		}
 	}
@@ -369,12 +369,12 @@ static void prepare_fn_arg(struct stack_item *s,
 	if (spec->pointee_btf_id < 0) {
 		/* variable-length string */
 		sanitize_string(data, data_len);
-		snappendf(s->src, "'%s'", (char *)data);
+		bnappendf(b, "'%s'", (char *)data);
 		return;
 	}
 
 	if (spec->pointee_btf_id) /* append pointer mark */
-		snappendf(s->src, "&");
+		bnappendf(b, "&");
 
 	/* XXX: make configurable by user */
 	opts.indent_str = "  ";
@@ -384,17 +384,17 @@ static void prepare_fn_arg(struct stack_item *s,
 	/* opts.skip_types = true; -- NOT YET ADDED TO UPSTREAM LIBBPF */
 	opts.emit_zeroes = false;
 
-	dump_cur_si = s;
+	dump_cur_fmt_buf = b;
 	err = btf_dump__dump_type_data(fn_args->dumper,
 				       spec->pointee_btf_id ?: spec->btf_id,
 				       data, data_len, &opts);
 	if (err == -E2BIG) {
 		/* truncated data */
-		snappendf(s->src, "...");
+		bnappendf(b, "\u2026");
 	} else if (err < 0) {
 		/* unexpected error */
 		elog("Failed to BTF dump: %d\n", err);
-		snappendf(s->src, "...DUMP ERR=%d...", err);
+		bnappendf(b, "...DUMP ERR=%d...", err);
 	}
 }
 
@@ -406,37 +406,45 @@ void prepare_fn_args_data(struct ctx *ctx, struct stack_item *s, int func_id,
 	void *data = fai->arg_data;
 
 	for (i = 0; i < fn_args->arg_spec_cnt; i++) {
+		struct fmt_buf b = FMT_SUBBUF(s->src, 20);
+
 		if (fn_args->btf)
-			snappendf(s->src, "%s%s=", i == 0 ? "" : " ", fn_args->arg_specs[i].name);
+			bnappendf(&b, "%s%s=", i == 0 ? "" : " ", fn_args->arg_specs[i].name);
 		else /* "raw" BTF-less mode */
-			snappendf(s->src, "%sarg%d=", i == 0 ? "" : " ", i); 
+			bnappendf(&b, "%sarg%d=", i == 0 ? "" : " ", i); 
 
 		len = fai->arg_lens[i];
 		if (len == 0) {
 			/* we encode special conditions in REGIDX mask */
 			switch (fn_args->arg_specs[i].arg_flags & FUNC_ARG_REGIDX_MASK) {
 			case FUNC_ARG_VARARG:
-				snappendf(s->src, "(vararg)");
+				bnappendf(&b, "(vararg)");
 				break;
 			case FUNC_ARG_UNKN:
-				snappendf(s->src, "(unsupp)");
+				bnappendf(&b, "(unsupp)");
 				break;
 			case FUNC_ARG_STACKOFF_2BIG:
-				snappendf(s->src, "(stack-too-far)");
+				bnappendf(&b, "(stack-too-far)");
 				break;
 			default:
-				snappendf(s->src, "(skipped)");
+				bnappendf(&b, "(skipped)");
 			}
 		} else if (len == -ENODATA) {
-			snappendf(s->src, "NULL");
+			bnappendf(&b, "NULL");
 		} else if (len == -ENOSPC) {
-			snappendf(s->src, "(trunc)");
+			bnappendf(&b, "(trunc)");
 		} else if (len < 0) {
-			snappendf(s->src, "ERR:%d", len);
+			bnappendf(&b, "ERR:%d", len);
 		} else {
-			prepare_fn_arg(s, fn_args, &fn_args->arg_specs[i], data, len);
+			prepare_fn_arg(&b, fn_args, &fn_args->arg_specs[i], data, len);
 			data += (len + 7) / 8 * 8;
 		}
+
+		/* do we need (and can we fit) Unicode horizontal ellipsis
+		 * (single-character triple dot) to show truncated output?
+		 */
+		if (b.sublen > b.max_sublen && b.max_sublen >= 2)
+			snappendf(s->src, "%s", UNICODE_HELLIP);
 	}
 }
 

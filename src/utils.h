@@ -5,6 +5,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdarg.h>
 #include <errno.h>
 #include <time.h>
 #include "addr2line.h"
@@ -42,6 +44,60 @@
  * corresponding to NAME_MOD() "invocation"
  */
 #define NAME_MOD(name, mod) name, mod ? " [" : "", mod ?: "", mod ? "]" : ""
+
+/* horizontal ellipsis (single-character Unicode triple dots) */
+#define UNICODE_HELLIP "\u2026"
+
+struct fmt_buf {
+	char *buf;
+	int sublen;
+	int max_sublen;
+
+	int *lenp;
+};
+
+/* Create sub-fmt_buf using *dst*'s full underlying buffer and taking into
+ * account already emitted amount of data (stored in *dst##_len*). This
+ * sub-buffer is allowed to accept at most *max_sublen* characters. If full
+ * buffer has less space available, the remaining smaller space overrides
+ * *max_sublen*.
+ */
+#define FMT_SUBBUF(dst, n) {								\
+	.buf = (dst),									\
+	.lenp = &(dst##_len),								\
+	.max_sublen = min((n), sizeof(dst) < dst##_len ? 0 : sizeof(dst) - dst##_len),	\
+	.sublen = 0,									\
+}
+
+static inline ssize_t vbnappendf(struct fmt_buf *b, const char *fmt, va_list args)
+{
+	ssize_t n;
+
+	n = vsnprintf(b->buf + *b->lenp,
+		      b->sublen < b->max_sublen ? b->max_sublen - b->sublen : 0,
+		      fmt, args);
+	if (n < 0)
+		return n;
+
+	if (b->sublen < b->max_sublen)
+		*b->lenp += min(n, b->max_sublen - b->sublen - 1);
+
+	b->sublen += n;
+
+	return n;
+}
+
+static inline ssize_t bnappendf(struct fmt_buf *b, const char *fmt, ...)
+{
+	va_list args;
+	ssize_t n;
+
+	va_start(args, fmt);
+	n = vbnappendf(b, fmt, args);
+	va_end(args);
+
+	return n;
+}
 
 #define snappendf(dst, fmt, args...)							\
 	dst##_len += snprintf(dst + dst##_len,						\
