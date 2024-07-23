@@ -13,6 +13,7 @@
 
 #define DEFAULT_RINGBUF_SZ 8 * 1024 * 1024
 #define DEFAULT_SESSIONS_SZ 4096
+#define DEFAULT_FNARGS_FMT_MAX_ARG_WIDTH 80
 
 const char *argp_program_version = "retsnoop v0.9.8";
 const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
@@ -27,6 +28,7 @@ struct env env = {
 	.args_max_total_args_size = MAX_FNARGS_TOTAL_ARGS_SZ,
 	.args_max_sized_arg_size = MAX_FNARGS_SIZED_ARG_SZ,
 	.args_max_str_arg_size = MAX_FNARGS_STR_ARG_SZ,
+	.args_fmt_max_arg_width = DEFAULT_FNARGS_FMT_MAX_ARG_WIDTH,
 };
 
 __attribute__((constructor))
@@ -37,22 +39,24 @@ static void env_init()
 }
 struct cfg_spec;
 
-typedef int (*cfg_parse_fn)(const struct cfg_spec *cfg, const char *arg, void *ctx);
+typedef int (*cfg_parse_fn)(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
 
 struct cfg_spec {
 	const char *group;
 	const char *key;
-	const char *name;
 	cfg_parse_fn parse_fn;
-	void *ctx;
+	void *dst; /* value to set */
+	void *ctx; /* additional parser context, e.g., integer limits */
 	const char *short_help;
 	const char *help;
 };
 
-static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *ctx);
-static int cfg_int_pos(const struct cfg_spec *cfg, const char *arg, void *ctx);
-static int cfg_symb_mode(const struct cfg_spec *cfg, const char *value, void *ctx);
-static int cfg_args_fmt_mode(const struct cfg_spec *cfg, const char *value, void *ctx);
+struct int_lims { int min_val, max_val; };
+
+static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
+static int cfg_int(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
+static int cfg_symb_mode(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
+static int cfg_args_fmt_mode(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
 
 #define OPT_STACKS_MAP_SIZE 1002
 #define OPT_DRY_RUN 1004
@@ -138,15 +142,15 @@ static const struct argp_option opts[] = {
 
 static struct cfg_spec cfg_specs[] = {
 	/* BPF maps/data sizing */
-	{ "bpf", "ringbuf-size", "ringbuf map size", cfg_int_pos, &env.ringbuf_map_sz,
+	{ "bpf", "ringbuf-size", cfg_int, &env.ringbuf_map_sz, NULL,
 	  "BPF ringbuf size (defaults to 8MB)",
 	  "BPF ringbuf size in bytes.\n"
 	   "\tIncrease if you experience dropped data. By default is set to 8MB." },
-	{ "bpf", "sessions-size", "sessions map size", cfg_int_pos, &env.sessions_map_sz,
+	{ "bpf", "sessions-size", cfg_int, &env.sessions_map_sz, NULL,
 	  "BPF sessions map capacity (defaults to 4096)" },
 
 	/* Stack trace formatting */
-	{ "fmt", "stack-trace-mode", "symbolization mode", cfg_symb_mode, &env.symb_mode,
+	{ "fmt", "stack-trace-mode", cfg_symb_mode, &env.symb_mode, NULL,
 	  "Stack symbolization mode",
 	  "Stack symbolization mode.\n"
 	  "\tDetermines how much processing is done for stack symbolization\n"
@@ -154,27 +158,30 @@ static struct cfg_spec cfg_specs[] = {
 	  "\t    none    - no source code info, no inline functions;\n"
 	  "\t    linenum - source code info (file:line), no inline functions;\n"
 	  "\t    inlines - source code info and inline functions." },
-	{ "fmt", "stack-emit-all", "value", cfg_bool, &env.stack_emit_all,
+	{ "fmt", "stack-emit-all", cfg_bool, &env.stack_emit_all, NULL,
 	  "Emit all stack stace/LBR entries (turning off relevancy filtering)" },
-	{ "fmt", "stack-emit-addrs", "value", cfg_bool, &env.stack_emit_addrs,
+	{ "fmt", "stack-emit-addrs", cfg_bool, &env.stack_emit_addrs, NULL,
 	  "Emit raw captured stack trace/LBR addresses (in addition to symbols)" },
-	{ "fmt", "stack-dec-offs", "value", cfg_bool, &env.stack_dec_offs,
+	{ "fmt", "stack-dec-offs", cfg_bool, &env.stack_dec_offs, NULL,
 	  "Emit stack trace/LBR function offsets in decimal (by default, it's in hex)" },
 
 	/* Function args formatting */
-	{ "args", "max-total-size", "value", cfg_int_pos, &env.args_max_total_args_size,
+	{ "args", "max-total-args-size",
+	  cfg_int, &env.args_max_total_args_size, &(struct int_lims){1, MAX_FNARGS_TOTAL_ARGS_SZ},
 	  "Maximum total amount of data (in bytes) captured for all args of any single function call" },
-	{ "args", "max-sized-arg-size", "value", cfg_int_pos, &env.args_max_sized_arg_size,
+	{ "args", "max-sized-arg-size",
+	  cfg_int, &env.args_max_sized_arg_size, &(struct int_lims){1, MAX_FNARGS_SIZED_ARG_SZ},
 	  "Maximum amount of data (in bytes) captured for any single fixed-sized (int, struct, etc) function argument" },
-	{ "args", "max-str-arg-size", "value", cfg_int_pos, &env.args_max_str_arg_size,
+	{ "args", "max-str-arg-size",
+	  cfg_int, &env.args_max_str_arg_size, &(struct int_lims){1, MAX_FNARGS_STR_ARG_SZ},
 	  "Maximum amount of data (in bytes) captured for any single variable-length string function argument" },
-	{ "args", "fmt-mode", "args formatting mode", cfg_args_fmt_mode, &env.args_fmt_mode,
+	{ "args", "fmt-mode", cfg_args_fmt_mode, &env.args_fmt_mode, NULL,
 	  "Function arguments formatting mode (compact, multiline, verbose)" },
-	{ "args", "fmt-max-arg-width", "value", cfg_int_pos, &env.args_fmt_max_arg_width,
+	{ "args", "fmt-max-arg-width", cfg_int, &env.args_fmt_max_arg_width, &(struct int_lims){10, 256 * 1024},
 	  "Maximum amount of horizontal space taken by a single argument output (applies only to compact mode)" },
 
 	/* LBR formatting */
-	{ "fmt", "lbr-max-count", "LBR max count", cfg_int_pos, &env.lbr_max_cnt,
+	{ "fmt", "lbr-max-count", cfg_int, &env.lbr_max_cnt, NULL,
 	  "Limit number of printed LBRs to N" },
 };
 
@@ -353,7 +360,7 @@ static enum debug_feat parse_config_arg(const char *arg)
 		    strncmp(cfg->key, k, key_len) != 0 || cfg->key[key_len] != '\0')
 			continue;
 
-		return cfg->parse_fn(cfg, v, cfg->ctx);
+		return cfg->parse_fn(cfg, v, cfg->dst, cfg->ctx);
 	}
 
 	elog("Config '%.*s.%.*s' unrecognized!\n", grp_len, g, key_len, k);
@@ -604,70 +611,73 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
-static int cfg_int_pos(const struct cfg_spec *cfg, const char *arg, void *ctx)
+static int cfg_int(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx)
 {
-	int *dst = ctx;
+	int *val = dst;
+	struct int_lims *lims = ctx;
+	int min_val = lims ? lims->min_val : 1;
+	int max_val = lims ? lims->max_val : INT_MAX;
 
 	errno = 0;
-	*dst = strtol(arg, NULL, 10);
-	if (errno || *dst <= 0) {
-		fprintf(stderr, "Invalid %s: '%s', should be a valid positive integer.\n",
-			cfg->name, arg);
+	*val = strtol(arg, NULL, 10);
+	if (errno || *val < min_val || *val > max_val) {
+		fprintf(stderr, "Invalid '%s.%s' config value '%s'. It is expected to be in a valid [%d, %d] range.\n",
+			cfg->group, cfg->key, arg, min_val, max_val);
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
-static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *ctx)
+static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx)
 {
-	bool *dst = ctx;
+	bool *val = dst;
 
 	if (strcasecmp(arg, "true") == 0 || strcmp(arg, "1") == 0) {
-		*dst = true;
+		*val = true;
 	} else if (strcasecmp(arg, "false") == 0 || strcmp(arg, "0") == 0) {
-		*dst = false;
+		*val = false;
 	} else {
-		elog("Invalid %s: '%s', should be a 'true' or 1 for enabling the option; 'false' or 0 for disabling it.\n",
-		     cfg->name, arg);
+		elog("Invalid '%s.%s' value '%s'. It is expected to be 'true' or '1' for enabling the option; 'false' or 0 for disabling it.\n",
+		     cfg->group, cfg->key, arg);
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
-static int cfg_symb_mode(const struct cfg_spec *cfg, const char *value, void *ctx)
+static int cfg_symb_mode(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx)
 {
-	enum symb_mode *mode = ctx;
+	enum symb_mode *mode = dst;
 
-	if (strcmp(value, "linenum") == 0 || strcmp(value, "l") == 0) {
+	if (strcmp(arg, "linenum") == 0 || strcmp(arg, "l") == 0) {
 		*mode = SYMB_LINEINFO;
-	} else if (strcmp(value, "none") == 0 || strcmp(value, "n") == 0) {
+	} else if (strcmp(arg, "none") == 0 || strcmp(arg, "n") == 0) {
 		*mode = SYMB_NONE;
-	} else if (strcmp(value, "inlines") == 0 || strcmp(value, "s") == 0) {
+	} else if (strcmp(arg, "inlines") == 0 || strcmp(arg, "s") == 0) {
 		*mode |= SYMB_INLINES;
 	} else {
 		elog("Unrecognized stack symbolization mode: '%s'. Only 'none', 'linenum', or 'inlines' values are supported.\n",
-		     value);
+		     arg);
 		return -EINVAL;
 	}
 	return 0;
 }
 
-static int cfg_args_fmt_mode(const struct cfg_spec *cfg, const char *value, void *ctx)
+static int cfg_args_fmt_mode(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx)
 {
-	enum args_fmt_mode *mode = ctx;
+	enum args_fmt_mode *mode = dst;
 
-	if (strcmp(value, "compact") == 0 || strcmp(value, "c") == 0) {
+	if (strcmp(arg, "compact") == 0 || strcmp(arg, "c") == 0) {
 		*mode = ARGS_FMT_COMPACT;
-	} else if (strcmp(value, "multiline") == 0 || strcmp(value, "m") == 0) {
+	} else if (strcmp(arg, "multiline") == 0 || strcmp(arg, "m") == 0) {
 		*mode = ARGS_FMT_MULTILINE;
-	} else if (strcmp(value, "verbose") == 0 || strcmp(value, "v") == 0) {
+	} else if (strcmp(arg, "verbose") == 0 || strcmp(arg, "v") == 0) {
 		*mode |= ARGS_FMT_VERBOSE;
 	} else {
 		elog("Unrecognized function arguments format mode: '%s'. "
 		     "Only 'compact', 'multiline', or 'verbose' values are supported.\n",
-		     value);
+		     arg);
 		return -EINVAL;
 	}
 	return 0;

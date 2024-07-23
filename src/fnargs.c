@@ -406,7 +406,7 @@ void prepare_fn_args_data(struct ctx *ctx, struct stack_item *s, int func_id,
 	void *data = fai->arg_data;
 
 	for (i = 0; i < fn_args->arg_spec_cnt; i++) {
-		struct fmt_buf b = FMT_SUBBUF(s->src, 20);
+		struct fmt_buf b = FMT_SUBBUF(s->src, env.args_fmt_max_arg_width);
 
 		if (fn_args->btf)
 			bnappendf(&b, "%s%s=", i == 0 ? "" : " ", fn_args->arg_specs[i].name);
