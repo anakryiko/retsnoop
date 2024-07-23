@@ -135,14 +135,20 @@ static int ddump_check_zero_bitfield(struct data_dumper *d,
 static int ddump_emit_bitfield(struct data_dumper *d, const struct btf_type *t,
 			       const void *data, int bit_off, int bit_sz)
 {
-	__u64 print_num;
+	bool is_signed = btf_int_encoding(t) & BTF_INT_SIGNED;
+	__u64 value;
+	char buf[32];
 	int err;
 
-	err = ddump_value_bitfield(d, t, data, bit_off, bit_sz, &print_num);
+	err = ddump_value_bitfield(d, t, data, bit_off, bit_sz, &value);
 	if (err)
 		return err;
 
-	ddump_emitf(d, "0x%llx", (unsigned long long)print_num);
+	if (is_signed)
+		snprintf_smart_int(buf, sizeof(buf), (long long)value);
+	else
+		snprintf_smart_uint(buf, sizeof(buf), value);
+	ddump_emitf(d, "%s", buf);
 
 	return 0;
 }
@@ -189,8 +195,8 @@ static int ddump_emit_int(struct data_dumper *d,
 {
 	int encoding = btf_int_encoding(t);
 	bool sign = encoding & BTF_INT_SIGNED;
-	char buf[16] __attribute__((aligned(16)));
-	int sz = t->size;
+	char buf[32] __attribute__((aligned(16)));
+	int buf_sz = sizeof(buf), sz = t->size;
 
 	if (sz == 0 || sz > sizeof(buf)) {
 		elog("unexpected size %d for id [%u]\n", sz, type_id);
@@ -232,21 +238,24 @@ static int ddump_emit_int(struct data_dumper *d,
 	}
 	case 8:
 		if (sign)
-			ddump_emitf(d, "%lld", *(long long *)data);
+			snprintf_smart_int(buf, buf_sz, *(long long *)data);
 		else
-			ddump_emitf(d, "%llu", *(unsigned long long *)data);
+			snprintf_smart_uint(buf, buf_sz, *(unsigned long long *)data);
+		ddump_emitf(d, "%s", buf);
 		break;
 	case 4:
 		if (sign)
-			ddump_emitf(d, "%d", *(__s32 *)data);
+			snprintf_smart_int(buf, buf_sz, *(__s32 *)data);
 		else
-			ddump_emitf(d, "%u", *(__u32 *)data);
+			snprintf_smart_uint(buf, buf_sz, *(__u32 *)data);
+		ddump_emitf(d, "%s", buf);
 		break;
 	case 2:
 		if (sign)
-			ddump_emitf(d, "%d", *(__s16 *)data);
+			snprintf_smart_int(buf, buf_sz, *(__s16 *)data);
 		else
-			ddump_emitf(d, "%u", *(__u16 *)data);
+			snprintf_smart_uint(buf, buf_sz, *(__u16 *)data);
+		ddump_emitf(d, "%s", buf);
 		break;
 	case 1:
 		if (d->is_array_char) {
@@ -264,9 +273,10 @@ static int ddump_emit_int(struct data_dumper *d,
 			}
 		}
 		if (sign)
-			ddump_emitf(d, "%d", *(__s8 *)data);
+			snprintf_smart_int(buf, buf_sz, *(__s8 *)data);
 		else
-			ddump_emitf(d, "%u", *(__u8 *)data);
+			snprintf_smart_uint(buf, buf_sz, *(__u8 *)data);
+		ddump_emitf(d, "%s", buf);
 		break;
 	default:
 		elog("unexpected sz %d for id [%u]\n", sz, type_id);
@@ -493,6 +503,7 @@ static int ddump_emit_enum(struct data_dumper *d,
 		ddump_emitf(d, is_signed ? "%d" : "%u", value);
 	} else {
 		const struct btf_enum64 *e;
+		char buf[32];
 
 		for (i = 0, e = btf_enum64(t); i < btf_vlen(t); i++, e++) {
 			if (value != btf_enum64_value(e))
@@ -501,7 +512,12 @@ static int ddump_emit_enum(struct data_dumper *d,
 			return 0;
 		}
 
-		ddump_emitf(d, is_signed ? "%lldLL" : "%lluULL", (unsigned long long)value);
+		if (is_signed)
+			snprintf_smart_int(buf, sizeof(buf), value);
+		else
+			snprintf_smart_uint(buf, sizeof(buf), (unsigned long long)value);
+
+		ddump_emitf(d, is_signed ? "%sLL" : "%sULL", buf);
 	}
 	return 0;
 }
