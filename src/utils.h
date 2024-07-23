@@ -288,6 +288,8 @@ static inline const struct btf_type *btf_strip_mods_and_typedefs(const struct bt
 typedef void (*ddump_printf_fn)(void *ctx, const char *fmt, va_list args);
 
 struct btf_data_dump_opts {
+	/* indentation shift for all lines starting from the second, in spaces */
+	int indent_shift;
 	const char *indent_str;
 	int indent_level;
 	bool compact;		/* no newlines/indentation */

@@ -13,7 +13,7 @@
 
 #define DEFAULT_RINGBUF_SZ 8 * 1024 * 1024
 #define DEFAULT_SESSIONS_SZ 4096
-#define DEFAULT_FNARGS_FMT_MAX_ARG_WIDTH 80
+#define DEFAULT_FNARGS_FMT_MAX_ARG_WIDTH 120
 
 const char *argp_program_version = "retsnoop v0.9.8";
 const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";

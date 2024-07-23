@@ -727,7 +727,8 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 	if (last_seq_id != prev_seq_id)
 		add_missing_records_msg(cache, last_seq_id - prev_seq_id);
 }
-static void print_fnargs_item(struct stack_item *s, const struct func_args_item *fai)
+static void print_fnargs_item(struct stack_item *s, const struct func_args_item *fai,
+			      int indent_shift)
 {
 	if (!fai)
 		return;
@@ -737,10 +738,10 @@ static void print_fnargs_item(struct stack_item *s, const struct func_args_item 
 
 	if (fai == FNARGS_MISSING_RECORD) {
 		if (env.args_fmt_mode != ARGS_FMT_COMPACT)
-			printf("\n\t");
+			printf("\n%*.s", indent_shift, "");
 		printf("... args data missing ...");
 	} else {
-		emit_fnargs_data(stdout, s, fai);
+		emit_fnargs_data(stdout, s, fai, indent_shift);
 	}
 }
 
@@ -793,7 +794,7 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 		       dur_len, s->dur);
 
 		if (env.capture_args)
-			print_fnargs_item(s, s->extra);
+			print_fnargs_item(s, s->extra, sym_len + 1);
 
 		printf("\n");
 	}
@@ -909,8 +910,11 @@ static void print_stack_items(struct stack_items_cache *cache)
 		       dur_len, s->dur, err_len, s->err,
 		       sym_len, s->sym, src_len, s->src);
 
-		if (env.capture_args)
-			print_fnargs_item(s, s->extra);
+		if (env.capture_args) {
+			int fnargs_indent = 3 + dur_len + 1;//  + err_len + 2 + sym_len + 2;
+
+			print_fnargs_item(s, s->extra, fnargs_indent);
+		}
 
 		printf("\n");
 	}
