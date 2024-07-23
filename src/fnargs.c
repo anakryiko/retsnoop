@@ -17,33 +17,9 @@
 static struct func_args_info *fn_infos;
 static int fn_info_cnt, fn_info_cap;
 
-static const struct btf *last_btf;
-static struct btf_dump *last_dumper;
-
-static struct fmt_buf *dump_cur_fmt_buf;
-
-static void btf_dump_cb(void *ctx, const char *fmt, va_list args)
-{
-	vbnappendf(dump_cur_fmt_buf, fmt, args);
-}
-
 const struct func_args_info *func_args_info(int func_id)
 {
 	return &fn_infos[func_id];
-}
-
-static const struct btf_type *btf_strip_mods_and_typedes(const struct btf *btf, int id, int *res_id)
-{
-	const struct btf_type *t;
-
-	t = btf__type_by_id(btf, id);
-	while (btf_is_mod(t) || btf_is_typedef(t)) {
-		id = t->type;
-		t = btf__type_by_id(btf, id);
-	}
-	if (res_id)
-		*res_id = id;
-	return t;
 }
 
 static bool btf_is_fixed_sized(const struct btf *btf, const struct btf_type *t)
@@ -168,7 +144,7 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 
 		dlog(" %s=(", spec->name);
 
-		t = btf_strip_mods_and_typedes(finfo->btf, spec->btf_id, &btf_id);
+		t = btf_strip_mods_and_typedefs(finfo->btf, spec->btf_id, &btf_id);
 		if (btf_is_fixed_sized(finfo->btf, t) || btf_is_ptr(t)) {
 			true_len = btf_is_ptr(t) ? 8 : t->size;
 			data_len = min(true_len, MAX_FNARGS_SIZED_ARG_SZ);
@@ -214,7 +190,7 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 			spec->arg_flags &= ~FUNC_ARG_LEN_MASK;
 
 			/* NOTE: we fill out spec->pointee_btf_id */
-			t = btf_strip_mods_and_typedes(finfo->btf, t->type, &spec->pointee_btf_id);
+			t = btf_strip_mods_and_typedefs(finfo->btf, t->type, &spec->pointee_btf_id);
 			if (btf_is_char(finfo->btf, t)) {
 				/* varlen string */
 				true_len = -1; /* mark that it's variable-length, for logging */
@@ -251,19 +227,7 @@ skip_arg:
 
 	dlog("\n");
 
-	if (last_btf != finfo->btf) {
-		int err;
-
-		last_btf = finfo->btf;
-		last_dumper = btf_dump__new(last_btf, btf_dump_cb, NULL, NULL);
-		if (!last_dumper) {
-			err = -errno;
-			elog("Failed to instantiate BTF dumper: %d\n", err);
-			return err;
-		}
-	}
-	fn_args->btf = last_btf;
-	fn_args->dumper = last_dumper;
+	fn_args->btf = finfo->btf;;
 
 	return 0;
 }
@@ -338,12 +302,19 @@ static void smart_print_int(struct fmt_buf *b, bool is_bool, bool is_signed, lon
 		bnappendf(b, "0x%llx", value);
 }
 
+static void btf_data_dump_printf(void *ctx, const char *fmt, va_list args)
+{
+	struct fmt_buf *b = ctx;
+
+	vbnappendf(b, fmt, args);
+}
+
 static void prepare_fn_arg(struct fmt_buf *b,
 			   const struct func_args_info *fn_args,
 			   const struct func_arg_spec *spec,
 			   void *data, size_t data_len)
 {
-	LIBBPF_OPTS(btf_dump_type_data_opts, opts);
+	struct btf_data_dump_opts opts = {};
 	const struct btf_type *t;
 	int err;
 
@@ -353,7 +324,7 @@ static void prepare_fn_arg(struct fmt_buf *b,
 		return;
 	}
 
-	t = btf_strip_mods_and_typedes(fn_args->btf, spec->btf_id, NULL);
+	t = btf_strip_mods_and_typedefs(fn_args->btf, spec->btf_id, NULL);
 
 	/* for common case of plain integer, skip dumper verboseness and complexity */
 	if (btf_is_int(t)) {
@@ -383,19 +354,16 @@ static void prepare_fn_arg(struct fmt_buf *b,
 		opts.indent_level = 1;
 		opts.compact = false;
 		opts.skip_names = false;
-		opts.skip_types = true;
 	} else {
 		opts.indent_str = "";
 		opts.indent_level = 0;
 		opts.compact = true;
 		opts.skip_names = false;
-		opts.skip_types = true;
 	}
 
-	dump_cur_fmt_buf = b;
-	err = btf_dump__dump_type_data(fn_args->dumper,
-				       spec->pointee_btf_id ?: spec->btf_id,
-				       data, data_len, &opts);
+	err = btf_data_dump(fn_args->btf, spec->pointee_btf_id ?: spec->btf_id,
+			    data, data_len,
+			    btf_data_dump_printf, b, &opts);
 	if (err == -E2BIG) {
 		/* truncated data */
 		bnappendf(b, "\u2026");
@@ -428,7 +396,7 @@ void emit_fn_args_data(struct ctx *ctx, FILE *f, struct stack_item *s,
 		if (fn_args->btf)
 			fprintf(f, "%s=", fn_args->arg_specs[i].name);
 		else /* "raw" BTF-less mode */
-			fprintf(f, "arg%d=", i); 
+			fprintf(f, "arg%d=", i);
 
 		len = fai->arg_lens[i];
 		if (len == 0) {
@@ -468,16 +436,5 @@ void emit_fn_args_data(struct ctx *ctx, FILE *f, struct stack_item *s,
 __attribute__((destructor))
 static void fn_args_cleanup(void)
 {
-	int i;
-
-	last_dumper = NULL;
-	for (i = 0; i < fn_info_cnt; i++) {
-		if (fn_infos[i].dumper == last_dumper)
-			continue;
-
-		last_dumper = fn_infos[i].dumper;
-		btf_dump__free(last_dumper);
-	}
-
 	free(fn_infos);
 }

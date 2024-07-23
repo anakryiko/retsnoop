@@ -163,6 +163,7 @@ retsnoop: $(addprefix $(OUTPUT)/,					\
 		      env.o						\
 		      ksyms.o						\
 		      utils.o						\
+		      ddump.o 						\
 		      hashmap.o						\
 		      addr2line.o					\
 		      addr2line.embed.o					\

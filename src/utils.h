@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <time.h>
+#include <bpf/btf.h>
 #include "addr2line.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
@@ -261,5 +262,39 @@ int glob_set__add_glob(struct glob_set *gs,
 		       enum glob_flags flags);
 bool glob_set__match(const struct glob_set *gs, const char *name, const char *mod, int *glob_idx);
 void glob_set__clear(struct glob_set *gs);
+
+/*
+ * BTF utils
+ */
+
+static inline const struct btf_type *btf_strip_mods_and_typedefs(const struct btf *btf,
+								 int id, int *res_id)
+{
+	const struct btf_type *t;
+
+	t = btf__type_by_id(btf, id);
+	while (btf_is_mod(t) || btf_is_typedef(t)) {
+		id = t->type;
+		t = btf__type_by_id(btf, id);
+	}
+	if (res_id)
+		*res_id = id;
+	return t;
+}
+
+typedef void (*ddump_printf_fn)(void *ctx, const char *fmt, va_list args);
+
+struct btf_data_dump_opts {
+	const char *indent_str;
+	int indent_level;
+	bool compact;		/* no newlines/indentation */
+	bool skip_names;	/* skip member names */
+	bool emit_zeroes;	/* show 0-valued fields */
+};
+
+int btf_data_dump(const struct btf *btf, int id,
+		  const void *data, size_t data_sz,
+		  ddump_printf_fn printf_fn, void *ctx,
+		  const struct btf_data_dump_opts *opts);
 
 #endif /* __UTILS_H */
