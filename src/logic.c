@@ -116,6 +116,7 @@ static char spaces[512]; /* fill be filled with spaces */
 struct fstack_item {
 	const struct mass_attacher_func_info *finfo;
 	int flags;
+	int seq_id;
 	const char *name;
 	long res;
 	long lat;
@@ -193,10 +194,11 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 	struct mass_attacher *att = ctx->att;
 	struct fstack_item *fitem;
 	const char *fname;
-	int i, id, flags, cnt;
+	int i, id, flags, cnt, seq_id;
 
 	for (i = 0, cnt = 0; i < s->max_depth; i++, cnt++) {
 		id = s->func_ids[i];
+		seq_id = s->seq_ids[i];
 		flags = func_info(ctx, id)->flags;
 		finfo = mass_attacher__func(att, id);
 		fname = finfo->name;
@@ -206,6 +208,7 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 		fitem->flags = flags;
 		fitem->name = fname;
 		fitem->stitched = false;
+		fitem->seq_id = seq_id;
 		if (i >= s->depth) {
 			fitem->finished = true;
 			fitem->lat = s->func_lat[i];
@@ -226,6 +229,7 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 
 	for (i = s->saved_depth - 1; i < s->saved_max_depth; i++, cnt++) {
 		id = s->saved_ids[i];
+		seq_id = s->saved_seq_ids[i];
 		flags = func_info(ctx, id)->flags;
 		finfo = mass_attacher__func(att, id);
 		fname = finfo->name;
@@ -236,6 +240,7 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 		fitem->name = fname;
 		fitem->stitched = true;
 		fitem->finished = true;
+		fitem->seq_id = seq_id;
 		fitem->lat = s->saved_lat[i];
 		if (flags & FUNC_NEEDS_SIGN_EXT)
 			fitem->res = (long)(int)s->saved_res[i];
@@ -451,6 +456,7 @@ static struct stack_item *get_stack_item(struct stack_items_cache *cache)
 	s->dur_len = s->err_len = s->sym_len = s->src_len = 0;
 	s->dur[0] = s->err[0] = s->sym[0] = s->src[0] = 0;
 	s->marks[0] = s->marks[1] = ' ';
+	s->extra = NULL;
 
 	return s;
 }
@@ -555,7 +561,7 @@ static void prepare_func_res(struct stack_item *s, long res, enum func_flags fun
 			snappendf(s->err, res == 0 ? "[NULL]" : "[%p]", (const void *)res);
 		else if (func_flags & FUNC_RET_BOOL)
 			snappendf(s->err, res == 0 ? "[false]" : "[true]");
-		else if (res >= -1024 * 1024 * 1024  && res < 1024 * 1024 /* random heuristic */)
+		else if (res >= -1024 * 1024 * 1024 && res < 1024 * 1024 /* random heuristic */)
 			snappendf(s->err, "[%ld]", res);
 		else
 			snappendf(s->err, "[0x%lx]", res);
@@ -609,6 +615,30 @@ static void add_missing_records_msg(struct stack_items_cache *cache, int miss_cn
 }
 
 #define FNARGS_MISSING_RECORD (void *)-1000
+
+static struct func_args_item *find_fnargs_item(const struct session *sess, int seq_id)
+{
+	int l, r;
+
+	if (sess->fn_args_cnt <= 0)
+		return NULL;
+
+	l = 0;
+	r = sess->fn_args_cnt - 1;
+	while (l <= r) {
+		int m = l + (r - l) / 2;
+		struct func_args_item *fai = &sess->fn_args_entries[m];
+
+		if (fai->seq_id == seq_id)
+			return fai;
+
+		if (seq_id < fai->seq_id)
+			r = m - 1;
+		else
+			l = m + 1;
+	}
+	return NULL;
+}
 
 static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 			     int pid, int last_seq_id)
@@ -697,6 +727,22 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 	if (last_seq_id != prev_seq_id)
 		add_missing_records_msg(cache, last_seq_id - prev_seq_id);
 }
+static void print_fnargs_item(struct stack_item *s, const struct func_args_item *fai)
+{
+	if (!fai)
+		return;
+
+	if (env.args_fmt_mode == ARGS_FMT_COMPACT)
+		printf("  ");
+
+	if (fai == FNARGS_MISSING_RECORD) {
+		if (env.args_fmt_mode != ARGS_FMT_COMPACT)
+			printf("\n\t");
+		printf("... args data missing ...");
+	} else {
+		emit_fnargs_data(stdout, s, fai);
+	}
+}
 
 static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cache)
 {
@@ -715,7 +761,7 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 	/* the whole +2 and -2 business is due to the use of unicode characters */
 	dur_len = max(dur_len, sizeof("DURATION") - 1);
 	res_len = max(res_len, sizeof("RESULT") - 1);
-	sym_len = max(sym_len, 2 + sizeof("FUNCTION CALL TRACE") - 1);
+	sym_len = max(sym_len, 2 + sizeof("FUNCTION CALLS") - 1);
 	arg_len = max(arg_len, sizeof("ARGS") - 1);
 	/* but truncate to maximum buffer sizes */
 	dur_len = min(dur_len, sizeof(s->dur));
@@ -724,7 +770,7 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 	arg_len = min(arg_len, sizeof(s->src));
 
 	printf("%-*s   %-*s  %*s",
-	       sym_len - 2, "FUNCTION CALL TRACE",
+	       sym_len - 2, "FUNCTION CALLS",
 	       res_len, "RESULT",
 	       dur_len, "DURATION");
 	if (env.capture_args && env.args_fmt_mode == ARGS_FMT_COMPACT)
@@ -746,25 +792,15 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 		       res_len, s->err,
 		       dur_len, s->dur);
 
-		if (env.capture_args) {
-			if (env.args_fmt_mode == ARGS_FMT_COMPACT)
-				printf("  ");
-			if (s->extra == FNARGS_MISSING_RECORD) {
-				if (env.args_fmt_mode != ARGS_FMT_COMPACT)
-					printf("\n\t");
-				printf("... args data missing ...");
-			} else if (s->extra) {
-				struct func_args_item *fai = s->extra;
-
-				emit_fn_args_data(ctx, stdout, s, fai->func_id, fai);
-			}
-		}
+		if (env.capture_args)
+			print_fnargs_item(s, s->extra);
 
 		printf("\n");
 	}
 }
 
-static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem,
+static void prepare_stack_items(struct ctx *ctx, struct session *sess,
+				const struct fstack_item *fitem,
 				const struct kstack_item *kitem)
 {
 	static struct a2l_resp resps[64];
@@ -791,6 +827,9 @@ static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem
 		fprintf(stderr, "Ran out of formatting space, some data will be omitted!\n");
 		return;
 	}
+
+	if (env.capture_args && fitem)
+		s->extra = find_fnargs_item(sess, fitem->seq_id) ?: FNARGS_MISSING_RECORD;
 
 	/* kitem == NULL should be rare, either a bug or we couldn't get valid kernel stack trace */
 	s->marks[0] = kitem ? ' ' : '!';
@@ -848,10 +887,10 @@ static void prepare_stack_items(struct ctx *ctx, const struct fstack_item *fitem
 	}
 }
 
-static void print_stack_items(const struct stack_items_cache *cache)
+static void print_stack_items(struct stack_items_cache *cache)
 {
 	int dur_len = 5, err_len = 0, sym_len = 0, src_len = 0, i;
-	const struct stack_item *s;
+	struct stack_item *s;
 
 	/* calculate desired length of each auto-sized part of the output */
 	for (i = 0, s = cache->items; i < cache->cnt; i++, s++) {
@@ -865,10 +904,15 @@ static void print_stack_items(const struct stack_items_cache *cache)
 
 	/* emit line by line taking into account calculated lengths of each column */
 	for (i = 0, s = cache->items; i < cache->cnt; i++, s++) {
-		printf("%c%c %*s %-*s  %-*s  %-*s\n",
+		printf("%c%c %*s %-*s  %-*s  %-*s",
 		       s->marks[0], s->marks[1],
 		       dur_len, s->dur, err_len, s->err,
 		       sym_len, s->sym, src_len, s->src);
+
+		if (env.capture_args)
+			print_fnargs_item(s, s->extra);
+
+		printf("\n");
 	}
 }
 
@@ -1028,7 +1072,7 @@ static void output_lbrs(struct ctx *dctx, struct session *sess,
 		printf("[LBR] No relevant LBR data were captured, showing unfiltered LBR stack!\n");
 }
 
-static int output_call_stack(struct ctx *dctx,
+static int output_call_stack(struct ctx *dctx, struct session *sess,
 			     const struct fstack_item *fstack, int fstack_n,
 			     const struct kstack_item *kstack, int kstack_n)
 {
@@ -1047,7 +1091,7 @@ static int output_call_stack(struct ctx *dctx,
 			/* this shouldn't happen unless we got no kernel stack
 			 * or there is some bug
 			 */
-			prepare_stack_items(dctx, fitem, NULL);
+			prepare_stack_items(dctx, sess, fitem, NULL);
 			i++;
 			continue;
 		}
@@ -1058,20 +1102,20 @@ static int output_call_stack(struct ctx *dctx,
 		 */
 		if (!kitem->ksym || kitem->filtered
 		    || strcmp(kitem->ksym->name, fitem->name) != 0) {
-			prepare_stack_items(dctx, NULL, kitem);
+			prepare_stack_items(dctx, sess, NULL, kitem);
 			j++;
 			continue;
 		}
 
 		/* happy case, lots of info, yay */
-		prepare_stack_items(dctx, fitem, kitem);
+		prepare_stack_items(dctx, sess, fitem, kitem);
 		i++;
 		j++;
 		continue;
 	}
 
 	for (; j < kstack_n; j++) {
-		prepare_stack_items(dctx, NULL, &kstack[j]);
+		prepare_stack_items(dctx, sess, NULL, &kstack[j]);
 	}
 
 	print_stack_items(&stack_items1);
@@ -1159,7 +1203,7 @@ static int handle_session_end(struct ctx *dctx, struct session *sess, const stru
 	}
 
 	/* Emit combined fstack/kstack + errors stack trace */
-	output_call_stack(dctx, fstack, fstack_n, kstack, kstack_n);
+	output_call_stack(dctx, sess, fstack, fstack_n, kstack, kstack_n);
 
 	if (r->dropped_records) {
 		printf("WARNING! Sample data incomplete! %d record%s dropped. Consider increasing --ringbuf-map-size.\n",

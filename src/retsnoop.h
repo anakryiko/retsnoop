@@ -135,6 +135,7 @@ struct lbr_stack {
  */
 struct call_stack {
 	unsigned short func_ids[MAX_FSTACK_DEPTH];
+	int seq_ids[MAX_FSTACK_DEPTH];
 	long func_res[MAX_FSTACK_DEPTH];
 	long func_lat[MAX_FSTACK_DEPTH];
 	unsigned depth;
@@ -142,6 +143,7 @@ struct call_stack {
 	bool is_err;
 
 	unsigned short saved_ids[MAX_FSTACK_DEPTH];
+	int saved_seq_ids[MAX_FSTACK_DEPTH];
 	long saved_res[MAX_FSTACK_DEPTH];
 	long saved_lat[MAX_FSTACK_DEPTH];
 	unsigned saved_depth;

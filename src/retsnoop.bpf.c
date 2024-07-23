@@ -313,9 +313,11 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 
 	/* we can stitch together stack subsections */
 	if (stack->saved_depth && stack->max_depth + 1 == stack->saved_depth) {
-		bpf_probe_read_kernel(stack->saved_ids + d, len * sizeof(stack->saved_ids[0]), stack->func_ids + d);
-		bpf_probe_read_kernel(stack->saved_res + d, len * sizeof(stack->saved_res[0]), stack->func_res + d);
-		bpf_probe_read_kernel(stack->saved_lat + d, len * sizeof(stack->saved_lat[0]), stack->func_lat + d);
+		__memcpy(stack->saved_ids + d, stack->func_ids + d, len * sizeof(stack->saved_ids[0]));
+		__memcpy(stack->saved_res + d, stack->func_res + d, len * sizeof(stack->saved_res[0]));
+		__memcpy(stack->saved_lat + d, stack->func_lat + d, len * sizeof(stack->saved_lat[0]));
+		if (capture_args)
+			__memcpy(stack->saved_seq_ids + d, stack->seq_ids + d, len * sizeof(stack->saved_seq_ids[0]));
 		stack->saved_depth = stack->depth + 1;
 		dlog("STITCHED STACK %d..%d to ..%d\n",
 		     stack->depth + 1, stack->max_depth, stack->saved_max_depth);
@@ -325,9 +327,11 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 	dlog("RESETTING SAVED ERR STACK %d..%d to %d..\n",
 	     stack->saved_depth, stack->saved_max_depth, stack->depth + 1);
 
-	bpf_probe_read_kernel(stack->saved_ids + d, len * sizeof(stack->saved_ids[0]), stack->func_ids + d);
-	bpf_probe_read_kernel(stack->saved_res + d, len * sizeof(stack->saved_res[0]), stack->func_res + d);
-	bpf_probe_read_kernel(stack->saved_lat + d, len * sizeof(stack->saved_lat[0]), stack->func_lat + d);
+	__memcpy(stack->saved_ids + d, stack->func_ids + d, len * sizeof(stack->saved_ids[0]));
+	__memcpy(stack->saved_res + d, stack->func_res + d, len * sizeof(stack->saved_res[0]));
+	__memcpy(stack->saved_lat + d, stack->func_lat + d, len * sizeof(stack->saved_lat[0]));
+	if (capture_args)
+		__memcpy(stack->saved_seq_ids + d, stack->seq_ids + d, len * sizeof(stack->saved_seq_ids[0]));
 
 	stack->saved_depth = stack->depth + 1;
 	stack->saved_max_depth = stack->max_depth;
@@ -362,6 +366,7 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 	u64 pid_tgid = bpf_get_current_pid_tgid();
 	u32 pid = (u32)pid_tgid;
 	struct session *sess;
+	int seq_id;
 	u64 d;
 
 	sess = bpf_map_lookup_elem(&sessions, &pid);
@@ -385,7 +390,7 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 		tsk = (void *)bpf_get_current_task();
 		BPF_CORE_READ_INTO(&sess->proc_comm, tsk, group_leader, comm);
 
-		if (emit_func_trace) {
+		if (emit_func_trace || capture_args) {
 			if (!emit_session_start(sess)) {
 				vlog("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION_START record!\n",
 				     sess->pid, sess->tgid);
@@ -412,13 +417,15 @@ out_defunct:
 	if (sess->stack.depth != sess->stack.max_depth && sess->stack.is_err)
 		save_stitch_stack(ctx, &sess->stack);
 
+	seq_id = sess->next_seq_id;
+	sess->next_seq_id++;
+
 	sess->stack.func_ids[d] = id;
+	sess->stack.seq_ids[d] = seq_id;
 	sess->stack.is_err = false;
 	sess->stack.depth = d + 1;
 	sess->stack.max_depth = d + 1;
 	sess->stack.func_lat[d] = bpf_ktime_get_ns();
-
-	sess->next_seq_id++;
 
 	if (emit_func_trace) {
 		struct func_trace_entry *fe;
@@ -432,7 +439,7 @@ out_defunct:
 		fe->type = REC_FUNC_TRACE_ENTRY;
 		fe->ts = bpf_ktime_get_ns();
 		fe->pid = pid;
-		fe->seq_id = sess->next_seq_id - 1;
+		fe->seq_id = seq_id;
 		fe->depth = d + 1;
 		fe->func_id = id;
 		fe->func_lat = 0;
@@ -443,7 +450,7 @@ skip_ft_entry:;
 	}
 
 	if (capture_args)
-		record_args(ctx, sess, id, sess->next_seq_id - 1);
+		record_args(ctx, sess, id, seq_id);
 
 	if (verbose) {
 		const char *func_name = func_info(id)->name;
@@ -605,6 +612,7 @@ static void reset_session(struct session *sess)
 	sess->stack.depth = 0;
 	sess->stack.max_depth = 0;
 	sess->stack.kstack_sz = 0;
+	sess->next_seq_id = 0;
 
 	sess->lbrs_sz = 0;
 }
@@ -694,6 +702,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	const char *fmt;
 	bool failed;
 	u64 d, lat;
+	int seq_id;
 
 	pid = (u32)bpf_get_current_pid_tgid();
 	sess = bpf_map_lookup_elem(&sessions, &pid);
@@ -712,6 +721,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 		return false;
 	}
 
+	seq_id = sess->next_seq_id;
 	sess->next_seq_id++;
 
 	d = sess->stack.depth;
@@ -759,7 +769,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 		fe->type = REC_FUNC_TRACE_EXIT;
 		fe->ts = bpf_ktime_get_ns();
 		fe->pid = pid;
-		fe->seq_id = sess->next_seq_id - 1;
+		fe->seq_id = seq_id;
 		fe->depth = d + 1;
 		fe->func_id = id;
 		fe->func_lat = lat;
