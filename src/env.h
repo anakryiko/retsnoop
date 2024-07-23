@@ -32,6 +32,15 @@ enum symb_mode {
 	SYMB_INLINES = 0x2,
 };
 
+enum args_fmt_mode {
+	/* (default) compact, all args in single line */
+	ARGS_FMT_COMPACT = 0,
+	/* one arg per line, entire arg is still on the single line */
+	ARGS_FMT_MULTILINE = 1,
+	/* multi-line, each arg starts on new line, but takes as many lines as necessary to render */
+	ARGS_FMT_VERBOSE = 2,
+};
+
 enum debug_feat {
 	DEBUG_NONE = 0x00,
 	DEBUG_MULTI_KPROBE = 0x01,
@@ -63,6 +72,13 @@ struct env {
 	bool stack_emit_all;
 	bool stack_emit_addrs;
 	bool stack_dec_offs;
+
+	/* Args capture settings */
+	int args_max_total_args_size;
+	int args_max_sized_arg_size;
+	int args_max_str_arg_size;
+	enum args_fmt_mode args_fmt_mode;
+	int args_fmt_max_arg_width;
 
 	struct glob *allow_globs;
 	struct glob *deny_globs;
