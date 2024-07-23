@@ -96,6 +96,8 @@ struct stack_item {
 	 */
 	char src[252];
 	int src_len;
+
+	void *extra;
 };
 
 const struct func_info *func_info(const struct ctx *ctx, __u32 id);
@@ -122,7 +124,7 @@ struct func_args_capture;
 int handle_func_args_capture(struct ctx *ctx, struct session *sess,
 			     const struct func_args_capture *r);
 
-void prepare_fn_args_data(struct ctx *ctx, struct stack_item *s, int func_id,
-			  struct func_args_item *fai);
+void emit_fn_args_data(struct ctx *ctx, FILE *f, struct stack_item *s,
+		       int func_id, struct func_args_item *fai);
 
 #endif /* __LOGIC_H */

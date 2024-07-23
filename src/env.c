@@ -175,13 +175,13 @@ static struct cfg_spec cfg_specs[] = {
 	/* Function args formatting */
 	{ "args", "max-total-args-size",
 	  cfg_int, &env.args_max_total_args_size, &(struct int_lims){1, MAX_FNARGS_TOTAL_ARGS_SZ},
-	  "Maximum total amount of data (in bytes) captured for all args of any single function call" },
+	  "Maximum total amount of data (in bytes) captured for all args of any function call" },
 	{ "args", "max-sized-arg-size",
 	  cfg_int, &env.args_max_sized_arg_size, &(struct int_lims){1, MAX_FNARGS_SIZED_ARG_SZ},
-	  "Maximum amount of data (in bytes) captured for any single fixed-sized (int, struct, etc) function argument" },
+	  "Maximum amount of data (in bytes) captured for any fixed-sized (int, struct, etc) function argument" },
 	{ "args", "max-str-arg-size",
 	  cfg_int, &env.args_max_str_arg_size, &(struct int_lims){1, MAX_FNARGS_STR_ARG_SZ},
-	  "Maximum amount of data (in bytes) captured for any single variable-length string function argument" },
+	  "Maximum amount of data (in bytes) captured for any string function argument" },
 	{ "args", "fmt-mode", cfg_enum, &env.args_fmt_mode,
 	  (struct enum_mapping[]){
 		  {"compact", 'c', ARGS_FMT_COMPACT},
@@ -190,8 +190,9 @@ static struct cfg_spec cfg_specs[] = {
 		  {},
 	  },
 	  "Function arguments formatting mode (compact, multiline, verbose)" },
-	{ "args", "fmt-max-arg-width", cfg_int, &env.args_fmt_max_arg_width, &(struct int_lims){10, 256 * 1024},
-	  "Maximum amount of horizontal space taken by a single argument output (applies only to compact mode)" },
+	{ "args", "fmt-max-arg-width", cfg_int, &env.args_fmt_max_arg_width, &(struct int_lims){0, 250},
+	  "Maximum amount of horizontal space taken by a single argument output.\n"
+	  "Applies only to compact and multiline modes. If set to zero, no truncation is performed." },
 
 	/* LBR formatting */
 	{ "fmt", "lbr-max-count", cfg_int, &env.lbr_max_cnt, NULL,

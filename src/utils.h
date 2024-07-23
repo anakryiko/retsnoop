@@ -49,6 +49,7 @@
 #define UNICODE_HELLIP "\u2026"
 
 struct fmt_buf {
+	FILE *f;
 	char *buf;
 	int sublen;
 	int max_sublen;
@@ -68,19 +69,43 @@ struct fmt_buf {
 	.max_sublen = min((n), sizeof(dst) < dst##_len ? 0 : sizeof(dst) - dst##_len),	\
 	.sublen = 0,									\
 }
+/* File-based output with optional output limit (dst is used as temporary buf) */
+#define FMT_FILE(file, dst, n) (struct fmt_buf){					\
+	.f = (file),									\
+	.buf = (dst),									\
+	.lenp = &(dst##_len),								\
+	.max_sublen = min((n), sizeof(dst) < dst##_len ? 0 : sizeof(dst) - dst##_len),	\
+	.sublen = 0,									\
+}
 
 static inline ssize_t vbnappendf(struct fmt_buf *b, const char *fmt, va_list args)
 {
 	ssize_t n;
 
-	n = vsnprintf(b->buf + *b->lenp,
-		      b->sublen < b->max_sublen ? b->max_sublen - b->sublen : 0,
-		      fmt, args);
-	if (n < 0)
-		return n;
-
-	if (b->sublen < b->max_sublen)
-		*b->lenp += min(n, b->max_sublen - b->sublen - 1);
+	if (b->f && b->max_sublen == 0) { /* unlimited file-based output */
+		n = vfprintf(b->f, fmt, args);
+		if (n < 0)
+			return n;
+	} else if (b->f) {
+		/* we use buffer to format intermediate output and then honor specified
+		 * max_sublen limit when outputting into file
+		 */
+		n = vsnprintf(b->buf + b->sublen,
+			      b->sublen < b->max_sublen ? b->max_sublen - b->sublen : 0,
+			      fmt, args);
+		if (n < 0)
+			return n;
+		if (b->sublen < b->max_sublen)
+			fprintf(b->f, "%s", b->buf + b->sublen);
+	} else { /* buffer-based output */
+		n = vsnprintf(b->buf + *b->lenp,
+			      b->sublen < b->max_sublen ? b->max_sublen - b->sublen : 0,
+			      fmt, args);
+		if (n < 0)
+			return n;
+		if (b->sublen < b->max_sublen)
+			*b->lenp += min(n, b->max_sublen - b->sublen - 1);
+	}
 
 	b->sublen += n;
 

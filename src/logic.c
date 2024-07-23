@@ -608,6 +608,8 @@ static void add_missing_records_msg(struct stack_items_cache *cache, int miss_cn
 	snappendf(s->err, "...");
 }
 
+#define FNARGS_MISSING_RECORD (void *)-1000
+
 static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 			     int pid, int last_seq_id)
 {
@@ -669,7 +671,7 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 
 		if (env.capture_args) {
 			struct func_args_item *fai = NULL;
-			bool args_found = false;;
+			bool args_found = false;
 
 			while (args_idx < sess->fn_args_cnt) {
 				fai = &sess->fn_args_entries[args_idx];
@@ -684,9 +686,11 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 			}
 
 			if (args_found)
-				prepare_fn_args_data(ctx, s, f->func_id, fai);
+				s->extra = fai;
 			else if (f->depth > 0) /* func entry */
-				snappendf(s->src, "... missing ...");
+				s->extra = FNARGS_MISSING_RECORD;
+			else
+				s->extra = NULL;
 		}
 	}
 
@@ -697,7 +701,7 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cache)
 {
 	int dur_len = 5, res_len = 0, sym_len = 0, arg_len = 0, i;
-	const struct stack_item *s;
+	struct stack_item *s;
 
 	printf("\n");
 
@@ -723,7 +727,7 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 	       sym_len - 2, "FUNCTION CALL TRACE",
 	       res_len, "RESULT",
 	       dur_len, "DURATION");
-	if (env.capture_args)
+	if (env.capture_args && env.args_fmt_mode == ARGS_FMT_COMPACT)
 		printf("  %-*s", arg_len, "ARGS");
 	printf("\n");
 
@@ -731,7 +735,7 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 	       sym_len - 2, underline,
 	       res_len, underline,
 	       dur_len, underline);
-	if (env.capture_args)
+	if (env.capture_args && env.args_fmt_mode == ARGS_FMT_COMPACT)
 		printf("  %-.*s", arg_len, underline);
 	printf("\n");
 
@@ -741,8 +745,21 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 		       sym_len, s->sym,
 		       res_len, s->err,
 		       dur_len, s->dur);
-		if (env.capture_args)
-			printf("  %-*s", arg_len, s->src);
+
+		if (env.capture_args) {
+			if (env.args_fmt_mode == ARGS_FMT_COMPACT)
+				printf("  ");
+			if (s->extra == FNARGS_MISSING_RECORD) {
+				if (env.args_fmt_mode != ARGS_FMT_COMPACT)
+					printf("\n\t");
+				printf("... args data missing ...");
+			} else if (s->extra) {
+				struct func_args_item *fai = s->extra;
+
+				emit_fn_args_data(ctx, stdout, s, fai->func_id, fai);
+			}
+		}
+
 		printf("\n");
 	}
 }
