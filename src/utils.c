@@ -437,3 +437,20 @@ void calibrate_ktime(void)
 		}
 	}
 }
+
+int snprintf_smart_uint(char *buf, size_t buf_sz, unsigned long long value)
+{
+	if ((unsigned long)value < 1024 * 1024)
+		return snprintf(buf, buf_sz, "%llu", value);
+	else
+		return snprintf(buf, buf_sz, "0x%llx", value);
+}
+
+int snprintf_smart_int(char *buf, size_t buf_sz, long long value)
+{
+	if (value < 1024 * 1024 /* random heuristic */)
+		return snprintf(buf, buf_sz, "%lld", value);
+	else
+		return snprintf(buf, buf_sz, "0x%llx", value);
+}
+

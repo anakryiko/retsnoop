@@ -135,6 +135,9 @@ static inline ssize_t bnappendf(struct fmt_buf *b, const char *fmt, ...)
 			       sizeof(dst) < dst##_len ? 0 : sizeof(dst) - dst##_len,	\
 			       fmt, args)
 
+int snprintf_smart_uint(char *buf, size_t buf_sz, unsigned long long value);
+int snprintf_smart_int(char *buf, size_t buf_sz, long long value);
+
 /*
  * Atomic helpers
  */

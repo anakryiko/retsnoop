@@ -292,14 +292,17 @@ static void sanitize_string(char *s, size_t len)
 
 static void smart_print_int(struct fmt_buf *b, bool is_bool, bool is_signed, long long value)
 {
-	if (is_bool && value >= 0 && value <= 1)
+	char buf[32];
+
+	if (is_bool && value >= 0 && value <= 1) {
 		bnappendf(b, "%s", value ? "true" : "false");
-	else if (is_signed && value < 1024 * 1024 /* random heuristic */)
-		bnappendf(b, "%lld", value);
-	else if ((unsigned long)value < 1024 * 1024)
-		bnappendf(b, "%llu", (unsigned long long)value);
-	else
-		bnappendf(b, "0x%llx", value);
+	} else if (is_signed) {
+		snprintf_smart_int(buf, sizeof(buf), value);
+		bnappendf(b, "%s", buf);
+	} else {
+		snprintf_smart_uint(buf, sizeof(buf), value);
+		bnappendf(b, "%s", buf);
+	}
 }
 
 static void btf_data_dump_printf(void *ctx, const char *fmt, va_list args)
