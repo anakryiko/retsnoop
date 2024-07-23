@@ -21,6 +21,14 @@ struct stats {
 	long dropped_sessions;
 	long incomplete_sessions;
 };
+enum rec_type {
+	REC_SESSION_START,
+	REC_FUNC_TRACE_ENTRY,
+	REC_FUNC_TRACE_EXIT,
+	REC_FUNC_ARGS_CAPTURE,
+	REC_LBR_STACK,
+	REC_SESSION_END,
+};
 
 enum func_flags {
 	FUNC_IS_ENTRY = 0x1,
@@ -31,10 +39,13 @@ enum func_flags {
 	FUNC_RET_VOID = 0x20,
 };
 
-#define MAX_FUNC_ARG_SPEC_CNT 12
-#define MAX_FUNC_ARGS_DATA_SZ 2048
-#define MAX_FUNC_ARG_LEN 64
-#define MAX_FUNC_ARG_STR_LEN MAX_FUNC_ARG_LEN
+#define MAX_FNARGS_ARG_SPEC_CNT 12
+#define MAX_FNARGS_TOTAL_ARGS_SZ 3072	/* total captured args size for all args */
+#define MAX_FNARGS_SIZED_ARG_SZ 256	/* maximum capture size for a single fixed-sized arg */
+#define MAX_FNARGS_STR_ARG_SZ 256	/* maximum capture size for a signel string arg */
+#define MAX_FNARGS_ANY_ARG_SZ \
+	(MAX_FNARGS_SIZED_ARG_SZ > MAX_FNARGS_STR_ARG_SZ \
+		? MAX_FNARGS_SIZED_ARG_SZ : MAX_FNARGS_STR_ARG_SZ)
 
 enum func_arg_flags {
 	/* lowest 12 bits */
@@ -69,17 +80,8 @@ struct func_info {
 	__u64 ip;
 	enum func_flags flags;
 	/* set of enum func_arg_flags + capture length */
-	unsigned arg_specs[MAX_FUNC_ARG_SPEC_CNT];
+	unsigned arg_specs[MAX_FNARGS_ARG_SPEC_CNT];
 } __attribute__((aligned(8)));
-
-enum rec_type {
-	REC_SESSION_START,
-	REC_FUNC_TRACE_ENTRY,
-	REC_FUNC_TRACE_EXIT,
-	REC_FUNC_ARGS_CAPTURE,
-	REC_LBR_STACK,
-	REC_SESSION_END,
-};
 
 struct session_start {
 	/* REC_SESSION_START */
@@ -112,9 +114,8 @@ struct func_args_capture {
 	int seq_id;
 	unsigned short func_id;
 	unsigned short data_len;
-	short arg_lens[MAX_FUNC_ARG_SPEC_CNT];
-	/* we waste MAX_FUNC_ARG_LEN to be able to deal with verifier */
-	char arg_data[MAX_FUNC_ARGS_DATA_SZ + MAX_FUNC_ARG_LEN];
+	short arg_lens[MAX_FNARGS_ARG_SPEC_CNT];
+	char arg_data[]; /* BPF side sizes is according to settings */
 };
 
 struct lbr_stack {

@@ -22,7 +22,7 @@ struct func_args_item {
 	int func_id;
 	int seq_id;
 	short data_len;
-	short arg_lens[MAX_FUNC_ARG_SPEC_CNT];
+	short arg_lens[MAX_FNARGS_ARG_SPEC_CNT];
 	char *arg_data;
 };
 
@@ -50,7 +50,7 @@ struct func_arg_spec {
 };
 
 struct func_args_info {
-	struct func_arg_spec arg_specs[MAX_FUNC_ARG_SPEC_CNT];
+	struct func_arg_spec arg_specs[MAX_FNARGS_ARG_SPEC_CNT];
 	int arg_spec_cnt;
 	const struct btf *btf; /* WARNING: references mass_attacher's BTFs */
 	struct btf_dump *dumper; /* WARNING: shared among multiple infos */

@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <linux/perf_event.h>
 #include "env.h"
+#include "retsnoop.h"
 
 #define DEFAULT_RINGBUF_SZ 8 * 1024 * 1024
 #define DEFAULT_SESSIONS_SZ 4096
@@ -23,6 +24,9 @@ const char argp_program_doc[] =
 struct env env = {
 	.ringbuf_map_sz = DEFAULT_RINGBUF_SZ,
 	.sessions_map_sz = DEFAULT_SESSIONS_SZ,
+	.args_max_total_args_size = MAX_FNARGS_TOTAL_ARGS_SZ,
+	.args_max_sized_arg_size = MAX_FNARGS_SIZED_ARG_SZ,
+	.args_max_str_arg_size = MAX_FNARGS_STR_ARG_SZ,
 };
 
 __attribute__((constructor))
@@ -45,9 +49,10 @@ struct cfg_spec {
 	const char *help;
 };
 
-static int cfg_symb_mode(const struct cfg_spec *cfg, const char *value, void *ctx);
-static int cfg_int_pos(const struct cfg_spec *cfg, const char *arg, void *ctx);
 static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *ctx);
+static int cfg_int_pos(const struct cfg_spec *cfg, const char *arg, void *ctx);
+static int cfg_symb_mode(const struct cfg_spec *cfg, const char *value, void *ctx);
+static int cfg_args_fmt_mode(const struct cfg_spec *cfg, const char *value, void *ctx);
 
 #define OPT_STACKS_MAP_SIZE 1002
 #define OPT_DRY_RUN 1004
@@ -132,6 +137,7 @@ static const struct argp_option opts[] = {
 };
 
 static struct cfg_spec cfg_specs[] = {
+	/* BPF maps/data sizing */
 	{ "bpf", "ringbuf-size", "ringbuf map size", cfg_int_pos, &env.ringbuf_map_sz,
 	  "BPF ringbuf size (defaults to 8MB)",
 	  "BPF ringbuf size in bytes.\n"
@@ -139,6 +145,7 @@ static struct cfg_spec cfg_specs[] = {
 	{ "bpf", "sessions-size", "sessions map size", cfg_int_pos, &env.sessions_map_sz,
 	  "BPF sessions map capacity (defaults to 4096)" },
 
+	/* Stack trace formatting */
 	{ "fmt", "stack-trace-mode", "symbolization mode", cfg_symb_mode, &env.symb_mode,
 	  "Stack symbolization mode",
 	  "Stack symbolization mode.\n"
@@ -153,6 +160,20 @@ static struct cfg_spec cfg_specs[] = {
 	  "Emit raw captured stack trace/LBR addresses (in addition to symbols)" },
 	{ "fmt", "stack-dec-offs", "value", cfg_bool, &env.stack_dec_offs,
 	  "Emit stack trace/LBR function offsets in decimal (by default, it's in hex)" },
+
+	/* Function args formatting */
+	{ "args", "max-total-size", "value", cfg_int_pos, &env.args_max_total_args_size,
+	  "Maximum total amount of data (in bytes) captured for all args of any single function call" },
+	{ "args", "max-sized-arg-size", "value", cfg_int_pos, &env.args_max_sized_arg_size,
+	  "Maximum amount of data (in bytes) captured for any single fixed-sized (int, struct, etc) function argument" },
+	{ "args", "max-str-arg-size", "value", cfg_int_pos, &env.args_max_str_arg_size,
+	  "Maximum amount of data (in bytes) captured for any single variable-length string function argument" },
+	{ "args", "fmt-mode", "args formatting mode", cfg_args_fmt_mode, &env.args_fmt_mode,
+	  "Function arguments formatting mode (compact, multiline, verbose)" },
+	{ "args", "fmt-max-arg-width", "value", cfg_int_pos, &env.args_fmt_max_arg_width,
+	  "Maximum amount of horizontal space taken by a single argument output (applies only to compact mode)" },
+
+	/* LBR formatting */
 	{ "fmt", "lbr-max-count", "LBR max count", cfg_int_pos, &env.lbr_max_cnt,
 	  "Limit number of printed LBRs to N" },
 };
@@ -627,6 +648,25 @@ static int cfg_symb_mode(const struct cfg_spec *cfg, const char *value, void *ct
 		*mode |= SYMB_INLINES;
 	} else {
 		elog("Unrecognized stack symbolization mode: '%s'. Only 'none', 'linenum', or 'inlines' values are supported.\n",
+		     value);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int cfg_args_fmt_mode(const struct cfg_spec *cfg, const char *value, void *ctx)
+{
+	enum args_fmt_mode *mode = ctx;
+
+	if (strcmp(value, "compact") == 0 || strcmp(value, "c") == 0) {
+		*mode = ARGS_FMT_COMPACT;
+	} else if (strcmp(value, "multiline") == 0 || strcmp(value, "m") == 0) {
+		*mode = ARGS_FMT_MULTILINE;
+	} else if (strcmp(value, "verbose") == 0 || strcmp(value, "v") == 0) {
+		*mode |= ARGS_FMT_VERBOSE;
+	} else {
+		elog("Unrecognized function arguments format mode: '%s'. "
+		     "Only 'compact', 'multiline', or 'verbose' values are supported.\n",
 		     value);
 		return -EINVAL;
 	}

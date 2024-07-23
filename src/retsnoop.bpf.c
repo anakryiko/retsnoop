@@ -78,6 +78,11 @@ const volatile bool emit_func_trace = true;
 const volatile bool capture_args = true;
 const volatile bool use_kprobes = true;
 
+const volatile int args_max_total_args_sz;
+const volatile int args_max_sized_arg_sz;
+const volatile int args_max_str_arg_sz;
+const volatile int args_max_any_arg_sz;
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, int);
@@ -194,20 +199,21 @@ static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u3
 	data_off = r->data_len;
 	barrier_var(data_off); /* prevent compiler from re-reading it */
 
-	if (data_off >= MAX_FUNC_ARGS_DATA_SZ) {
+	if (data_off >= args_max_total_args_sz) {
 		r->arg_lens[arg_idx] = -ENOSPC;
 		return;
 	}
 
-	if (len > MAX_FUNC_ARG_LEN) /* truncate, if necessary */
-		len = MAX_FUNC_ARG_LEN;
-
 	if (is_str) {
+		if (len > args_max_str_arg_sz) /* truncate, if necessary */
+			len = args_max_str_arg_sz;
 		if (is_kernel_addr(data))
 			err = bpf_probe_read_kernel_str(r->arg_data + data_off, len, data);
 		else
 			err = bpf_probe_read_user_str(r->arg_data + data_off, len, data);
 	} else {
+		if (len > args_max_sized_arg_sz) /* truncate, if necessary */
+			len = args_max_sized_arg_sz;
 		if (is_kernel_addr(data))
 			err = bpf_probe_read_kernel(r->arg_data + data_off, len, data);
 		else
@@ -229,7 +235,8 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 	const struct func_info *fi;
 	u64 i;
 
-	r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
+	/* we waste *args_max_any_arg_sz* to simplify verification */
+	r = bpf_ringbuf_reserve(&rb, sizeof(*r) + args_max_total_args_sz + args_max_any_arg_sz, 0);
 	if (!r) {
 		stat_dropped_record(sess);
 		return;
@@ -242,7 +249,7 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 	r->data_len = 0;
 
 	fi = func_info(func_id);
-	for (i = 0; i < MAX_FUNC_ARG_SPEC_CNT; i++) {
+	for (i = 0; i < MAX_FNARGS_ARG_SPEC_CNT; i++) {
 		u32 spec = fi->arg_specs[i], reg_idx, off;
 		u16 len = spec & FUNC_ARG_LEN_MASK;
 		void *data_ptr = NULL;
