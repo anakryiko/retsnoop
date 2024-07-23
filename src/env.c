@@ -53,10 +53,11 @@ struct cfg_spec {
 
 struct int_lims { int min_val, max_val; };
 
+struct enum_mapping { const char *name; char alias; int value; };
+
 static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
 static int cfg_int(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
-static int cfg_symb_mode(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
-static int cfg_args_fmt_mode(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
+static int cfg_enum(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
 
 #define OPT_STACKS_MAP_SIZE 1002
 #define OPT_DRY_RUN 1004
@@ -150,7 +151,13 @@ static struct cfg_spec cfg_specs[] = {
 	  "BPF sessions map capacity (defaults to 4096)" },
 
 	/* Stack trace formatting */
-	{ "fmt", "stack-trace-mode", cfg_symb_mode, &env.symb_mode, NULL,
+	{ "fmt", "stack-trace-mode", cfg_enum, &env.symb_mode,
+	  (struct enum_mapping[]){
+		  {"linenum", 'l', SYMB_LINEINFO},
+		  {"inlines", 'i', SYMB_INLINES},
+		  {"none", 'n', SYMB_NONE},
+		  {},
+	  },
 	  "Stack symbolization mode",
 	  "Stack symbolization mode.\n"
 	  "\tDetermines how much processing is done for stack symbolization\n"
@@ -175,7 +182,13 @@ static struct cfg_spec cfg_specs[] = {
 	{ "args", "max-str-arg-size",
 	  cfg_int, &env.args_max_str_arg_size, &(struct int_lims){1, MAX_FNARGS_STR_ARG_SZ},
 	  "Maximum amount of data (in bytes) captured for any single variable-length string function argument" },
-	{ "args", "fmt-mode", cfg_args_fmt_mode, &env.args_fmt_mode, NULL,
+	{ "args", "fmt-mode", cfg_enum, &env.args_fmt_mode,
+	  (struct enum_mapping[]){
+		  {"compact", 'c', ARGS_FMT_COMPACT},
+		  {"multiline", 'm', ARGS_FMT_MULTILINE},
+		  {"verbose", 'v', ARGS_FMT_VERBOSE},
+		  {},
+	  },
 	  "Function arguments formatting mode (compact, multiline, verbose)" },
 	{ "args", "fmt-max-arg-width", cfg_int, &env.args_fmt_max_arg_width, &(struct int_lims){10, 256 * 1024},
 	  "Maximum amount of horizontal space taken by a single argument output (applies only to compact mode)" },
@@ -621,7 +634,7 @@ static int cfg_int(const struct cfg_spec *cfg, const char *arg, void *dst, void 
 	errno = 0;
 	*val = strtol(arg, NULL, 10);
 	if (errno || *val < min_val || *val > max_val) {
-		fprintf(stderr, "Invalid '%s.%s' config value '%s'. It is expected to be in a valid [%d, %d] range.\n",
+		fprintf(stderr, "Invalid '%s.%s' config value '%s'. Expected valid integer in [%d, %d] range.\n",
 			cfg->group, cfg->key, arg, min_val, max_val);
 		return -EINVAL;
 	}
@@ -638,7 +651,7 @@ static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *dst, void
 	} else if (strcasecmp(arg, "false") == 0 || strcmp(arg, "0") == 0) {
 		*val = false;
 	} else {
-		elog("Invalid '%s.%s' value '%s'. It is expected to be 'true' or '1' for enabling the option; 'false' or 0 for disabling it.\n",
+		elog("Invalid '%s.%s' config value '%s'. Expected to be 'true' or '1' for enabling the option; 'false' or '0' for disabling it.\n",
 		     cfg->group, cfg->key, arg);
 		return -EINVAL;
 	}
@@ -646,41 +659,33 @@ static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *dst, void
 	return 0;
 }
 
-static int cfg_symb_mode(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx)
+static int cfg_enum(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx)
 {
-	enum symb_mode *mode = dst;
+	int *val = dst;
+	struct enum_mapping *mapping = ctx, *m;
 
-	if (strcmp(arg, "linenum") == 0 || strcmp(arg, "l") == 0) {
-		*mode = SYMB_LINEINFO;
-	} else if (strcmp(arg, "none") == 0 || strcmp(arg, "n") == 0) {
-		*mode = SYMB_NONE;
-	} else if (strcmp(arg, "inlines") == 0 || strcmp(arg, "s") == 0) {
-		*mode |= SYMB_INLINES;
-	} else {
-		elog("Unrecognized stack symbolization mode: '%s'. Only 'none', 'linenum', or 'inlines' values are supported.\n",
-		     arg);
-		return -EINVAL;
+	m = mapping;
+	while (m->name) {
+		if (strcasecmp(arg, m->name) == 0) {
+			*val = m->value;
+			return 0;
+		}
+		if (m->alias && arg[0] == m->alias && arg[1] == '\0') {
+			*val = m->value;
+			return 0;
+		}
+		m++;
 	}
-	return 0;
-}
 
-static int cfg_args_fmt_mode(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx)
-{
-	enum args_fmt_mode *mode = dst;
-
-	if (strcmp(arg, "compact") == 0 || strcmp(arg, "c") == 0) {
-		*mode = ARGS_FMT_COMPACT;
-	} else if (strcmp(arg, "multiline") == 0 || strcmp(arg, "m") == 0) {
-		*mode = ARGS_FMT_MULTILINE;
-	} else if (strcmp(arg, "verbose") == 0 || strcmp(arg, "v") == 0) {
-		*mode |= ARGS_FMT_VERBOSE;
-	} else {
-		elog("Unrecognized function arguments format mode: '%s'. "
-		     "Only 'compact', 'multiline', or 'verbose' values are supported.\n",
-		     arg);
-		return -EINVAL;
+	elog("Invalid '%s.%s' config value '%s'. Expected one of:", cfg->group, cfg->key, arg);
+	m = mapping;
+	while (m->name) {
+		elog("%s '%s'", m == mapping ? "" : ",", m->name);
+		m++;
 	}
-	return 0;
+	elog(".\n");
+
+	return -EINVAL;
 }
 
 void print_config_help_message(void)
