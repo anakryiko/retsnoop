@@ -59,6 +59,8 @@ static void ddump_emit_pfx(struct data_dumper *d)
 	if (d->opts.compact)
 		return;
 
+	if (d->opts.indent_shift)
+		ddump_printf(d, "%*.s", d->opts.indent_shift, "");
 	for (i = 0; i < lvl; i++)
 		ddump_printf(d, "%s", d->opts.indent_str);
 }

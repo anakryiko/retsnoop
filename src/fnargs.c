@@ -315,7 +315,7 @@ static void btf_data_dump_printf(void *ctx, const char *fmt, va_list args)
 static void prepare_fn_arg(struct fmt_buf *b,
 			   const struct func_args_info *fn_args,
 			   const struct func_arg_spec *spec,
-			   void *data, size_t data_len)
+			   void *data, size_t data_len, int indent_shift)
 {
 	struct btf_data_dump_opts opts = {};
 	const struct btf_type *t;
@@ -352,16 +352,14 @@ static void prepare_fn_arg(struct fmt_buf *b,
 		bnappendf(b, "&");
 
 	opts.emit_zeroes = false;
+	opts.indent_str = "    ";
+	opts.indent_level = 0;
+	opts.indent_shift = indent_shift;
+	opts.skip_names = false;
 	if (env.args_fmt_mode == ARGS_FMT_VERBOSE) {
-		opts.indent_str = "    ";
-		opts.indent_level = 1;
 		opts.compact = false;
-		opts.skip_names = false;
 	} else {
-		opts.indent_str = "";
-		opts.indent_level = 0;
 		opts.compact = true;
-		opts.skip_names = false;
 	}
 
 	err = btf_data_dump(fn_args->btf, spec->pointee_btf_id ?: spec->btf_id,
@@ -376,7 +374,8 @@ static void prepare_fn_arg(struct fmt_buf *b,
 	}
 }
 
-void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item *fai)
+void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item *fai,
+		      int indent_shift)
 {
 	const struct func_args_info *fn_args = &fn_infos[fai->func_id];
 	int i, len;
@@ -394,7 +393,7 @@ void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item
 		if (env.args_fmt_mode == ARGS_FMT_COMPACT)
 			fprintf(f, "%s", i == 0 ? "" : " ");
 		else /* emit Unicode's slightly smaller-sized '>' as a marker of an argument */
-			fprintf(f, "\n    \u203A ");
+			fprintf(f, "\n%*.s\u203A ", indent_shift, "");
 		if (fn_args->btf)
 			fprintf(f, "%s=", fn_args->arg_specs[i].name);
 		else /* "raw" BTF-less mode */
@@ -423,7 +422,8 @@ void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item
 		} else if (len < 0) {
 			bnappendf(&b, "ERR:%d", len);
 		} else {
-			prepare_fn_arg(&b, fn_args, &fn_args->arg_specs[i], data, len);
+			prepare_fn_arg(&b, fn_args, &fn_args->arg_specs[i],
+				       data, len, indent_shift);
 			data += (len + 7) / 8 * 8;
 		}
 
