@@ -123,7 +123,6 @@ struct func_args_capture;
 int handle_func_args_capture(struct ctx *ctx, struct session *sess,
 			     const struct func_args_capture *r);
 
-void emit_fn_args_data(struct ctx *ctx, FILE *f, struct stack_item *s,
-		       int func_id, struct func_args_item *fai);
+void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item *fai);
 
 #endif /* __LOGIC_H */

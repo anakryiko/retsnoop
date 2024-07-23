@@ -376,10 +376,9 @@ static void prepare_fn_arg(struct fmt_buf *b,
 	}
 }
 
-void emit_fn_args_data(struct ctx *ctx, FILE *f, struct stack_item *s,
-		       int func_id, struct func_args_item *fai)
+void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item *fai)
 {
-	const struct func_args_info *fn_args = &fn_infos[func_id];
+	const struct func_args_info *fn_args = &fn_infos[fai->func_id];
 	int i, len;
 	void *data = fai->arg_data;
 
