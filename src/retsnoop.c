@@ -388,25 +388,6 @@ int main(int argc, char **argv, char **envp)
 	skel->rodata->emit_success_stacks = env.emit_success_stacks;
 	skel->rodata->duration_ns = env.longer_than_ms * 1000000ULL;
 
-	if (env.args_max_total_args_size > MAX_FNARGS_TOTAL_ARGS_SZ) {
-		elog("Retsnoop supports capturing only up to %d total bytes for function args, but %d were requested!\n",
-		     MAX_FNARGS_TOTAL_ARGS_SZ, env.args_max_total_args_size);
-		err = -EINVAL;
-		goto cleanup_silent;
-	}
-	if (env.args_max_sized_arg_size > MAX_FNARGS_SIZED_ARG_SZ) {
-		elog("Retsnoop supports capturing only up to %d bytes for fixed-size function args, but %d were requested!\n",
-		     MAX_FNARGS_SIZED_ARG_SZ, env.args_max_sized_arg_size);
-		err = -EINVAL;
-		goto cleanup_silent;
-	}
-	if (env.args_max_str_arg_size > MAX_FNARGS_STR_ARG_SZ) {
-		elog("Retsnoop supports capturing only up to %d bytes for string function args, but %d were requested!\n",
-		     MAX_FNARGS_STR_ARG_SZ, env.args_max_str_arg_size);
-		err = -EINVAL;
-		goto cleanup_silent;
-	}
-
 	skel->rodata->args_max_total_args_sz = env.args_max_total_args_size;
 	skel->rodata->args_max_sized_arg_sz = env.args_max_sized_arg_size;
 	skel->rodata->args_max_str_arg_sz = env.args_max_str_arg_size;
