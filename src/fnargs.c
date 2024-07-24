@@ -380,6 +380,7 @@ void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item
 	const struct func_args_info *fn_args = &fn_infos[fai->func_id];
 	int i, len;
 	void *data = fai->arg_data;
+	const char *sep = env.args_fmt_mode == ARGS_FMT_VERBOSE ? " " : "";
 
 	for (i = 0; i < fn_args->arg_spec_cnt; i++) {
 		int width_lim = env.args_fmt_max_arg_width;
@@ -395,9 +396,9 @@ void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item
 		else /* emit Unicode's slightly smaller-sized '>' as a marker of an argument */
 			fprintf(f, "\n%*.s\u203A ", indent_shift, "");
 		if (fn_args->btf)
-			fprintf(f, "%s=", fn_args->arg_specs[i].name);
+			fprintf(f, "%s%s=%s", fn_args->arg_specs[i].name, sep, sep);
 		else /* "raw" BTF-less mode */
-			fprintf(f, "arg%d=", i);
+			fprintf(f, "arg%d%s=%s", i, sep, sep);
 
 		len = fai->arg_lens[i];
 		if (len == 0) {

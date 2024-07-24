@@ -910,11 +910,8 @@ static void print_stack_items(struct stack_items_cache *cache)
 		       dur_len, s->dur, err_len, s->err,
 		       sym_len, s->sym, src_len, s->src);
 
-		if (env.capture_args) {
-			int fnargs_indent = 3 + dur_len + 1;//  + err_len + 2 + sym_len + 2;
-
-			print_fnargs_item(s, s->extra, fnargs_indent);
-		}
+		if (env.capture_args)
+			print_fnargs_item(s, s->extra, 3 + dur_len + 1);
 
 		printf("\n");
 	}
