@@ -370,7 +370,12 @@ static void prepare_fn_arg(struct fmt_buf *b,
 		bnappendf(b, "\u2026");
 	} else if (err < 0) {
 		/* unexpected error */
-		bnappendf(b, "...DUMP ERR=%d...", err);
+		const char *errstr = err_to_str(err);
+
+		if (errstr)
+			bnappendf(b, "...DUMP ERR=-%s...", errstr);
+		else
+			bnappendf(b, "...DUMP ERR=%d...", err);
 	}
 }
 
@@ -421,7 +426,12 @@ void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item
 		} else if (len == -ENOSPC) {
 			bnappendf(&b, "(trunc)");
 		} else if (len < 0) {
-			bnappendf(&b, "ERR:%d", len);
+			const char *errstr = err_to_str(len);
+
+			if (errstr)
+				bnappendf(&b, "<ERR:-%s>", errstr);
+			else
+				bnappendf(&b, "<ERR:%d>", len);
 		} else {
 			prepare_fn_arg(&b, fn_args, &fn_args->arg_specs[i],
 				       data, len, indent_shift);
