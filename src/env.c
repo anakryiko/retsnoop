@@ -25,9 +25,9 @@ const char argp_program_doc[] =
 struct env env = {
 	.ringbuf_map_sz = DEFAULT_RINGBUF_SZ,
 	.sessions_map_sz = DEFAULT_SESSIONS_SZ,
-	.args_max_total_args_size = MAX_FNARGS_TOTAL_ARGS_SZ,
-	.args_max_sized_arg_size = MAX_FNARGS_SIZED_ARG_SZ,
-	.args_max_str_arg_size = MAX_FNARGS_STR_ARG_SZ,
+	.args_max_total_args_size = DEFAULT_FNARGS_TOTAL_ARGS_SZ,
+	.args_max_sized_arg_size = DEFAULT_FNARGS_SIZED_ARG_SZ,
+	.args_max_str_arg_size = DEFAULT_FNARGS_STR_ARG_SZ,
 	.args_fmt_max_arg_width = DEFAULT_FNARGS_FMT_MAX_ARG_WIDTH,
 };
 
@@ -694,8 +694,7 @@ void print_config_help_message(void)
 	int i;
 
 	log("It's possible to customize various retsnoop's internal implementation details.\n");
-	log("This can be done by specifying one or multiple extra parameters using\n");
-	log("--config KEY=VALUE CLI arguments.\n\n");
+	log("This can be done by specifying one or multiple extra parameters using --config KEY=VALUE CLI arguments.\n\n");
 
 	log("Supported configuration parameters:\n");
 	for (i = 0; i < ARRAY_SIZE(cfg_specs); i++) {
