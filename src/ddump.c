@@ -325,7 +325,7 @@ static int ddump_emit_array(struct data_dumper *d,
 {
 	const struct btf_array *array = btf_array(t);
 	const struct btf_type *elem_type;
-	int i, elem_type_id, old_memb;
+	int i, elem_type_id, old_memb, err;
 	__s64 elem_size;
 	bool is_array_member;
 	bool is_array_terminated;
@@ -372,13 +372,20 @@ static int ddump_emit_array(struct data_dumper *d,
 
 	d->is_array_member = true;
 	d->is_array_terminated = false;
-	for (i = 0, d->memb = 0; i < array->nelems; i++, data += elem_size, d->memb++) {
+	d->memb = 0;
+	for (i = 0; i < array->nelems; i++, data += elem_size) {
 		if (d->is_array_terminated)
 			break;
-		ddump_emit_data(d, NULL, elem_type, elem_type_id, data, 0, 0, false);
+		err = ddump_emit_data(d, NULL, elem_type, elem_type_id, data, 0, 0, false);
+		if (err == -ENODATA)
+			continue;
+		if (err < 0)
+			return err;
+		d->memb++;
 	}
 
-	ddump_printf(d, "*%d*%s", d->memb, ddump_newline(d));
+	if (d->memb)
+		ddump_printf(d, "%s", ddump_newline(d));
 	d->depth--;
 	ddump_emit_pfx(d);
 	ddump_printf(d, "]");
@@ -407,8 +414,9 @@ static int ddump_emit_struct(struct data_dumper *d,
 	d->depth++;
 
 	old_memb = d->memb;
+	d->memb = 0;
 
-	for (i = 0, d->memb = 0; i < n; i++, m++, d->memb++) {
+	for (i = 0; i < n; i++, m++) {
 		const struct btf_type *mtype;
 		const char *mname;
 		int moffset;
@@ -421,17 +429,21 @@ static int ddump_emit_struct(struct data_dumper *d,
 		bit_sz = btf_member_bitfield_size(t, i);
 		err = ddump_emit_data(d, mname, mtype, m->type,
 				      data + moffset / 8, moffset % 8, bit_sz, false);
+		if (err == -ENODATA)
+			continue;
 		if (err < 0)
 			return err;
+		d->memb++;
 	}
 
-	ddump_printf(d, "%s", ddump_newline(d));
+	if (d->memb)
+		ddump_printf(d, "%s", ddump_newline(d));
 	d->depth--;
 	ddump_emit_pfx(d);
 	ddump_printf(d, "}");
 
 	d->memb = old_memb;
-	return err;
+	return 0;
 }
 
 static int ddump_emit_ptr(struct data_dumper *d,
@@ -687,7 +699,7 @@ static int ddump_check_zeros(struct data_dumper *d,
 	}
 }
 
-/* returns size of data dumped, or error. */
+/* returns 0 on success, negative error, otherwise */
 static int ddump_emit_data(struct data_dumper *d,
 			   const char *fname,
 			   const struct btf_type *t, int id,
@@ -695,20 +707,20 @@ static int ddump_emit_data(struct data_dumper *d,
 			   int bit_off, int bit_sz,
 			   bool is_named)
 {
-	int size, err = 0;
+	int err = 0;
 
-	size = ddump_check_enough_data(d, t, id, data, bit_off, bit_sz);
-	if (size < 0)
-		return size;
-	err = ddump_check_zeros(d, t, id, data, bit_off, bit_sz);
-	if (err) {
-		/* zeroed data is expected and not an error, so simply skip
-		 * dumping such data.  Record other errors however.
-		 */
-		if (err == -ENODATA)
-			return size;
+	err = ddump_check_enough_data(d, t, id, data, bit_off, bit_sz);
+	if (err < 0)
 		return err;
-	}
+	/* ddump_check_zeros() returns -ENODATA if data is zeroed */
+	err = ddump_check_zeros(d, t, id, data, bit_off, bit_sz);
+	/* If we have zeroed data, but we are a top-level value, still emit
+	 * either zero (for integers) or {} (for struct/union) or [] (for
+	 * arrays). For enums ignore zeroed data, as zero might be
+	 * a meaningful enum value regardless.
+	 */
+	if (err == -ENODATA && !btf_is_any_enum(t))
+		return -ENODATA;
 
 	if (!is_named) {
 		ddump_printf(d, "%s%s", ddump_delim(d), ddump_newline(d));
@@ -773,9 +785,7 @@ static int ddump_emit_data(struct data_dumper *d,
 		elog("unexpected kind [%u] for id [%u]\n", BTF_INFO_KIND(t->info), id);
 		return -EINVAL;
 	}
-	if (err < 0)
-		return err;
-	return size;
+	return err;
 }
 
 int btf_data_dump(const struct btf *btf, int id,
