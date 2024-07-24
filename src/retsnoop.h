@@ -40,39 +40,40 @@ enum func_flags {
 };
 
 #define MAX_FNARGS_ARG_SPEC_CNT 12
-#define MAX_FNARGS_TOTAL_ARGS_SZ 3072	/* total captured args size for all args */
-#define MAX_FNARGS_SIZED_ARG_SZ 256	/* maximum capture size for a single fixed-sized arg */
-#define MAX_FNARGS_STR_ARG_SZ 256	/* maximum capture size for a signel string arg */
-#define MAX_FNARGS_ANY_ARG_SZ \
-	(MAX_FNARGS_SIZED_ARG_SZ > MAX_FNARGS_STR_ARG_SZ \
-		? MAX_FNARGS_SIZED_ARG_SZ : MAX_FNARGS_STR_ARG_SZ)
+#define MAX_FNARGS_TOTAL_ARGS_SZ (64 * 1024)	/* maximum total captured args data size */
+#define MAX_FNARGS_SIZED_ARG_SZ (16 * 1024)	/* maximum capture size for a single fixed-sized arg */
+#define MAX_FNARGS_STR_ARG_SZ (16 * 1024)	/* maximum capture size for a signel string arg */
+
+#define DEFAULT_FNARGS_TOTAL_ARGS_SZ 3072	/* default total captured args data size */
+#define DEFAULT_FNARGS_SIZED_ARG_SZ 256		/* default capture size for a single fixed-sized arg */
+#define DEFAULT_FNARGS_STR_ARG_SZ 256		/* default capture size for a signel string arg */
 
 enum func_arg_flags {
-	/* lowest 12 bits */
-	FUNC_ARG_LEN_MASK = 0x0fff,	/* 4KB bytes max */
+	/* lowest 16 bits */
+	FUNC_ARG_LEN_MASK = 0xffff,	/* 64KB bytes max */
 
 	/* next 4 bits */
-	FUNC_ARG_REG = 0x1000,		/* read specified register */
-	FUNC_ARG_REG_PAIR = 0x2000,	/* read specified register */
-	FUNC_ARG_STACK = 0x4000,	/* read stack at specified offset */
-	FUNC_ARG_PTR = 0x8000,		/* pointer indirection */
+	FUNC_ARG_REG = 0x10000,		/* read specified register */
+	FUNC_ARG_REG_PAIR = 0x20000,	/* read specified register */
+	FUNC_ARG_STACK = 0x40000,	/* read stack at specified offset */
+	FUNC_ARG_PTR = 0x80000,		/* pointer indirection */
 
 	/* "varlen string" marker, uses impossible REG_PAIR + PTR combination */
 	FUNC_ARG_STR = FUNC_ARG_PTR | FUNC_ARG_REG_PAIR,
 
 	/* for REG_PAIR/REG we encode the first/only argument register index */
-	FUNC_ARG_REGIDX_MASK = 0x00ff0000,	/* 1st argument register index */
-	FUNC_ARG_REGIDX_SHIFT = 16,
+	FUNC_ARG_REGIDX_MASK = 0x0ff00000,	/* argument register index */
+	FUNC_ARG_REGIDX_SHIFT = 20,
 
 	/* for STACK we have one big offset */
-	FUNC_ARG_STACKOFF_MASK = 0xffff0000,	/* stack offset */
-	FUNC_ARG_STACKOFF_SHIFT = 16,
+	FUNC_ARG_STACKOFF_MASK = 0xfff00000,	/* stack offset */
+	FUNC_ARG_STACKOFF_SHIFT = 20,
 	FUNC_ARG_STACKOFF_MAX = FUNC_ARG_STACKOFF_MASK >> FUNC_ARG_STACKOFF_SHIFT,
 
 	/* special "skip arg" values, uses special REGIDX value */
-	FUNC_ARG_VARARG			= 0x00fe0000,
-	FUNC_ARG_UNKN			= 0x00fd0000,
-	FUNC_ARG_STACKOFF_2BIG		= 0x00fc0000,
+	FUNC_ARG_VARARG			= 0x0fe00000,
+	FUNC_ARG_UNKN			= 0x0fd00000,
+	FUNC_ARG_STACKOFF_2BIG		= 0x0fc00000,
 };
 
 struct func_info {

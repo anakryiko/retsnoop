@@ -147,7 +147,7 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 		t = btf_strip_mods_and_typedefs(finfo->btf, spec->btf_id, &btf_id);
 		if (btf_is_fixed_sized(finfo->btf, t) || btf_is_ptr(t)) {
 			true_len = btf_is_ptr(t) ? 8 : t->size;
-			data_len = min(true_len, MAX_FNARGS_SIZED_ARG_SZ);
+			data_len = min(true_len, env.args_max_sized_arg_size);
 
 			if (true_len <= 8 && is_arg_in_reg(reg_idx, &reg1_name)) {
 				/* fits in one register */
@@ -194,13 +194,13 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 			if (btf_is_char(finfo->btf, t)) {
 				/* varlen string */
 				true_len = -1; /* mark that it's variable-length, for logging */
-				data_len = MAX_FNARGS_STR_ARG_SZ;
+				data_len = env.args_max_str_arg_size;
 				spec->arg_flags |= FUNC_ARG_PTR | FUNC_ARG_STR | data_len;
 				spec->pointee_btf_id = -1; /* special string marker */
 				dlog("str");
 			} else if (btf_is_fixed_sized(finfo->btf, t)) {
 				true_len = t->size;
-				data_len = min(true_len, MAX_FNARGS_SIZED_ARG_SZ);
+				data_len = min(true_len, env.args_max_sized_arg_size);
 				spec->arg_flags |= FUNC_ARG_PTR | data_len;
 				dlog("ptr_id=%d", spec->pointee_btf_id);
 			} else {
