@@ -266,11 +266,13 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 
 		if (spec & FUNC_ARG_REG) {
 			reg_idx = (spec & FUNC_ARG_REGIDX_MASK) >> FUNC_ARG_REGIDX_SHIFT;
-			vals[0] = coerce_size(get_arg_reg_value(ctx, reg_idx), len);
-			if (spec & FUNC_ARG_PTR)
+			vals[0] = get_arg_reg_value(ctx, reg_idx);
+			if (spec & FUNC_ARG_PTR) {
 				data_ptr = (void *)vals[0];
-			else
+			} else {
+				vals[0] = coerce_size(vals[0], len);
 				data_ptr = vals;
+			}
 		} else if (spec & FUNC_ARG_STACK) {
 			off = (spec & FUNC_ARG_STACKOFF_MASK) >> FUNC_ARG_STACKOFF_SHIFT;
 			vals[0] = get_stack_pointer(ctx) + off;
