@@ -20,7 +20,10 @@ const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
 "retsnoop tool shows kernel call stacks based on specified function filters.\n"
 "\n"
-"USAGE: retsnoop [-v] [-B] [-T] [-A] [-e GLOB]* [-a GLOB]* [-d GLOB]*\n";
+"Usage: retsnoop [-v] [-B] [-T] [-A] [-e GLOB]* [-a GLOB]* [-d GLOB]*\n\n"
+"Use `retsnoop --help` for detailed help about supported arguments.\n"
+"Also check `retsnoop --config-help` for detailed information about\n"
+"more advanced configuration options.\n";
 
 struct env env = {
 	.ringbuf_map_sz = DEFAULT_RINGBUF_SZ,
@@ -59,6 +62,7 @@ static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *dst, void
 static int cfg_int(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
 static int cfg_enum(const struct cfg_spec *cfg, const char *arg, void *dst, void *ctx);
 
+#define OPT_USAGE 1001
 #define OPT_STACKS_MAP_SIZE 1002
 #define OPT_DRY_RUN 1004
 #define OPT_DEBUG_FEAT 1005
@@ -134,6 +138,7 @@ static const struct argp_option opts[] = {
 	/* Help, version, logging, dry-run, etc */
 	{ .flags = OPTION_DOC, "USAGE, HELP, VERSION\n=========================" },
 	{ "help", 'h', NULL, 0, "Show the full help" },
+	{ "usage", OPT_USAGE, NULL, 0, "Show the usage help" },
 	{ "verbose", 'v', NULL, 0,
 	  "Verbose output (use -vv for debug-level verbosity, -vvv for extra debug log)" },
 	{ "version", 'V', NULL, 0,
@@ -391,6 +396,13 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'h':
 		argp_state_help(state, stderr, ARGP_HELP_STD_HELP);
 		break;
+	case OPT_USAGE:
+		printf(argp_program_doc);
+		exit(0);
+		break;
+	case OPT_CONFIG_HELP:
+		env.show_config_help = true;
+		break;
 	case 'V':
 		env.show_version = true;
 		break;
@@ -608,9 +620,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'C':
 		if (parse_config_arg(arg))
 			return -EINVAL;
-		break;
-	case OPT_CONFIG_HELP:
-		env.show_config_help = true;
 		break;
 	case OPT_DEBUG_FEAT:
 		if (parse_debug_arg(arg))
