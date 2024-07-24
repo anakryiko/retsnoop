@@ -22,6 +22,8 @@ struct data_dumper {
 
 	int ptr_sz;
 	int depth;
+	int line;
+	int memb;
 	bool is_array_member;
 	bool is_array_terminated;
 	bool is_array_char;
@@ -31,7 +33,7 @@ static int ddump_emit_data(struct data_dumper *d,
 			   const char *fname,
 			   const struct btf_type *t, int id,
 			   const void *data,
-			   int bit_off, int bit_sz);
+			   int bit_off, int bit_sz, bool is_named);
 
 static void ddump_printf(const struct data_dumper *d, const char *fmt, ...)
 {
@@ -44,19 +46,22 @@ static void ddump_printf(const struct data_dumper *d, const char *fmt, ...)
 
 static const char *ddump_newline(struct data_dumper *d)
 {
-	return d->opts.compact || d->depth == 0 ? "" : "\n";
+	if (d->opts.compact || d->depth == 0)
+		return "";
+	d->line++;
+	return "\n";
 }
 
 static const char *ddump_delim(struct data_dumper *d)
 {
-	return d->depth == 0 ? "" : ",";
+	return d->memb == 0 ? "" : ",";
 }
 
 static void ddump_emit_pfx(struct data_dumper *d)
 {
 	int i, lvl = d->opts.indent_level + d->depth;
 
-	if (d->opts.compact)
+	if (d->opts.compact || d->line == 0)
 		return;
 
 	if (d->opts.indent_shift)
@@ -64,14 +69,6 @@ static void ddump_emit_pfx(struct data_dumper *d)
 	for (i = 0; i < lvl; i++)
 		ddump_printf(d, "%s", d->opts.indent_str);
 }
-
-/* A macro is used here as ddump_emitf() appends format specifiers
- * to the format specifier passed in; these do the work of appending
- * delimiters etc while the caller simply has to specify the type values
- * in the format specifier + value(s).
- */
-#define ddump_emitf(d, fmt, ...) \
-	ddump_printf(d, fmt "%s%s", ##__VA_ARGS__, ddump_delim(d), ddump_newline(d))
 
 static int ddump_unsupp_data(struct data_dumper *d, const struct btf_type *t, int id)
 {
@@ -150,7 +147,7 @@ static int ddump_emit_bitfield(struct data_dumper *d, const struct btf_type *t,
 		snprintf_smart_int(buf, sizeof(buf), (long long)value);
 	else
 		snprintf_smart_uint(buf, sizeof(buf), value);
-	ddump_emitf(d, "%s", buf);
+	ddump_printf(d, "%s", buf);
 
 	return 0;
 }
@@ -231,9 +228,9 @@ static int ddump_emit_int(struct data_dumper *d,
 # error "Unrecognized __BYTE_ORDER__"
 #endif
 		if (msi == 0)
-			ddump_emitf(d, "0x%llx", (unsigned long long)lsi);
+			ddump_printf(d, "0x%llx", (unsigned long long)lsi);
 		else
-			ddump_emitf(d, "0x%llx%016llx",
+			ddump_printf(d, "0x%llx%016llx",
 				     (unsigned long long)msi,
 				     (unsigned long long)lsi);
 		break;
@@ -243,21 +240,21 @@ static int ddump_emit_int(struct data_dumper *d,
 			snprintf_smart_int(buf, buf_sz, *(long long *)data);
 		else
 			snprintf_smart_uint(buf, buf_sz, *(unsigned long long *)data);
-		ddump_emitf(d, "%s", buf);
+		ddump_printf(d, "%s", buf);
 		break;
 	case 4:
 		if (sign)
 			snprintf_smart_int(buf, buf_sz, *(__s32 *)data);
 		else
 			snprintf_smart_uint(buf, buf_sz, *(__u32 *)data);
-		ddump_emitf(d, "%s", buf);
+		ddump_printf(d, "%s", buf);
 		break;
 	case 2:
 		if (sign)
 			snprintf_smart_int(buf, buf_sz, *(__s16 *)data);
 		else
 			snprintf_smart_uint(buf, buf_sz, *(__u16 *)data);
-		ddump_emitf(d, "%s", buf);
+		ddump_printf(d, "%s", buf);
 		break;
 	case 1:
 		if (d->is_array_char) {
@@ -265,12 +262,12 @@ static int ddump_emit_int(struct data_dumper *d,
 			if (d->is_array_terminated)
 				break;
 			if (*(char *)data == '\0') {
-				ddump_emitf(d, "'\\0'");
+				ddump_printf(d, "'\\0'");
 				d->is_array_terminated = true;
 				break;
 			}
 			if (isprint(*(char *)data)) {
-				ddump_emitf(d, "'%c'", *(char *)data);
+				ddump_printf(d, "'%c'", *(char *)data);
 				break;
 			}
 		}
@@ -278,7 +275,7 @@ static int ddump_emit_int(struct data_dumper *d,
 			snprintf_smart_int(buf, buf_sz, *(__s8 *)data);
 		else
 			snprintf_smart_uint(buf, buf_sz, *(__u8 *)data);
-		ddump_emitf(d, "%s", buf);
+		ddump_printf(d, "%s", buf);
 		break;
 	default:
 		elog("unexpected sz %d for id [%u]\n", sz, type_id);
@@ -307,13 +304,13 @@ static int ddump_emit_float(struct data_dumper *d,
 
 	switch (sz) {
 	case 16:
-		ddump_emitf(d, "%Lf", flp->ld);
+		ddump_printf(d, "%Lf", flp->ld);
 		break;
 	case 8:
-		ddump_emitf(d, "%lf", flp->d);
+		ddump_printf(d, "%lf", flp->d);
 		break;
 	case 4:
-		ddump_emitf(d, "%f", flp->f);
+		ddump_printf(d, "%f", flp->f);
 		break;
 	default:
 		elog("unexpected size %d for id [%u]\n", sz, type_id);
@@ -324,11 +321,11 @@ static int ddump_emit_float(struct data_dumper *d,
 
 static int ddump_emit_array(struct data_dumper *d,
 			    const struct btf_type *t, int id,
-			    const void *data)
+			    const void *data, bool is_named)
 {
 	const struct btf_array *array = btf_array(t);
 	const struct btf_type *elem_type;
-	int i, elem_type_id;
+	int i, elem_type_id, old_memb;
 	__s64 elem_size;
 	bool is_array_member;
 	bool is_array_terminated;
@@ -359,36 +356,45 @@ static int ddump_emit_array(struct data_dumper *d,
 	 * For similar reasons, we decrement depth before showing the closing
 	 * parenthesis.
 	 */
+	if (!is_named) {
+		ddump_printf(d, "%s%s", ddump_delim(d), ddump_newline(d));
+		ddump_emit_pfx(d);
+	}
+	ddump_printf(d, "[");
 	d->depth++;
-	ddump_printf(d, "[%s", ddump_newline(d));
 
 	/* may be a multidimensional array, so store current "is array member"
 	 * status so we can restore it correctly later.
 	 */
+	old_memb = d->memb;
 	is_array_member = d->is_array_member;
-	d->is_array_member = true;
 	is_array_terminated = d->is_array_terminated;
+
+	d->is_array_member = true;
 	d->is_array_terminated = false;
-	for (i = 0; i < array->nelems; i++, data += elem_size) {
+	for (i = 0, d->memb = 0; i < array->nelems; i++, data += elem_size, d->memb++) {
 		if (d->is_array_terminated)
 			break;
-		ddump_emit_data(d, NULL, elem_type, elem_type_id, data, 0, 0);
+		ddump_emit_data(d, NULL, elem_type, elem_type_id, data, 0, 0, false);
 	}
-	d->is_array_member = is_array_member;
-	d->is_array_terminated = is_array_terminated;
+
+	ddump_printf(d, "*%d*%s", d->memb, ddump_newline(d));
 	d->depth--;
 	ddump_emit_pfx(d);
-	ddump_emitf(d, "]");
+	ddump_printf(d, "]");
 
+	d->is_array_member = is_array_member;
+	d->is_array_terminated = is_array_terminated;
+	d->memb = old_memb;
 	return 0;
 }
 
 static int ddump_emit_struct(struct data_dumper *d,
 			     const struct btf_type *t, int id,
-			     const void *data)
+			     const void *data, bool is_named)
 {
 	const struct btf_member *m = btf_members(t);
-	int n = btf_vlen(t), i, err = 0;
+	int n = btf_vlen(t), i, err = 0, old_memb;
 
 	/* note that we increment depth before calling ddump_printf() below;
 	 * this is intentional. ddump_data_newline() will not print a
@@ -397,10 +403,12 @@ static int ddump_emit_struct(struct data_dumper *d,
 	 * For similar reasons, we decrement depth before showing the closing
 	 * parenthesis.
 	 */
+	ddump_printf(d, "{");
 	d->depth++;
-	ddump_printf(d, "{%s", ddump_newline(d));
 
-	for (i = 0; i < n; i++, m++) {
+	old_memb = d->memb;
+
+	for (i = 0, d->memb = 0; i < n; i++, m++, d->memb++) {
 		const struct btf_type *mtype;
 		const char *mname;
 		int moffset;
@@ -412,13 +420,17 @@ static int ddump_emit_struct(struct data_dumper *d,
 
 		bit_sz = btf_member_bitfield_size(t, i);
 		err = ddump_emit_data(d, mname, mtype, m->type,
-				      data + moffset / 8, moffset % 8, bit_sz);
+				      data + moffset / 8, moffset % 8, bit_sz, false);
 		if (err < 0)
 			return err;
 	}
+
+	ddump_printf(d, "%s", ddump_newline(d));
 	d->depth--;
 	ddump_emit_pfx(d);
-	ddump_emitf(d, "}");
+	ddump_printf(d, "}");
+
+	d->memb = old_memb;
 	return err;
 }
 
@@ -427,7 +439,7 @@ static int ddump_emit_ptr(struct data_dumper *d,
 			  const void *data)
 {
 	if (ptr_is_aligned(d->btf, id, data) && d->ptr_sz == sizeof(void *)) {
-		ddump_emitf(d, "%p", *(void **)data);
+		ddump_printf(d, "%p", *(void **)data);
 	} else {
 		union {
 			unsigned int p;
@@ -436,9 +448,9 @@ static int ddump_emit_ptr(struct data_dumper *d,
 
 		memcpy(&pt, data, d->ptr_sz);
 		if (d->ptr_sz == 4)
-			ddump_emitf(d, "0x%x", pt.p);
+			ddump_printf(d, "0x%x", pt.p);
 		else
-			ddump_emitf(d, "0x%llx", pt.lp);
+			ddump_printf(d, "0x%llx", pt.lp);
 	}
 	return 0;
 }
@@ -498,11 +510,11 @@ static int ddump_emit_enum(struct data_dumper *d,
 		for (i = 0, e = btf_enum(t); i < btf_vlen(t); i++, e++) {
 			if (value != e->val)
 				continue;
-			ddump_emitf(d, "%s", btf__name_by_offset(d->btf, e->name_off));
+			ddump_printf(d, "%s", btf__name_by_offset(d->btf, e->name_off));
 			return 0;
 		}
 
-		ddump_emitf(d, is_signed ? "%d" : "%u", value);
+		ddump_printf(d, is_signed ? "%d" : "%u", value);
 	} else {
 		const struct btf_enum64 *e;
 		char buf[32];
@@ -510,7 +522,7 @@ static int ddump_emit_enum(struct data_dumper *d,
 		for (i = 0, e = btf_enum64(t); i < btf_vlen(t); i++, e++) {
 			if (value != btf_enum64_value(e))
 				continue;
-			ddump_emitf(d, "%s", btf__name_by_offset(d->btf, e->name_off));
+			ddump_printf(d, "%s", btf__name_by_offset(d->btf, e->name_off));
 			return 0;
 		}
 
@@ -519,7 +531,7 @@ static int ddump_emit_enum(struct data_dumper *d,
 		else
 			snprintf_smart_uint(buf, sizeof(buf), (unsigned long long)value);
 
-		ddump_emitf(d, is_signed ? "%sLL" : "%sULL", buf);
+		ddump_printf(d, is_signed ? "%sLL" : "%sULL", buf);
 	}
 	return 0;
 }
@@ -680,7 +692,8 @@ static int ddump_emit_data(struct data_dumper *d,
 			   const char *fname,
 			   const struct btf_type *t, int id,
 			   const void *data,
-			   int bit_off, int bit_sz)
+			   int bit_off, int bit_sz,
+			   bool is_named)
 {
 	int size, err = 0;
 
@@ -696,10 +709,19 @@ static int ddump_emit_data(struct data_dumper *d,
 			return size;
 		return err;
 	}
-	ddump_emit_pfx(d);
 
-	if (!d->opts.skip_names && fname && strlen(fname) > 0)
-		ddump_printf(d, ".%s = ", fname);
+	if (!is_named) {
+		ddump_printf(d, "%s%s", ddump_delim(d), ddump_newline(d));
+		ddump_emit_pfx(d);
+	}
+
+	is_named = false;
+	if (!d->opts.skip_names && fname && strlen(fname) > 0) {
+		const char *sep = d->opts.compact ? "" : " ";
+
+		is_named = true;
+		ddump_printf(d, ".%s%s=%s", fname, sep, sep);
+	}
 
 	t = btf_strip_mods_and_typedefs(d->btf, id, NULL);
 
@@ -726,11 +748,11 @@ static int ddump_emit_data(struct data_dumper *d,
 		err = ddump_emit_ptr(d, t, id, data);
 		break;
 	case BTF_KIND_ARRAY:
-		err = ddump_emit_array(d, t, id, data);
+		err = ddump_emit_array(d, t, id, data, is_named);
 		break;
 	case BTF_KIND_STRUCT:
 	case BTF_KIND_UNION:
-		err = ddump_emit_struct(d, t, id, data);
+		err = ddump_emit_struct(d, t, id, data, is_named);
 		break;
 	case BTF_KIND_ENUM:
 	case BTF_KIND_ENUM64:
@@ -761,7 +783,7 @@ int btf_data_dump(const struct btf *btf, int id,
 		  ddump_printf_fn printf_fn, void *ctx,
 		  const struct btf_data_dump_opts *opts)
 {
-	struct data_dumper d;
+	struct data_dumper d = {};
 	const struct btf_type *t;
 
 	d.btf = btf;
@@ -783,5 +805,5 @@ int btf_data_dump(const struct btf *btf, int id,
 	if (!t)
 		return -ENOENT;
 
-	return ddump_emit_data(&d, NULL, t, id, data, 0, 0);
+	return ddump_emit_data(&d, NULL, t, id, data, 0, 0, false);
 }
