@@ -6,15 +6,15 @@ version = 3
 name = "addr2line"
 version = "0.1.0"
 dependencies = [
- "addr2line 0.21.0",
+ "addr2line 0.24.0",
  "backtrace",
  "clap",
  "fallible-iterator",
  "findshlibs",
- "gimli",
+ "gimli 0.31.0",
  "glob",
  "memmap",
- "object",
+ "object 0.36.2",
  "typed-arena",
 ]
 
@@ -24,13 +24,23 @@ version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a30b2e23b9e17a9f90641c7ab1549cd9b44f296d3ccbf309d2863cfe398a0cb"
 dependencies = [
+ "gimli 0.28.0",
+]
+
+[[package]]
+name = "addr2line"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e60698898f23be659cb86289e5805b1e059a5fe1cd95c9a1d4def50369e74b31"
+dependencies = [
  "cpp_demangle",
  "fallible-iterator",
- "gimli",
+ "gimli 0.31.0",
  "memmap2",
- "object",
+ "object 0.36.2",
  "rustc-demangle",
  "smallvec",
+ "typed-arena",
 ]
 
 [[package]]
@@ -70,7 +80,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "miniz_oxide",
- "object",
+ "object 0.32.1",
  "rustc-demangle",
 ]
 
@@ -167,6 +177,12 @@ name = "gimli"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fb8d784f27acf97159b40fc4db5ecd8aa23b9ad5ef69cdd136d3bc80665f0c0"
+
+[[package]]
+name = "gimli"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32085ea23f3234fc7846555e85283ba4de91e21016dc0455a16286d87a292d64"
 dependencies = [
  "fallible-iterator",
  "stable_deref_trait",
@@ -195,9 +211,9 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libc"
-version = "0.2.148"
+version = "0.2.155"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cdc71e17332e86d2e1d38c1f99edcb6288ee11b815fb1a4b049eaa2114d369b"
+checksum = "97b3888a4aecf77e811145cadf6eef5901f4782c53886191b2f693f24761847c"
 
 [[package]]
 name = "memchr"
@@ -217,9 +233,9 @@ dependencies = [
 
 [[package]]
 name = "memmap2"
-version = "0.5.10"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83faa42c0a078c393f6b29d5db232d8be22776a891f8f56e5284faee4a20b327"
+checksum = "fe751422e4a8caa417e13c3ea66452215d7d63e19e604f4980461212f3ae1322"
 dependencies = [
  "libc",
 ]
@@ -239,27 +255,18 @@ version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9cf5f9dd3933bd50a9e1f149ec995f39ae2c496d31fd772c1fd45ebc27e902b0"
 dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "object"
+version = "0.36.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f203fa8daa7bb185f760ae12bd8e097f63d17041dcdcaf675ac54cdf863170e"
+dependencies = [
  "flate2",
  "memchr",
  "ruzstd",
-]
-
-[[package]]
-name = "proc-macro2"
-version = "1.0.70"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39278fbbf5fb4f646ce651690877f89d1c5811a3d4acb27700c1cb3cdb78fd3b"
-dependencies = [
- "unicode-ident",
-]
-
-[[package]]
-name = "quote"
-version = "1.0.33"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5267fca4496028628a95160fc423a33e8b2e6af8a5302579e322e4b520293cae"
-dependencies = [
- "proc-macro2",
 ]
 
 [[package]]
@@ -270,12 +277,11 @@ checksum = "d626bb9dae77e28219937af045c257c28bfd3f69333c512553507f5f9798cb76"
 
 [[package]]
 name = "ruzstd"
-version = "0.4.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac3ffab8f9715a0d455df4bbb9d21e91135aab3cd3ca187af0cd0c3c3f868fdc"
+checksum = "5022b253619b1ba797f243056276bed8ed1a73b0f5a7ce7225d524067644bf8f"
 dependencies = [
  "byteorder",
- "thiserror-core",
  "twox-hash",
 ]
 
@@ -304,43 +310,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ea5119cdb4c55b55d432abb513a0429384878c15dde60cc77b1c99de1a95a6a"
 
 [[package]]
-name = "syn"
-version = "2.0.41"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44c8b28c477cc3bf0e7966561e3460130e1255f7a1cf71931075f1c5e7a7e269"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
-]
-
-[[package]]
 name = "textwrap"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d326610f408c7a4eb6f51c37c330e496b08506c9457c9d34287ecc38809fb060"
 dependencies = [
  "unicode-width",
-]
-
-[[package]]
-name = "thiserror-core"
-version = "1.0.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c001ee18b7e5e3f62cbf58c7fe220119e68d902bb7443179c0c8aef30090e999"
-dependencies = [
- "thiserror-core-impl",
-]
-
-[[package]]
-name = "thiserror-core-impl"
-version = "1.0.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4c60d69f36615a077cc7663b9cb8e42275722d23e58a7fa3d2c7f2915d09d04"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -358,12 +333,6 @@ name = "typed-arena"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6af6ae20167a9ece4bcb41af5b80f8a1f1df981f6391189ce00fd257af04126a"
-
-[[package]]
-name = "unicode-ident"
-version = "1.0.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3354b9ac3fae1ff6755cb6db53683adb661634f67557942dea4facebec0fee4b"
 
 [[package]]
 name = "unicode-width"
