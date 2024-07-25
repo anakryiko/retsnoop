@@ -14,7 +14,9 @@ rerunning testcases. Retsnoop, on the other hand, allows users to achieve a
 much higher signal-to-noise ratio by allowing them to specify both the specific
 subset of kernel functions that they would like to monitor, as well as the
 types of information to be collected from those functions, all without
-requiring any kernel changes.
+requiring any kernel changes. Retsnoop now also can [capture function
+arguments](#function_arguments_capture), furthering the promise of giving user relevant and useful
+information simply and flexibly.
 
 Retsnoop achieves its goal by low-overhead non-intrusive tracing of a
 collection of kernel functions, intercepting their entries and exits.
@@ -197,7 +199,7 @@ supported.
 
 All matched functions are additionally checked against a list of traceable
 functions, which the kernel reports in the
-`/sys/kernel/debug/tracing/available_filter_functions` file. If you don't see
+`/sys/kernel/tracing/available_filter_functions` file. If you don't see
 the expected function there, then most probably it's due to one of a few common
 reasons:
   - function is inlined and as such isn't traceable directly; try to instead
@@ -321,6 +323,208 @@ Note that LBR is a tricky business and it might not capture enough relevant
 details or sometimes it capture irrelevant details. If the latter is the case,
 you can trim it down with `--lbr-max-count` argument to emit specified number
 of most relevant entries.
+
+### Function arguments capture
+
+> **_NOTE:_**
+> Function arguments capture feature is currently only supported on x86-64
+> (amd64) architecture. Most probably arm64 support will be added as well,
+> please request this using Github issues, if you are interested in this.
+
+`retsnoop` can capture function arguments values for all traced functions.
+This works both for default stack trace mode and function call trace modes.
+BTF information is used to determine names, exact types and sizes of all input
+arguments, but for functions that don't have BTF available, `retsnoop` will
+fallback to capturing raw register values for all pass-by-value registers,
+according to platform's calling convention ABI.
+
+For pointer arguments, not just the pointer value is captured, but also
+pointee type data as well! `retsnoop` also understands strings and will
+capture and render string contents. This makes this functionality much more
+useful in practice for values passed by pointer and strings.
+
+Rendering captured arguments might be tricky due to a potentially large struct
+types, `retsnoop` supports three rendering modes, which can be selected using
+`-C args.fmt-mode=<mode>` configuration setting.
+
+In default, `compact`, mode all function's captured arguments will be rendered
+in a single (possibly quite) long line next to corresponding function entry in
+function call trace or stack trace data. Each argument output will be
+truncated to 120 characters, by default, but this can be tuned using
+`args.fmt-max-arg-width` setting with valid values between 0 and 250, zero
+meaning no truncation should be performed.
+
+Here's an example, with per-argument truncation length overriden to just 40
+(both stack trace and function call trace modes are shown). Note that it's
+quite wide, but beyond that doesn't really disturb the usual trace information
+rendering and visual coherence.
+```shell
+$ sudo ./retsnoop -e '*sys_bpf' -TAS -C args.fmt-max-arg-width=40
+...
+FUNCTION CALLS    RESULT  DURATION  ARGS
+---------------   ------  --------  ----
+→ __x64_sys_bpf                     regs=&{.r15=0x959998935,.r14=0x171abb7677,.r…
+    ↔ __sys_bpf   [0]      3.366us  cmd=1 uattr={{.kernel=0x7f1c73665120,.user=0x7f1c73… size=32
+← __x64_sys_bpf   [0]      4.506us
+
+              do_syscall_64+0x3d                   (arch/x86/entry/common.c:80)
+              . do_syscall_x64                     (arch/x86/entry/common.c:50)
+     4us [0]  __x64_sys_bpf+0x18                   (kernel/bpf/syscall.c:5672)    regs=&{.r15=0x959998935,.r14=0x171abb7677,.r…
+              . __se_sys_bpf                       (kernel/bpf/syscall.c:5672)
+              . __do_sys_bpf                       (kernel/bpf/syscall.c:5674)
+!    3us [0]  __sys_bpf                                                           cmd=1 uattr={{.kernel=0x7f1c73665120,.user=0x7f1c73… size=32
+```
+
+For a bit more width-contained data rendering, `multiline` mode is available
+(i.e., `-C args.fmt-mode=multiline`), in which each argument will be rendered
+on a separate line (under corresponding function entry), but argument value itself (even if it's a rather large
+struct) will be rendered compactly on a single line. The same per-argument
+trunctation treatment is applied in `multiline` mode as with default `compact`
+mode. It just as well can be adjusted with `-C args.fmt-max-arg-width=N`
+setting. Here's the same example as above, but this time in `multiline` mode
+and with truncation limit set to 80 characters:
+
+```shell
+$ sudo ./retsnoop -e '*sys_bpf' -TAS -C args.fmt-mode=multiline -C args.fmt-max-arg-width=80
+...
+FUNCTION CALLS    RESULT  DURATION
+---------------   ------  --------
+→ __x64_sys_bpf
+                  › regs=&{.r15=0x7ffc86cfd05c,.r14=0x7ffc86cfd048,.r13=0x7f5ae9a55180,.r12=0x7fffffffff…
+    ↔ __sys_bpf   [0]      0.842us
+                  › cmd=1
+                  › uattr={{.kernel=0x7ffc86cfcf90,.user=0x7ffc86cfcf90}}
+                  › size=32
+← __x64_sys_bpf   [0]      2.105us
+
+              entry_SYSCALL_64_after_hwframe+0x46  (entry_SYSCALL_64 @ arch/x86/entry/entry_64.S:120)
+              do_syscall_64+0x3d                   (arch/x86/entry/common.c:80)
+              . do_syscall_x64                     (arch/x86/entry/common.c:50)
+     2us [0]  __x64_sys_bpf+0x18                   (kernel/bpf/syscall.c:5672)
+         › regs=&{.r15=0x7ffc86cfd05c,.r14=0x7ffc86cfd048,.r13=0x7f5ae9a55180,.r12=0x7fffffffff…
+              . __se_sys_bpf                       (kernel/bpf/syscall.c:5672)
+              . __do_sys_bpf                       (kernel/bpf/syscall.c:5674)
+!    0us [0]  __sys_bpf
+         › cmd=1
+         › uattr={{.kernel=0x7ffc86cfcf90,.user=0x7ffc86cfcf90}}
+         › size=32
+```
+
+It's a bit more visually distracting, but function call trace flow is still
+quite easy to follow, yet arguments data is more easily inspectable at the
+same time. Arguments are generally aligned with function return value output
+(both for function call trace and stack trace outputs).
+
+Lastly, the ultimate, `verbose`, formatting mode is there to render all the
+captured data without any compromises. This is for the times when inspecting
+data is the highest priority and function calls rendering visual coherence is
+of secondary concern. In `verbose` mode there is no truncation, each argument
+value can take however many lines necessary (that mostly applies to rendering
+structs/unions and arrays). Note, the data still can be truncated if
+`retsnoop` wasn't able to capture enough data bytes, see [paragraph](#data_capture_size_limits)
+below explaining default and maximum limits. Tune them as appropriate if
+defaults are not satisfactory. Here's the example:
+
+```shell
+$ sudo ./retsnoop -e '*sys_bpf' -TAS -C args.fmt-mode=verbose
+...
+FUNCTION CALLS    RESULT  DURATION
+---------------   ------  --------
+→ __x64_sys_bpf
+                  › regs = &{
+                      .r15 = 0x7ffc86cfd05c,
+                      .r14 = 0x7ffc86cfd048,
+                      .r13 = 0x7f5ae9a55180,
+                      .r12 = 0x7fffffffffffffff,
+                      .bp = 0x7ffc86cfd030,
+                      .r11 = 582,
+                      .r10 = 70,
+                      .r9 = 70,
+                      .r8 = 70,
+                      .ax = 0xffffffffffffffda,
+                      .cx = 0x7f5aefb20e39,
+                      .dx = 32,
+                      .si = 0x7ffc86cfcf90,
+                      .di = 1,
+                      .orig_ax = 321,
+                      .ip = 0x7f5aefb20e39,
+                      .cs = 51,
+                      .flags = 582,
+                      .sp = 0x7ffc86cfcf88,
+                      .ss = 43
+                  }
+    ↔ __sys_bpf   [0]      0.793us
+                  › cmd = 1
+                  › uattr = {
+                      {
+                          .kernel = 0x7ffc86cfcf90,
+                          .user = 0x7ffc86cfcf90
+                      }
+                  }
+                  › size = 32
+← __x64_sys_bpf   [0]      1.982us
+
+              entry_SYSCALL_64_after_hwframe+0x46  (entry_SYSCALL_64 @ arch/x86/entry/entry_64.S:120)
+              do_syscall_64+0x3d                   (arch/x86/entry/common.c:80)
+              . do_syscall_x64                     (arch/x86/entry/common.c:50)
+     1us [0]  __x64_sys_bpf+0x18                   (kernel/bpf/syscall.c:5672)
+         › regs = &{
+             .r15 = 0x7ffc86cfd05c,
+             .r14 = 0x7ffc86cfd048,
+             .r13 = 0x7f5ae9a55180,
+             .r12 = 0x7fffffffffffffff,
+             .bp = 0x7ffc86cfd030,
+             .r11 = 582,
+             .r10 = 70,
+             .r9 = 70,
+             .r8 = 70,
+             .ax = 0xffffffffffffffda,
+             .cx = 0x7f5aefb20e39,
+             .dx = 32,
+             .si = 0x7ffc86cfcf90,
+             .di = 1,
+             .orig_ax = 321,
+             .ip = 0x7f5aefb20e39,
+             .cs = 51,
+             .flags = 582,
+             .sp = 0x7ffc86cfcf88,
+             .ss = 43
+         }
+              . __se_sys_bpf                       (kernel/bpf/syscall.c:5672)
+              . __do_sys_bpf                       (kernel/bpf/syscall.c:5674)
+!    0us [0]  __sys_bpf
+         › cmd = 1
+         › uattr = {
+             {
+                 .kernel = 0x7ffc86cfcf90,
+                 .user = 0x7ffc86cfcf90
+             }
+         }
+         › size = 32
+```
+
+It's truly verbose, but will render all captured data for easy inspection.
+
+#### Data capture size limits
+
+By default, `retsnoop` will capture up to 3KB of data for any single function
+call, up to 256 bytes per each argument, whether fixed-sized like integers,
+enums, structs passed by value, etc., as well as variable-length string
+arguments. All these limits can be adjusted with extra settings in `args.*`
+group, see [Extra settings](#extra_settings) section. You can request capturing
+up to a total 64KB of data (per function call), maximum 16KBs per each
+argument.
+
+#### Rendering all-zero values
+
+`retsnoop` is trying to achieve a high signal-to-noise ration when rendering
+captured argument data, so it will skip printing all-zero values. I.e., if some
+fields of captured structure are either zero integer value, or another embedded
+struct with all its fields zero, such a field and value won't be printed. If
+the argument is a zero integer argument itself, it still will be printed, of
+course. Similarly, struct-by-value or struct-by-pointer arguments with
+completely zeroed out struct data will still be rendered as `arg={}` or
+`arg=&{}`.
 
 ## Additional filters
 
@@ -448,12 +652,56 @@ found, due to its extreme usefulness in most of the cases.
 Note, DWARF type information is also necessary for source code path globs to
 work.
 
+### Extra settings
+
+As `retsnoop` gains more functionality, it also gains various knobs and extra
+settings that advanced users might want to adjust depending on their specific
+use case. To not overload the main CLI interface with them, all such less
+often needed settings are put behind a separate `--config` argument, which
+accepts configuration parameters of the form `<group>.<key>=<value>`. E.g., to
+request `retsnoop` to print out raw addresses in stack traces, one can call
+`retsnoop` with `--config stacks.emit-addrs=true` argument.
+
+Use `--config-help` argument to request a list and corresponding descriptions
+of all supported advanced settings:
+
+```shell
+$ retsnoop --config-help
+It's possible to customize various retsnoop's internal implementation details.
+This can be done by specifying one or multiple extra parameters using --config KEY=VALUE CLI arguments.
+
+Supported configuration parameters:
+  bpf.ringbuf-size - BPF ringbuf size in bytes.
+        Increase if you experience dropped data. By default is set to 8MB.
+  bpf.sessions-size - BPF sessions map capacity (defaults to 4096)
+  stacks.symb-mode - Stack symbolization mode.
+        Determines how much processing is done for stack symbolization
+        and what kind of extra information is included in stack traces:
+            none    - no source code info, no inline functions;
+            linenum - source code info (file:line), no inline functions;
+            inlines - source code info and inline functions.
+  stacks.emit-addrs - Emit raw captured stack trace/LBR addresses (in addition to symbols)
+  stacks.dec-offs - Emit stack trace/LBR function offsets in decimal (by default, it's in hex)
+  stacks.unfiltered - Emit all stack stace/LBR entries (turning off relevancy filtering)
+  args.max-total-args-size - Maximum total amount of arguments data bytes captured per each function call
+  args.max-sized-arg-size - Maximum amount of data bytes captured for any fixed-sized argument
+  args.max-str-arg-size - Maximum amount of data bytes captured for any string argument
+  args.fmt-mode - Function arguments formatting mode (compact, multiline, verbose)
+  args.fmt-max-arg-width - Maximum amount of horizontal space taken by a single argument output.
+        Applies only to compact and multiline modes.
+        If set to zero, no truncation is performed.
+  fmt.lbr-max-count - Limit number of printed LBRs to N
+```
+
+As with most `retsnoop` arguments, multiple `--config`/`-C` arguments can be
+provided at the same time.
+
 # Getting retsnoop
 
 ## Download pre-built x86-64 binary
 
-**Each release has a pre-built retsnoop binary** for x86-64 (amd64) architecture
-ready to be downloaded and used. Go to
+**Each release has a pre-built retsnoop binary** for x86-64 (amd64) and arm64
+architectures ready to be downloaded and used. Go to
 ["Releases"](https://github.com/anakryiko/retsnoop/releases) page to download
 latest binary.
 
