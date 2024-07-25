@@ -156,7 +156,7 @@ static struct cfg_spec cfg_specs[] = {
 	  "BPF sessions map capacity (defaults to 4096)" },
 
 	/* Stack trace formatting */
-	{ "fmt", "stack-trace-mode", cfg_enum, &env.symb_mode,
+	{ "stacks", "symb-mode", cfg_enum, &env.symb_mode,
 	  (struct enum_mapping[]){
 		  {"linenum", 'l', SYMB_LINEINFO},
 		  {"inlines", 'i', SYMB_INLINES},
@@ -170,23 +170,23 @@ static struct cfg_spec cfg_specs[] = {
 	  "\t    none    - no source code info, no inline functions;\n"
 	  "\t    linenum - source code info (file:line), no inline functions;\n"
 	  "\t    inlines - source code info and inline functions." },
-	{ "fmt", "stack-emit-all", cfg_bool, &env.stack_emit_all, NULL,
+	{ "stacks", "unfiltered", cfg_bool, &env.stack_emit_all, NULL,
 	  "Emit all stack stace/LBR entries (turning off relevancy filtering)" },
-	{ "fmt", "stack-emit-addrs", cfg_bool, &env.stack_emit_addrs, NULL,
+	{ "stacks", "emit-addrs", cfg_bool, &env.stack_emit_addrs, NULL,
 	  "Emit raw captured stack trace/LBR addresses (in addition to symbols)" },
-	{ "fmt", "stack-dec-offs", cfg_bool, &env.stack_dec_offs, NULL,
+	{ "stacks", "dec-offs", cfg_bool, &env.stack_dec_offs, NULL,
 	  "Emit stack trace/LBR function offsets in decimal (by default, it's in hex)" },
 
 	/* Function args formatting */
 	{ "args", "max-total-args-size",
 	  cfg_int, &env.args_max_total_args_size, &(struct int_lims){1, MAX_FNARGS_TOTAL_ARGS_SZ},
-	  "Maximum total amount of data (in bytes) captured for all args of any function call" },
+	  "Maximum total amount of arguments data bytes captured per each function call" },
 	{ "args", "max-sized-arg-size",
 	  cfg_int, &env.args_max_sized_arg_size, &(struct int_lims){1, MAX_FNARGS_SIZED_ARG_SZ},
-	  "Maximum amount of data (in bytes) captured for any fixed-sized (int, struct, etc) function argument" },
+	  "Maximum amount of data bytes captured for any fixed-sized argument" },
 	{ "args", "max-str-arg-size",
 	  cfg_int, &env.args_max_str_arg_size, &(struct int_lims){1, MAX_FNARGS_STR_ARG_SZ},
-	  "Maximum amount of data (in bytes) captured for any string function argument" },
+	  "Maximum amount of data bytes captured for any string argument" },
 	{ "args", "fmt-mode", cfg_enum, &env.args_fmt_mode,
 	  (struct enum_mapping[]){
 		  {"compact", 'c', ARGS_FMT_COMPACT},
@@ -197,7 +197,8 @@ static struct cfg_spec cfg_specs[] = {
 	  "Function arguments formatting mode (compact, multiline, verbose)" },
 	{ "args", "fmt-max-arg-width", cfg_int, &env.args_fmt_max_arg_width, &(struct int_lims){0, 250},
 	  "Maximum amount of horizontal space taken by a single argument output.\n"
-	  "Applies only to compact and multiline modes. If set to zero, no truncation is performed." },
+	  "\tApplies only to compact and multiline modes.\n"
+	  "\tIf set to zero, no truncation is performed." },
 
 	/* LBR formatting */
 	{ "fmt", "lbr-max-count", cfg_int, &env.lbr_max_cnt, NULL,
