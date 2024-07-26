@@ -355,6 +355,15 @@ int main(int argc, char **argv, char **envp)
 		goto cleanup_silent;
 	}
 #endif
+	if (!env.emit_func_trace)
+		env.emit_call_stack = true;
+	 /* default setting for success stacks, resolve based on call stack vs func trace modes */
+	if (env.emit_success_stacks == 0) {
+		if (env.emit_call_stack)
+			env.emit_success_stacks = -1;
+		else
+			env.emit_success_stacks = +1;
+	}
 
 	/* Open BPF skeleton */
 	env.ctx.skel = skel = retsnoop_bpf__open();
@@ -384,8 +393,7 @@ int main(int argc, char **argv, char **envp)
 	/* turn on extra bpf_printk()'s on BPF side */
 	skel->rodata->verbose = env.debug_feats & DEBUG_BPF;
 	skel->rodata->extra_verbose = (env.debug_feats & DEBUG_BPF) && env.debug_extra;
-	skel->rodata->targ_tgid = env.pid;
-	skel->rodata->emit_success_stacks = env.emit_success_stacks;
+	skel->rodata->emit_success_stacks = env.emit_success_stacks > 0;
 	skel->rodata->duration_ns = env.longer_than_ms * 1000000ULL;
 	skel->rodata->use_kprobes = env.attach_mode != ATTACH_FENTRY;
 	memset(skel->rodata->spaces, ' ', sizeof(skel->rodata->spaces) - 1);
@@ -424,6 +432,7 @@ int main(int argc, char **argv, char **envp)
 	if (env.use_lbr && env.verbose)
 		printf("LBR capture enabled.\n");
 
+	skel->rodata->emit_call_stack = env.emit_call_stack;
 	skel->rodata->emit_func_trace = env.emit_func_trace;
 
 	att_opts.verbose = env.verbose;

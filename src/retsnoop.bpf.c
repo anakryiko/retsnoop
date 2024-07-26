@@ -71,12 +71,12 @@ struct {
 
 const volatile bool verbose = false;
 const volatile bool extra_verbose = false;
-const volatile bool use_lbr = true;
-const volatile int targ_tgid = -1;
-const volatile bool emit_success_stacks = false;
+const volatile bool emit_call_stack = true;
 const volatile bool emit_func_trace = true;
+const volatile bool emit_success_stacks = false;
 const volatile bool capture_args = true;
 const volatile bool capture_raw_ptrs = true;
+const volatile bool use_lbr = true;
 const volatile bool use_kprobes = true;
 
 const volatile int args_max_total_args_sz;

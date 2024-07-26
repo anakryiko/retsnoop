@@ -49,20 +49,26 @@ enum debug_feat {
 };
 
 struct env {
+	/* two main modes of operation; if only emit_func_trace is specified,
+	 * we default to capturing all (including non-erroring) sessions
+	 */
+	bool emit_call_stack;
+	bool emit_func_trace;
+
+	bool capture_args;
+	bool use_lbr;
+
 	bool show_version;
 	bool show_config_help;
 	bool verbose;
 	bool debug;
 	bool debug_extra;
 	bool dry_run;
-	bool emit_success_stacks;
-	bool emit_func_trace;
-	bool capture_args;
 	enum attach_mode attach_mode;
 	enum debug_feat debug_feats;
-	bool use_lbr;
 	long lbr_flags;
 	int lbr_max_cnt;
+
 	const char *vmlinux_path;
 	int pid;
 	int longer_than_ms;
@@ -104,6 +110,12 @@ struct env {
 	char **deny_comms;
 	int allow_comm_cnt;
 	int deny_comm_cnt;
+
+	/* default 0 will depend on allow_call_stack and allow_func_trace settings;
+	 * +1 forces success stacks capture;
+	 * -1 forces unsuccessful stacks only capture;
+	 */
+	int emit_success_stacks;
 
 	int allow_error_cnt;
 	bool has_error_filter;
