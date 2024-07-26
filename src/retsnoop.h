@@ -48,32 +48,47 @@ enum func_flags {
 #define DEFAULT_FNARGS_SIZED_ARG_SZ 256		/* default capture size for a single fixed-sized arg */
 #define DEFAULT_FNARGS_STR_ARG_SZ 256		/* default capture size for a signel string arg */
 
+/* should fit inside FNARGS_LOC_MASK */
+enum func_arg_loc {
+	FNARGS_SKIP = 0,
+	FNARGS_REG = 1,
+	FNARGS_REG_PAIR = 2,
+	FNARGS_STACK = 3,
+};
+
+/* should fit inside FNARGS_KIND_MASK */
+enum func_arg_kind {
+	FNARGS_KIND_RAW = 0,
+	FNARGS_KIND_PTR = 1,
+	FNARGS_KIND_STR = 2,
+	FNARGS_KIND_VARARG = 3,
+};
+
 enum func_arg_flags {
-	/* lowest 16 bits */
-	FUNC_ARG_LEN_MASK = 0xffff,	/* 64KB bytes max */
+	/* lowest 16 bits specify amount of data to be captured */
+	FNARGS_LEN_MASK = 0xffff,	/* 64KB bytes max */
 
-	/* next 4 bits */
-	FUNC_ARG_REG = 0x10000,		/* read specified register */
-	FUNC_ARG_REG_PAIR = 0x20000,	/* read specified register */
-	FUNC_ARG_STACK = 0x40000,	/* read stack at specified offset */
-	FUNC_ARG_PTR = 0x80000,		/* pointer indirection */
+	/* next 2 bits specify location of argument (register, stack, register pair, skipped) */
+	FNARGS_LOC_MASK = 0x30000,	/* enum func_arg_loc */
+	FNARGS_LOC_SHIFT = 16,
 
-	/* "varlen string" marker, uses impossible REG_PAIR + PTR combination */
-	FUNC_ARG_STR = FUNC_ARG_PTR | FUNC_ARG_REG_PAIR,
+	/* next 2 bits specify extra semantics of the argument (pointer, string, vararg) */
+	FNARGS_KIND_MASK = 0xc0000,	/* enum func_arg_kind */
+	FNARGS_KIND_SHIFT = 18,
 
 	/* for REG_PAIR/REG we encode the first/only argument register index */
-	FUNC_ARG_REGIDX_MASK = 0x0ff00000,	/* argument register index */
-	FUNC_ARG_REGIDX_SHIFT = 20,
+	FNARGS_REGIDX_MASK = 0x0ff00000,	/* argument register index */
+	FNARGS_REGIDX_SHIFT = 20,
 
 	/* for STACK we have one big offset */
-	FUNC_ARG_STACKOFF_MASK = 0xfff00000,	/* stack offset */
-	FUNC_ARG_STACKOFF_SHIFT = 20,
-	FUNC_ARG_STACKOFF_MAX = 8 * (FUNC_ARG_STACKOFF_MASK >> FUNC_ARG_STACKOFF_SHIFT),
+	FNARGS_STACKOFF_MASK = 0xfff00000,	/* stack offset */
+	FNARGS_STACKOFF_SHIFT = 20,
+	FNARGS_STACKOFF_MAX = 8 * (FNARGS_STACKOFF_MASK >> FNARGS_STACKOFF_SHIFT),
 
 	/* special "skip arg" values, uses special REGIDX value */
-	FUNC_ARG_VARARG			= 0x0fe00000,
-	FUNC_ARG_UNKN			= 0x0fd00000,
-	FUNC_ARG_STACKOFF_2BIG		= 0x0fc00000,
+	FNARGS_UNKN			= 0x0fe00000,
+	FNARGS_VARARG			= 0x0fd00000,
+	FNARGS_STACKOFF_2BIG		= 0x0fc00000,
 };
 
 struct func_info {
@@ -180,6 +195,9 @@ struct session_end {
 #endif
 #ifndef ENOMSG
 #define ENOMSG 42
+#endif
+#ifndef EDOM
+#define EDOM 33
 #endif
 
 #endif /* __RETSNOOP_H */
