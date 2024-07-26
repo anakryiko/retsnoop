@@ -87,7 +87,7 @@ enum func_arg_flags {
 
 	/* special "skip arg" values, uses special REGIDX value */
 	FNARGS_UNKN			= 0x0fe00000,
-	FNARGS_VARARG			= 0x0fd00000,
+	FNARGS_UNKN_VARARG		= 0x0fd00000,
 	FNARGS_STACKOFF_2BIG		= 0x0fc00000,
 };
 

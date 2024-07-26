@@ -187,6 +187,46 @@ static __always_inline bool is_kernel_addr(void *addr)
 	return (long)addr <= 0;
 }
 
+static void capture_vararg(struct func_args_capture *r, u32 arg_idx, void *data)
+{
+	size_t data_off;
+	void *dst;
+	int err, kind, len;
+
+	data_off = r->data_len;
+	barrier_var(data_off); /* prevent compiler from re-reading it */
+
+	if (data_off >= args_max_total_args_sz) {
+		r->arg_lens[arg_idx] = -ENOSPC;
+		return;
+	}
+
+	dst = r->arg_data + data_off;
+
+	/* at least capture raw 8 byte value */
+	*(long *)dst = (long)data;
+	len = 8;
+	dst += 8;
+	r->data_len += 8;
+
+	/* if this looks like a kernel addrs, also try to read kernel string */
+	if (is_kernel_addr(data)) {
+		/* in this case we mark that we have a raw pointer value */
+		r->arg_ptrs |= (1 << arg_idx);
+
+		err = bpf_probe_read_kernel_str(dst, args_max_str_arg_sz, data);
+		if (err < 0) {
+			r->arg_lens[arg_idx] = err;
+			return;
+		}
+
+		len = err;
+		r->data_len += (len + 7) / 8 * 8;
+	}
+
+	r->arg_lens[arg_idx] = len;
+}
+
 static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u32 len, u32 arg_spec)
 {
 	size_t data_off;
@@ -207,7 +247,7 @@ static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u3
 	}
 
 	dst = r->arg_data + data_off;
-	
+
 	kind = (arg_spec & FNARGS_KIND_MASK) >> FNARGS_KIND_SHIFT;
 	if (capture_raw_ptrs && (kind == FNARGS_KIND_PTR || kind == FNARGS_KIND_STR)) {
 		*(long *)dst = (long)data;
@@ -232,6 +272,7 @@ static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u3
 		else
 			err = bpf_probe_read_user(dst, len, data);
 	}
+
 	if (err < 0) {
 		r->arg_lens[arg_idx] = err;
 		return;
@@ -245,10 +286,11 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 {
 	struct func_args_capture *r;
 	const struct func_info *fi;
-	u64 i;
+	u64 i, rec_sz;
 
-	/* we waste *args_max_any_arg_sz* to simplify verification */
-	r = bpf_ringbuf_reserve(&rb, sizeof(*r) + args_max_total_args_sz + args_max_any_arg_sz, 0);
+	/* we waste *args_max_any_arg_sz* + 12 * 8 (for raw ptrs value) to simplify verification */
+	rec_sz = sizeof(*r) + args_max_total_args_sz + args_max_any_arg_sz + 8 * MAX_FNARGS_ARG_SPEC_CNT;
+	r = bpf_ringbuf_reserve(&rb, rec_sz, 0);
 	if (!r) {
 		stat_dropped_record(sess);
 		return;
@@ -284,7 +326,7 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 		case FNARGS_REG:
 			reg_idx = (spec & FNARGS_REGIDX_MASK) >> FNARGS_REGIDX_SHIFT;
 			vals[0] = get_arg_reg_value(ctx, reg_idx);
-			if (kind == FNARGS_KIND_PTR || kind == FNARGS_KIND_STR) {
+			if (kind != FNARGS_KIND_RAW) {
 				data_ptr = (void *)vals[0];
 			} else {
 				vals[0] = coerce_size(vals[0], len);
@@ -295,7 +337,7 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 			/* stack offset is specified in 8 byte chunks */
 			off = 8 * ((spec & FNARGS_STACKOFF_MASK) >> FNARGS_STACKOFF_SHIFT);
 			vals[0] = get_stack_pointer(ctx) + off;
-			if (kind == FNARGS_KIND_PTR || kind == FNARGS_KIND_STR) {
+			if (kind != FNARGS_KIND_RAW) {
 				/* the pointer value itself is on the stack */
 				err = bpf_probe_read_kernel(&vals[0], 8, (void *)vals[0]);
 				if (err) {
@@ -318,7 +360,10 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 			continue;
 		}
 
-		capture_arg(r, i, data_ptr, len, spec);
+		if (kind == FNARGS_KIND_VARARG)
+			capture_vararg(r, i, data_ptr);
+		else
+			capture_arg(r, i, data_ptr, len, spec);
 	}
 
 	bpf_ringbuf_submit(r, 0);
