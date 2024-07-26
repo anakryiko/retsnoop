@@ -657,12 +657,16 @@ static int cfg_bool(const struct cfg_spec *cfg, const char *arg, void *dst, void
 {
 	bool *val = dst;
 
-	if (strcasecmp(arg, "true") == 0 || strcmp(arg, "1") == 0) {
+	if (strcasecmp(arg, "true") == 0 ||
+	    strcasecmp(arg, "y") == 0 ||
+	    strcmp(arg, "1") == 0) {
 		*val = true;
-	} else if (strcasecmp(arg, "false") == 0 || strcmp(arg, "0") == 0) {
+	} else if (strcasecmp(arg, "false") == 0 ||
+		   strcasecmp(arg, "n") == 0 ||
+		   strcmp(arg, "0") == 0) {
 		*val = false;
 	} else {
-		elog("Invalid '%s.%s' config value '%s'. Expected to be 'true' or '1' for enabling the option; 'false' or '0' for disabling it.\n",
+		elog("Invalid '%s.%s' config value '%s'. Expected to be 'true'/'y'/'1' for enabling the option; 'false'/'n'/'0' for disabling it.\n",
 		     cfg->group, cfg->key, arg);
 		return -EINVAL;
 	}
