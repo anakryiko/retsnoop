@@ -259,27 +259,6 @@ int handle_func_args_capture(struct ctx *ctx, struct session *sess,
 	return 0;
 }
 
-static int fetch_int_value(void *data, int len, bool is_signed, long long *value)
-{
-	if (is_signed) {
-		switch (len) {
-		case 1: return *value = *(signed char *)data, 0;
-		case 2: return *value = *(signed short *)data, 0;
-		case 4: return *value = *(signed int *)data, 0;
-		case 8: return *value = *(signed long long *)data, 0;
-		default: return *value = 0, -EINVAL;
-		}
-	} else {
-		switch (len) {
-		case 1: return *value = *(unsigned char *)data, 0;
-		case 2: return *value = *(unsigned short *)data, 0;
-		case 4: return *value = *(unsigned int *)data, 0;
-		case 8: return *value = *(unsigned long long *)data, 0;
-		default: return *value = 0, -EINVAL;
-		}
-	}
-}
-
 static void sanitize_string(char *s, size_t len)
 {
 	int i;
@@ -289,21 +268,6 @@ static void sanitize_string(char *s, size_t len)
 			s[i] = ' ';
 	}
 	s[len - 1] = '\0';
-}
-
-static void smart_print_int(struct fmt_buf *b, bool is_bool, bool is_signed, long long value)
-{
-	char buf[32];
-
-	if (is_bool && value >= 0 && value <= 1) {
-		bnappendf(b, "%s", value ? "true" : "false");
-	} else if (is_signed) {
-		snprintf_smart_int(buf, sizeof(buf), value);
-		bnappendf(b, "%s", buf);
-	} else {
-		snprintf_smart_uint(buf, sizeof(buf), value);
-		bnappendf(b, "%s", buf);
-	}
 }
 
 static void btf_data_dump_printf(void *ctx, const char *fmt, va_list args)
@@ -319,27 +283,16 @@ static void prepare_fn_arg(struct fmt_buf *b,
 			   void *data, size_t data_len, int indent_shift)
 {
 	struct btf_data_dump_opts opts = {};
-	const struct btf_type *t;
 	int err;
 
 	if (!fn_args->btf) {
+		char buf[32];
+
 		/* fallback "raw registers" mode, data_len should be 8 */
-		smart_print_int(b, false /*!is_bool*/, false /*!is_signed*/, *(long long *)data);
+		snprintf_smart_uint(buf, sizeof(buf), *(long long *)data);
+		bnappendf(b, "%s", buf);
+
 		return;
-	}
-
-	t = btf_strip_mods_and_typedefs(fn_args->btf, spec->btf_id, NULL);
-
-	/* for common case of plain integer, skip dumper verboseness and complexity */
-	if (btf_is_int(t)) {
-		long long value;
-		bool is_signed = btf_int_encoding(t) & BTF_INT_SIGNED;
-		bool is_bool = btf_int_encoding(t) & BTF_INT_BOOL;
-
-		if (fetch_int_value(data, data_len, is_signed, &value) == 0) {
-			smart_print_int(b, is_bool, is_signed, value);
-			return;
-		}
 	}
 
 	if (spec->pointee_btf_id < 0) {
