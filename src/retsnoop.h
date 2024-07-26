@@ -68,7 +68,7 @@ enum func_arg_flags {
 	/* for STACK we have one big offset */
 	FUNC_ARG_STACKOFF_MASK = 0xfff00000,	/* stack offset */
 	FUNC_ARG_STACKOFF_SHIFT = 20,
-	FUNC_ARG_STACKOFF_MAX = FUNC_ARG_STACKOFF_MASK >> FUNC_ARG_STACKOFF_SHIFT,
+	FUNC_ARG_STACKOFF_MAX = 8 * (FUNC_ARG_STACKOFF_MASK >> FUNC_ARG_STACKOFF_SHIFT),
 
 	/* special "skip arg" values, uses special REGIDX value */
 	FUNC_ARG_VARARG			= 0x0fe00000,

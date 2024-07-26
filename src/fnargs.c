@@ -133,7 +133,6 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 		if (spec->btf_id == 0) {
 			/* we don't know what to do with vararg argument */
 			dlog(" (vararg)");
-			spec->btf_id = 0;
 			/* keep arg_flags non-zero, but don't set any of
 			 * {REG, REG_PAIR, STACK} flags; BPF side will
 			 * just skip this arg
@@ -172,7 +171,8 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 					goto skip_arg;
 				} else {
 					spec->arg_flags = FUNC_ARG_STACK | data_len;
-					spec->arg_flags |= stack_off << FUNC_ARG_STACKOFF_SHIFT;
+					/* stack offset is recorded in 8 byte increments */
+					spec->arg_flags |= (stack_off / 8) << FUNC_ARG_STACKOFF_SHIFT;
 					dlog("fp+%d", stack_off);
 					stack_off = realign_stack_off(stack_off + true_len);
 				}
