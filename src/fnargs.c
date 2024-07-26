@@ -247,6 +247,7 @@ int handle_func_args_capture(struct ctx *ctx, struct session *sess,
 	fai->func_id = r->func_id;
 	fai->seq_id = r->seq_id;
 	fai->data_len = r->data_len;
+	fai->arg_ptrs = r->arg_ptrs;
 	fai->arg_data = malloc(fai->data_len);
 	memcpy(fai->arg_lens, r->arg_lens, sizeof(r->arg_lens));
 	if (!fai->arg_data)
@@ -404,6 +405,11 @@ void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item
 			fprintf(f, "%s%s=%s", fn_args->arg_specs[i].name, sep, sep);
 		else /* "raw" BTF-less mode */
 			fprintf(f, "arg%d%s=%s", i, sep, sep);
+
+		if (env.args_capture_raw_ptrs && (fai->arg_ptrs & (1 << i))) {
+			bnappendf(&b, "(0x%llx)", *(long long *)data);
+			data += 8;
+		}
 
 		len = fai->arg_lens[i];
 		if (len == 0) {

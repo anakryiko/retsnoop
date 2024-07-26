@@ -387,13 +387,17 @@ int main(int argc, char **argv, char **envp)
 	skel->rodata->targ_tgid = env.pid;
 	skel->rodata->emit_success_stacks = env.emit_success_stacks;
 	skel->rodata->duration_ns = env.longer_than_ms * 1000000ULL;
+	skel->rodata->use_kprobes = env.attach_mode != ATTACH_FENTRY;
+	memset(skel->rodata->spaces, ' ', sizeof(skel->rodata->spaces) - 1);
 
+	skel->rodata->capture_args = env.capture_args;
+	skel->rodata->capture_raw_ptrs = env.args_capture_raw_ptrs;
 	skel->rodata->args_max_total_args_sz = env.args_max_total_args_size;
 	skel->rodata->args_max_sized_arg_sz = env.args_max_sized_arg_size;
 	skel->rodata->args_max_str_arg_sz = env.args_max_str_arg_size;
 	skel->rodata->args_max_any_arg_sz = max(env.args_max_sized_arg_size, env.args_max_str_arg_size);
-
-	memset(skel->rodata->spaces, ' ', sizeof(skel->rodata->spaces) - 1);
+	if (env.args_capture_raw_ptrs)
+		skel->rodata->args_max_any_arg_sz += 8; /* for raw pointer value */
 
 	/* LBR detection and setup */
 	if (env.use_lbr && env.has_branch_snapshot) {
@@ -421,9 +425,6 @@ int main(int argc, char **argv, char **envp)
 		printf("LBR capture enabled.\n");
 
 	skel->rodata->emit_func_trace = env.emit_func_trace;
-
-	skel->rodata->capture_args = env.capture_args;
-	skel->rodata->use_kprobes = env.attach_mode != ATTACH_FENTRY;
 
 	att_opts.verbose = env.verbose;
 	att_opts.debug = env.debug;

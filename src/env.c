@@ -187,6 +187,8 @@ static struct cfg_spec cfg_specs[] = {
 	{ "args", "max-str-arg-size",
 	  cfg_int, &env.args_max_str_arg_size, &(struct int_lims){1, MAX_FNARGS_STR_ARG_SZ},
 	  "Maximum amount of data bytes captured for any string argument" },
+	{ "args", "capture-raw-ptrs", cfg_bool, &env.args_capture_raw_ptrs, NULL,
+	  "For pointer arguments, also capture and print raw pointer values" },
 	{ "args", "fmt-mode", cfg_enum, &env.args_fmt_mode,
 	  (struct enum_mapping[]){
 		  {"compact", 'c', ARGS_FMT_COMPACT},

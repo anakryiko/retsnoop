@@ -77,6 +77,7 @@ struct env {
 	int args_max_total_args_size;
 	int args_max_sized_arg_size;
 	int args_max_str_arg_size;
+	bool args_capture_raw_ptrs;
 	enum args_fmt_mode args_fmt_mode;
 	int args_fmt_max_arg_width;
 
