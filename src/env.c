@@ -83,6 +83,7 @@ static const struct argp_option opts[] = {
 
 	/* Running mode configuration */
 	{ .flags = OPTION_DOC, "RUNMODE\n=========================" },
+	{ "call-stack", 'E', NULL, 0, "Capture and emit call stacks (default mode)" },
 	{ "trace", 'T', NULL, 0, "Capture and emit function call traces" },
 	{ "capture-args", 'A', NULL, 0, "Capture and emit function arguments" },
 	{ "lbr", 'B', "SPEC", OPTION_ARG_OPTIONAL,
@@ -113,7 +114,8 @@ static const struct argp_option opts[] = {
 	  "Skip tracing processes with given name" },
 	{ "longer", 'L', "MS", 0,
 	  "Only emit stacks that took at least a given amount of milliseconds" },
-	{ "success-stacks", 'S', NULL, 0, "Emit any stack, successful or not" },
+	{ "success-stacks", 'S', "VALUE", OPTION_ARG_OPTIONAL,
+	  "Specify whether emitting non-erroring (successful) call stacks is allowed" },
 	{ "allow-errors", 'x', "ERROR", 0, "Record stacks only with specified errors" },
 	{ "deny-errors", 'X', "ERROR", 0, "Ignore stacks that have specified errors" },
 
@@ -393,7 +395,7 @@ static enum debug_feat parse_config_arg(const char *arg)
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
-	int i, j, err;
+	int i, j, err, val;
 
 	switch (key) {
 	case 'h':
@@ -416,6 +418,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.debug = true;
 		else if (!env.debug_extra)
 			env.debug_extra = true;
+		break;
+	case 'E':
+		env.emit_call_stack = true;
 		break;
 	case 'T':
 		env.emit_func_trace = true;
@@ -537,6 +542,11 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return err;
 		break;
 	case 'x':
+		if (env.emit_success_stacks > 0) {
+			elog("Can't specify -S/-Sy and -x arguments at the same time!\n");
+			return -EINVAL;
+		}
+		env.emit_success_stacks = -1; /* force failing stacks only */
 		err = str_to_err(arg);
 		if (err < 0)
 			return err;
@@ -562,7 +572,21 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		err_mask_set(env.deny_error_mask, err);
 		break;
 	case 'S':
-		env.emit_success_stacks = true;
+		if (arg && strcasecmp(arg, "y") == 0) {
+			val = +1;
+		} else if (arg && strcasecmp(arg, "n") == 0) {
+			val = -1;
+		} else if (!arg) {
+			val = +1;
+		} else {
+			elog("Unrecognized -S%s argument, only -S, -Sy, or -Sn are supported!\n", arg);
+			return -EINVAL;
+		}
+		if (env.emit_success_stacks != 0 && env.emit_success_stacks != val) {
+			elog("Conflicting combination of -S/-Sn/-Sy and -x arguments specified!\n");
+			return -EINVAL;
+		}
+		env.emit_success_stacks = val;
 		break;
 	case 'M':
 		if (env.attach_mode != ATTACH_DEFAULT) {

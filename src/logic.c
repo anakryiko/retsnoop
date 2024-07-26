@@ -1148,23 +1148,6 @@ static int handle_session_end(struct ctx *dctx, struct session *sess, const stru
 				s->depth, s->max_depth, s->saved_depth, s->saved_max_depth);
 	}
 
-	fstack_n = filter_fstack(dctx, fstack, s);
-	if (fstack_n < 0) {
-		fprintf(stderr, "FAILURE DURING FILTERING FUNCTION STACK!!! %d\n", fstack_n);
-		ret = -EINVAL;
-		goto out_purge;
-	}
-	kstack_n = filter_kstack(dctx, kstack, s);
-	if (kstack_n < 0) {
-		fprintf(stderr, "FAILURE DURING FILTERING KERNEL STACK!!! %d\n", kstack_n);
-		ret = -EINVAL;
-		goto out_purge;
-	}
-	if (env.debug) {
-		printf("FSTACK (%d items):\n", fstack_n);
-		printf("KSTACK (%d items out of original %ld):\n", kstack_n, s->kstack_sz / 8);
-	}
-
 	ts_to_str(ktime_to_ts(sess->start_ts), ts1, sizeof(ts1));
 	ts_to_str(ktime_to_ts(r->emit_ts), ts2, sizeof(ts2));
 	printf("%s -> %s TID/PID %d/%d (%s/%s):\n", ts1, ts2, sess->pid, sess->tgid,
@@ -1181,6 +1164,26 @@ static int handle_session_end(struct ctx *dctx, struct session *sess, const stru
 	if (env.emit_func_trace && s->depth == 0) {
 		prepare_ft_items(dctx, &stack_items1, sess->pid, r->last_seq_id);
 		print_ft_items(dctx, &stack_items1);
+	}
+
+	if (!env.emit_call_stack && !env.use_lbr)
+		goto skip_call_stack;
+
+	fstack_n = filter_fstack(dctx, fstack, s);
+	if (fstack_n < 0) {
+		fprintf(stderr, "FAILURE DURING FILTERING FUNCTION STACK!!! %d\n", fstack_n);
+		ret = -EINVAL;
+		goto out_purge;
+	}
+	kstack_n = filter_kstack(dctx, kstack, s);
+	if (kstack_n < 0) {
+		fprintf(stderr, "FAILURE DURING FILTERING KERNEL STACK!!! %d\n", kstack_n);
+		ret = -EINVAL;
+		goto out_purge;
+	}
+	if (env.debug) {
+		printf("FSTACK (%d items):\n", fstack_n);
+		printf("KSTACK (%d items out of original %ld):\n", kstack_n, s->kstack_sz / 8);
 	}
 
 	/* Determine address range of deepest nested function */
@@ -1204,8 +1207,10 @@ static int handle_session_end(struct ctx *dctx, struct session *sess, const stru
 	}
 
 	/* Emit combined fstack/kstack + errors stack trace */
-	output_call_stack(dctx, sess, fstack, fstack_n, kstack, kstack_n);
+	if (env.emit_call_stack)
+		output_call_stack(dctx, sess, fstack, fstack_n, kstack, kstack_n);
 
+skip_call_stack:
 	if (r->dropped_records) {
 		printf("WARNING! Sample data incomplete! %d record%s dropped. Consider increasing --ringbuf-map-size.\n",
 		       r->dropped_records, r->dropped_records == 1 ? "" : "s");
