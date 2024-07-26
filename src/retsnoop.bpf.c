@@ -288,7 +288,8 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 				data_ptr = vals;
 			}
 		} else if (spec & FUNC_ARG_STACK) {
-			off = (spec & FUNC_ARG_STACKOFF_MASK) >> FUNC_ARG_STACKOFF_SHIFT;
+			/* stack offset is specified in 8 byte chunks */
+			off = 8 * ((spec & FUNC_ARG_STACKOFF_MASK) >> FUNC_ARG_STACKOFF_SHIFT);
 			vals[0] = get_stack_pointer(ctx) + off;
 			if (spec & FUNC_ARG_PTR) {
 				/* the pointer value itself is on the stack */
