@@ -22,6 +22,7 @@ struct func_args_item {
 	int func_id;
 	int seq_id;
 	short data_len;
+	short arg_ptrs;
 	short arg_lens[MAX_FNARGS_ARG_SPEC_CNT];
 	char *arg_data;
 };

@@ -115,6 +115,7 @@ struct func_args_capture {
 	int seq_id;
 	unsigned short func_id;
 	unsigned short data_len;
+	unsigned short arg_ptrs; /* whether we put raw ptr value into arg_data */
 	short arg_lens[MAX_FNARGS_ARG_SPEC_CNT];
 	char arg_data[]; /* BPF side sizes is according to settings */
 };

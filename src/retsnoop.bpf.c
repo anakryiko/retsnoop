@@ -76,6 +76,7 @@ const volatile int targ_tgid = -1;
 const volatile bool emit_success_stacks = false;
 const volatile bool emit_func_trace = true;
 const volatile bool capture_args = true;
+const volatile bool capture_raw_ptrs = true;
 const volatile bool use_kprobes = true;
 
 const volatile int args_max_total_args_sz;
@@ -186,10 +187,12 @@ static __always_inline bool is_kernel_addr(void *addr)
 	return (long)addr <= 0;
 }
 
-static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u32 len, bool is_str)
+static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u32 len, u32 arg_spec)
 {
 	size_t data_off;
+	void *dst;
 	int err;
+	bool is_str;
 
 	if (data == NULL) {
 		r->arg_lens[arg_idx] = -ENODATA;
@@ -204,20 +207,30 @@ static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u3
 		return;
 	}
 
+	dst = r->arg_data + data_off;
+
+	if (capture_raw_ptrs && (arg_spec & FUNC_ARG_PTR)) {
+		*(long *)dst = (long)data;
+		dst += 8;
+		r->arg_ptrs |= (1 << arg_idx);
+		r->data_len += 8;
+	}
+
+	is_str = (arg_spec & FUNC_ARG_STR) == FUNC_ARG_STR;
 	if (is_str) {
 		if (len > args_max_str_arg_sz) /* truncate, if necessary */
 			len = args_max_str_arg_sz;
 		if (is_kernel_addr(data))
-			err = bpf_probe_read_kernel_str(r->arg_data + data_off, len, data);
+			err = bpf_probe_read_kernel_str(dst, len, data);
 		else
-			err = bpf_probe_read_user_str(r->arg_data + data_off, len, data);
+			err = bpf_probe_read_user_str(dst, len, data);
 	} else {
 		if (len > args_max_sized_arg_sz) /* truncate, if necessary */
 			len = args_max_sized_arg_sz;
 		if (is_kernel_addr(data))
-			err = bpf_probe_read_kernel(r->arg_data + data_off, len, data);
+			err = bpf_probe_read_kernel(dst, len, data);
 		else
-			err = bpf_probe_read_user(r->arg_data + data_off, len, data);
+			err = bpf_probe_read_user(dst, len, data);
 	}
 	if (err < 0) {
 		r->arg_lens[arg_idx] = err;
@@ -246,6 +259,7 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 	r->pid = sess->pid;
 	r->seq_id = seq_id;
 	r->func_id = func_id;
+	r->arg_ptrs = 0;
 	r->data_len = 0;
 
 	fi = func_info(func_id);
@@ -294,7 +308,7 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 			/* FUNC_ARG_PTR is meaningless for REG_PAIR */
 		}
 
-		capture_arg(r, i, data_ptr, len, (spec & FUNC_ARG_STR) == FUNC_ARG_STR);
+		capture_arg(r, i, data_ptr, len, spec);
 	}
 
 	bpf_ringbuf_submit(r, 0);
