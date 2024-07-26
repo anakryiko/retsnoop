@@ -36,6 +36,60 @@ static bool btf_is_char(const struct btf *btf, const struct btf_type *t)
 	return strcmp(btf__name_by_offset(btf, t->name_off), "char") == 0;
 }
 
+static bool is_printf_like_func(const struct btf *btf, const struct btf_type *fn_t)
+{
+	const struct btf_param *p;
+	const struct btf_type *t;
+	int n = btf_vlen(fn_t);
+	bool is_const = false;
+
+	/* we need at least fmt + vararg params */
+	if (n < 2)
+		return false;
+
+	/* last param should be VOID */
+	p = btf_params(fn_t) + n - 1;
+	if (p->type != 0)
+		return false;
+
+	/* last arg before `...` should be a `const char *` param */
+	p = btf_params(fn_t) + n - 2;
+	t = btf_strip_mods_and_typedefs(btf, p->type, NULL);
+	if (!btf_is_ptr(t))
+		return false;
+
+	/* resolve pointer, and check if we have `const char` */
+	t = btf__type_by_id(btf, t->type);
+	while (btf_is_mod(t) || btf_is_typedef(t)) {
+		if (btf_is_const(t))
+			is_const = true;
+		t = btf__type_by_id(btf, t->type);
+	}
+	return btf_is_char(btf, t) && is_const;
+}
+
+static int calc_printf_fmt_arg_cnt(const struct func_args_item *fai,
+				   int fmt_arg_idx, const void *data)
+{
+	const char *fmt;
+	int n = 0;
+
+	if (!data || fai->arg_lens[fmt_arg_idx] <= 0)
+		return -EINVAL;
+
+	fmt = data;
+	while (*fmt) {
+		if (*fmt == '%' && *(fmt + 1) == '%') {
+			fmt += 2;
+			continue;
+		}
+		if (*fmt == '%')
+			n++;
+		fmt++;
+	}
+	return n;
+}
+
 #ifdef __x86_64__
 static bool is_arg_in_reg(int arg_idx, const char **reg_name)
 {
@@ -69,10 +123,10 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 {
 	struct func_args_info *fn_args;
 	struct func_arg_spec *spec;
-	const struct btf_param *p;
 	const struct btf_type *fn_t, *t;
 	int i, n, reg_idx = 0;
 	int stack_off = 8; /* 8 bytes for return address */
+	bool is_printf_like = false;
 
 	if (func_id >= fn_info_cnt) {
 		int new_cap = max((func_id + 1) * 4 / 3, 16);
@@ -113,41 +167,48 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 
 	fn_t = btf__type_by_id(finfo->btf, finfo->btf_id); /* FUNC */
 	fn_t = btf__type_by_id(finfo->btf, fn_t->type); /* FUNC_PROTO */
+	is_printf_like = is_printf_like_func(finfo->btf, fn_t);
 
 	n = btf_vlen(fn_t);
 	if (n > MAX_FNARGS_ARG_SPEC_CNT)
 		n = MAX_FNARGS_ARG_SPEC_CNT;
 
-	fn_args->arg_spec_cnt = n;
 
-	for (i = 0; i < n; i++) {
+	fn_args->arg_spec_cnt = (is_printf_like ? MAX_FNARGS_ARG_SPEC_CNT : n);
+
+	for (i = 0; i < fn_args->arg_spec_cnt; i++) {
 		int btf_id, data_len, true_len;
 		const char *reg1_name, *reg2_name;
+		bool is_vararg = is_printf_like && (i >= n - 1);
 
-		p = btf_params(fn_t) + i;
 		spec = &fn_args->arg_specs[i];
-
-		spec->name = btf__name_by_offset(finfo->btf, p->name_off);
-		spec->btf_id = p->type;
 		spec->pointee_btf_id = 0;
 		spec->arg_flags = 0;
 
-		if (spec->btf_id == 0) {
-			/* we don't know what to do with vararg argument */
+		if (is_vararg) {
+			/* if function looks like printf-like, we have a special vararg logic */
+			spec->name = "(vararg)";
+			spec->btf_id = 0;
+			spec->arg_flags |= FNARGS_KIND_VARARG << FNARGS_KIND_SHIFT;
+		} else {
+			const struct btf_param *p = btf_params(fn_t) + i;
+
+			spec->name = btf__name_by_offset(finfo->btf, p->name_off);
+			spec->btf_id = p->type;
+		}
+
+		if (spec->btf_id == 0 && !is_vararg) {
+			/* non-printf vararg, we don't know what to do with this, skip */
 			dlog(" (vararg)");
-			/* keep arg_flags non-zero, but don't set any of
-			 * {REG, REG_PAIR, STACK} flags; BPF side will
-			 * just skip this arg
-			 */
-			spec->arg_flags = FNARGS_VARARG;
+			spec->arg_flags = FNARGS_UNKN_VARARG;
 			continue;
 		}
 
 		dlog(" %s=(", spec->name);
 
 		t = btf_strip_mods_and_typedefs(finfo->btf, spec->btf_id, &btf_id);
-		if (btf_is_fixed_sized(finfo->btf, t) || btf_is_ptr(t)) {
-			true_len = btf_is_ptr(t) ? 8 : t->size;
+		if (is_vararg || btf_is_fixed_sized(finfo->btf, t) || btf_is_ptr(t)) {
+			true_len = (is_vararg || btf_is_ptr(t)) ? 8 : t->size;
 			data_len = min(true_len, env.args_max_sized_arg_size);
 
 			if (true_len <= 8 && is_arg_in_reg(reg_idx, &reg1_name)) {
@@ -225,14 +286,19 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 skip_arg:
 		if (data_len < 0) /* unknown */
 			dlog(",len=??");
-		else if (true_len < 0) /* variable-sized */
-			dlog(",len=varlen(%d)", data_len);
+		else if (is_vararg) { /* printf-like vararg */
+			/* nothing, it's implicitly 8 bytes */
+		} else if (true_len < 0) /* variable-sized */
+			dlog(",len=str(%d)", data_len);
 		else if (true_len != data_len) /* truncated */
 			dlog(",len=%d(%d)", true_len, data_len);
 		else /* full data */
 			dlog(",len=%d", data_len);
 
-		dlog(",btf_id=%d)", spec->btf_id);
+		if (is_vararg)
+			dlog(")");
+		else
+			dlog(",btf_id=%d)", spec->btf_id);
 	}
 
 	dlog("\n");
@@ -347,13 +413,30 @@ void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item
 		      int indent_shift)
 {
 	const struct func_args_info *fn_args = &fn_infos[fai->func_id];
-	int i, len;
-	void *data = fai->arg_data;
-	const char *sep = env.args_fmt_mode == ARGS_FMT_VERBOSE ? " " : "";
+	int i, len, vararg_start_idx = 0, kind, vararg_end_idx = 0;
+	void *data = fai->arg_data, *prev_data = NULL;
+	const char *sep = env.args_fmt_mode == ARGS_FMT_COMPACT ? "" : " ";
+	char buf[32];
 
 	for (i = 0; i < fn_args->arg_spec_cnt; i++) {
-		int width_lim = env.args_fmt_max_arg_width;
+		int width_lim = env.args_fmt_max_arg_width, vararg_n;
 		struct fmt_buf b;
+		bool is_vararg, has_ptr;
+
+		has_ptr = fai->arg_ptrs & (1 << i);
+
+		kind = (fn_args->arg_specs[i].arg_flags & FNARGS_KIND_MASK) >> FNARGS_KIND_SHIFT;
+		is_vararg = (kind == FNARGS_KIND_VARARG);
+		if (is_vararg && vararg_start_idx == 0) {
+			vararg_start_idx = i;
+			vararg_n = calc_printf_fmt_arg_cnt(fai, i - 1, prev_data);
+			if (vararg_n < 0)
+				vararg_end_idx = fn_args->arg_spec_cnt - 1;
+			else
+				vararg_end_idx = i + vararg_n - 1;
+		}
+		if (is_vararg && i > vararg_end_idx)
+			break;
 
 		/* verbose args output mode doesn't have width limit */
 		if (env.args_fmt_mode == ARGS_FMT_VERBOSE)
@@ -364,21 +447,51 @@ void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item
 			fprintf(f, "%s", i == 0 ? "" : " ");
 		else /* emit Unicode's slightly smaller-sized '>' as a marker of an argument */
 			fprintf(f, "\n%*.s\u203A ", indent_shift, "");
-		if (fn_args->btf)
-			fprintf(f, "%s%s=%s", fn_args->arg_specs[i].name, sep, sep);
-		else /* "raw" BTF-less mode */
+		if (fn_args->btf) {
+			if (is_vararg)
+				fprintf(f, "vararg%d%s=%s", i - vararg_start_idx, sep, sep);
+			else
+				fprintf(f, "%s%s=%s", fn_args->arg_specs[i].name, sep, sep);
+		} else { /* "raw" BTF-less mode */
 			fprintf(f, "arg%d%s=%s", i, sep, sep);
-
-		if (env.args_capture_raw_ptrs && (fai->arg_ptrs & (1 << i))) {
-			bnappendf(&b, "(0x%llx)", *(long long *)data);
-			data += 8;
 		}
 
 		len = fai->arg_lens[i];
+
+		/* for successfully captured vararg we will have arg_ptrs bit set */
+		if (is_vararg && (len >= 0 || has_ptr)) {
+			if (!has_ptr) { /* not a kernel pointer */
+				snprintf_smart_uint(buf, sizeof(buf), *(long long *)data);
+				bnappendf(&b, "%s", buf);
+				prev_data = data;
+				data += 8;
+			} else if (len <= 0) { /* looked like pointer, but no string data */
+				snprintf_smart_uint(buf, sizeof(buf), *(long long *)data);
+				bnappendf(&b, "%s", buf);
+				prev_data = data;
+				data += 8;
+			} else { /* we captured some string data, print both raw value and string */
+				if (env.args_capture_raw_ptrs)
+					bnappendf(&b, "(0x%llx)", *(long long *)data);
+				data += 8;
+				sanitize_string(data, len);
+				bnappendf(&b, "'%s'", (char *)data);
+				prev_data = data;
+				data += (len + 7) / 8 * 8;
+			}
+			goto print_ellipsis;
+		}
+
+		if (env.args_capture_raw_ptrs && has_ptr) {
+			bnappendf(&b, "(0x%llx)", *(long long *)data);
+			data += 8;
+		}
+		prev_data = data;
+
 		if (len == 0) {
 			/* we encode special conditions in REGIDX mask */
 			switch (fn_args->arg_specs[i].arg_flags & FNARGS_REGIDX_MASK) {
-			case FNARGS_VARARG:
+			case FNARGS_UNKN_VARARG:
 				bnappendf(&b, "(vararg)");
 				break;
 			case FNARGS_UNKN:
@@ -407,6 +520,7 @@ void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item
 			data += (len + 7) / 8 * 8;
 		}
 
+print_ellipsis:
 		/* append Unicode horizontal ellipsis (single-character triple dots)
 		 * if output was truncated to mark its truncation visually
 		 */
