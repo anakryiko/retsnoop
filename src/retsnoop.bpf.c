@@ -191,8 +191,7 @@ static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u3
 {
 	size_t data_off;
 	void *dst;
-	int err;
-	bool is_str;
+	int err, kind;
 
 	if (data == NULL) {
 		r->arg_lens[arg_idx] = -ENODATA;
@@ -208,22 +207,23 @@ static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u3
 	}
 
 	dst = r->arg_data + data_off;
-
-	if (capture_raw_ptrs && (arg_spec & FUNC_ARG_PTR)) {
+	
+	kind = (arg_spec & FNARGS_KIND_MASK) >> FNARGS_KIND_SHIFT;
+	if (capture_raw_ptrs && (kind == FNARGS_KIND_PTR || kind == FNARGS_KIND_STR)) {
 		*(long *)dst = (long)data;
 		dst += 8;
 		r->arg_ptrs |= (1 << arg_idx);
 		r->data_len += 8;
 	}
 
-	is_str = (arg_spec & FUNC_ARG_STR) == FUNC_ARG_STR;
-	if (is_str) {
+	if (kind == FNARGS_KIND_STR) {
 		if (len > args_max_str_arg_sz) /* truncate, if necessary */
 			len = args_max_str_arg_sz;
 		if (is_kernel_addr(data))
 			err = bpf_probe_read_kernel_str(dst, len, data);
 		else
 			err = bpf_probe_read_user_str(dst, len, data);
+		len = err; /* len is meaningful only if successful */
 	} else {
 		if (len > args_max_sized_arg_sz) /* truncate, if necessary */
 			len = args_max_sized_arg_sz;
@@ -237,7 +237,6 @@ static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u3
 		return;
 	}
 
-	len = is_str ? err : len;
 	r->data_len += (len + 7) / 8 * 8;
 	r->arg_lens[arg_idx] = len;
 }
@@ -264,8 +263,8 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 
 	fi = func_info(func_id);
 	for (i = 0; i < MAX_FNARGS_ARG_SPEC_CNT; i++) {
-		u32 spec = fi->arg_specs[i], reg_idx, off;
-		u16 len = spec & FUNC_ARG_LEN_MASK;
+		u32 spec = fi->arg_specs[i], reg_idx, off, kind, loc;
+		u16 len = spec & FNARGS_LEN_MASK;
 		void *data_ptr = NULL;
 		u64 vals[2];
 		int err;
@@ -278,20 +277,25 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 			continue;
 		}
 
-		if (spec & FUNC_ARG_REG) {
-			reg_idx = (spec & FUNC_ARG_REGIDX_MASK) >> FUNC_ARG_REGIDX_SHIFT;
+		loc = (spec & FNARGS_LOC_MASK) >> FNARGS_LOC_SHIFT;
+		kind = (spec & FNARGS_KIND_MASK) >> FNARGS_KIND_SHIFT;
+
+		switch (loc) {
+		case FNARGS_REG:
+			reg_idx = (spec & FNARGS_REGIDX_MASK) >> FNARGS_REGIDX_SHIFT;
 			vals[0] = get_arg_reg_value(ctx, reg_idx);
-			if (spec & FUNC_ARG_PTR) {
+			if (kind == FNARGS_KIND_PTR || kind == FNARGS_KIND_STR) {
 				data_ptr = (void *)vals[0];
 			} else {
 				vals[0] = coerce_size(vals[0], len);
 				data_ptr = vals;
 			}
-		} else if (spec & FUNC_ARG_STACK) {
+			break;
+		case FNARGS_STACK:
 			/* stack offset is specified in 8 byte chunks */
-			off = 8 * ((spec & FUNC_ARG_STACKOFF_MASK) >> FUNC_ARG_STACKOFF_SHIFT);
+			off = 8 * ((spec & FNARGS_STACKOFF_MASK) >> FNARGS_STACKOFF_SHIFT);
 			vals[0] = get_stack_pointer(ctx) + off;
-			if (spec & FUNC_ARG_PTR) {
+			if (kind == FNARGS_KIND_PTR || kind == FNARGS_KIND_STR) {
 				/* the pointer value itself is on the stack */
 				err = bpf_probe_read_kernel(&vals[0], 8, (void *)vals[0]);
 				if (err) {
@@ -300,13 +304,18 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 				}
 			}
 			data_ptr = (void *)vals[0];
-		} else if (spec & FUNC_ARG_REG_PAIR) {
-			reg_idx = (spec & FUNC_ARG_REGIDX_MASK) >> FUNC_ARG_REGIDX_SHIFT;
+			break;
+		case FNARGS_REG_PAIR:
+			/* there is no special kind besides FNARGS_KIND_RAW for REG_PAIR */
+			reg_idx = (spec & FNARGS_REGIDX_MASK) >> FNARGS_REGIDX_SHIFT;
 			vals[0] = get_arg_reg_value(ctx, reg_idx);
 			vals[1] = get_arg_reg_value(ctx, reg_idx + 1);
 			vals[1] = coerce_size(vals[1], len - 8);
 			data_ptr = (void *)vals;
-			/* FUNC_ARG_PTR is meaningless for REG_PAIR */
+			break;
+		default:
+			r->arg_lens[i] = -EDOM;
+			continue;
 		}
 
 		capture_arg(r, i, data_ptr, len, spec);

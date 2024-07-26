@@ -101,8 +101,9 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 			spec = &fn_args->arg_specs[i];
 
 			spec->btf_id = 0;
-			spec->arg_flags = FUNC_ARG_REG | 8;
-			spec->arg_flags |= i << FUNC_ARG_REGIDX_SHIFT;
+			spec->arg_flags = 8; /* data length */
+			spec->arg_flags |= FNARGS_REG << FNARGS_LOC_SHIFT;
+			spec->arg_flags |= i << FNARGS_REGIDX_SHIFT;
 
 			dlog(" arg#%d=%s", i, reg_name);
 		}
@@ -129,6 +130,7 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 		spec->name = btf__name_by_offset(finfo->btf, p->name_off);
 		spec->btf_id = p->type;
 		spec->pointee_btf_id = 0;
+		spec->arg_flags = 0;
 
 		if (spec->btf_id == 0) {
 			/* we don't know what to do with vararg argument */
@@ -137,7 +139,7 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 			 * {REG, REG_PAIR, STACK} flags; BPF side will
 			 * just skip this arg
 			 */
-			spec->arg_flags = FUNC_ARG_VARARG;
+			spec->arg_flags = FNARGS_VARARG;
 			continue;
 		}
 
@@ -150,63 +152,71 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 
 			if (true_len <= 8 && is_arg_in_reg(reg_idx, &reg1_name)) {
 				/* fits in one register */
-				spec->arg_flags = FUNC_ARG_REG | data_len;
-				spec->arg_flags |= reg_idx << FUNC_ARG_REGIDX_SHIFT;
+				spec->arg_flags |= data_len;
+				spec->arg_flags |= FNARGS_REG << FNARGS_LOC_SHIFT;
+				spec->arg_flags |= reg_idx << FNARGS_REGIDX_SHIFT;
 				dlog("%s", reg1_name);
 				reg_idx += 1;
 			} else if (true_len <= 16 &&
 				   is_arg_in_reg(reg_idx, &reg1_name) &&
 				   is_arg_in_reg(reg_idx + 1, &reg2_name)) {
 				/* passed in a pair of registers */
-				spec->arg_flags = FUNC_ARG_REG_PAIR | data_len;
-				spec->arg_flags |= reg_idx << FUNC_ARG_REGIDX_SHIFT;
+				spec->arg_flags |= data_len;
+				spec->arg_flags |= FNARGS_REG_PAIR << FNARGS_LOC_SHIFT;
+				spec->arg_flags |= reg_idx << FNARGS_REGIDX_SHIFT;
 				reg_idx += 2;
 				dlog("%s:%s", reg1_name, reg2_name);
 			} else {
 				/* passed on the stack */
-				if (stack_off > FUNC_ARG_STACKOFF_MAX) {
+				if (stack_off > FNARGS_STACKOFF_MAX) {
 					dlog("fp+%d(TOO LARGE!!!)", stack_off);
 					stack_off = realign_stack_off(stack_off + true_len);
-					spec->arg_flags = FUNC_ARG_STACKOFF_2BIG;
+					spec->arg_flags = FNARGS_STACKOFF_2BIG;
 					goto skip_arg;
 				} else {
-					spec->arg_flags = FUNC_ARG_STACK | data_len;
+					spec->arg_flags |= data_len;
+					spec->arg_flags |= FNARGS_STACK << FNARGS_LOC_SHIFT;
 					/* stack offset is recorded in 8 byte increments */
-					spec->arg_flags |= (stack_off / 8) << FUNC_ARG_STACKOFF_SHIFT;
+					spec->arg_flags |= (stack_off / 8) << FNARGS_STACKOFF_SHIFT;
 					dlog("fp+%d", stack_off);
 					stack_off = realign_stack_off(stack_off + true_len);
 				}
 			}
+			spec->arg_flags |= FNARGS_KIND_RAW << FNARGS_KIND_SHIFT;
 		} else {
 			/* unrecognized, read raw 8 byte value, assume single register */
 			true_len = data_len = -1;
 			dlog("!!!UNKNOWN ARG #%d KIND %d!!!", i, btf_kind(t));
-			spec->arg_flags = FUNC_ARG_UNKN; /* skip it */
+			spec->arg_flags = FNARGS_UNKN; /* skip it */
 		}
 
 		if (btf_is_ptr(t)) {
 			dlog("->");
 
-			spec->arg_flags &= ~FUNC_ARG_LEN_MASK;
+			/* clear out length, it means pointee size for pointer arguments */
+			spec->arg_flags &= ~FNARGS_LEN_MASK;
 
-			/* NOTE: we fill out spec->pointee_btf_id */
+			/* NOTE: we fill out spec->pointee_btf_id here */
 			t = btf_strip_mods_and_typedefs(finfo->btf, t->type, &spec->pointee_btf_id);
 			if (btf_is_char(finfo->btf, t)) {
 				/* varlen string */
 				true_len = -1; /* mark that it's variable-length, for logging */
 				data_len = env.args_max_str_arg_size;
-				spec->arg_flags |= FUNC_ARG_PTR | FUNC_ARG_STR | data_len;
+				spec->arg_flags |= data_len;
+				spec->arg_flags |= FNARGS_KIND_STR << FNARGS_KIND_SHIFT;
 				spec->pointee_btf_id = -1; /* special string marker */
 				dlog("str");
 			} else if (btf_is_fixed_sized(finfo->btf, t)) {
 				true_len = t->size;
 				data_len = min(true_len, env.args_max_sized_arg_size);
-				spec->arg_flags |= FUNC_ARG_PTR | data_len;
+				spec->arg_flags |= data_len;
+				spec->arg_flags |= FNARGS_KIND_PTR << FNARGS_KIND_SHIFT;
 				dlog("ptr_id=%d", spec->pointee_btf_id);
 			} else {
 				/* generic pointer, treat as u64 */
 				true_len = data_len = 8; /* sizeof(void *), assume 64-bit */
-				spec->arg_flags |= data_len; /* NOTE: no FUNC_ARG_PTR flags */
+				spec->arg_flags |= data_len; /* NOTE: no FNARGS_PTR flags */
+				spec->arg_flags |= FNARGS_KIND_RAW << FNARGS_KIND_SHIFT;
 				spec->pointee_btf_id = 0; /* raw pointer doesn't set pointee */
 				dlog("raw");
 			}
@@ -367,14 +377,14 @@ void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item
 		len = fai->arg_lens[i];
 		if (len == 0) {
 			/* we encode special conditions in REGIDX mask */
-			switch (fn_args->arg_specs[i].arg_flags & FUNC_ARG_REGIDX_MASK) {
-			case FUNC_ARG_VARARG:
+			switch (fn_args->arg_specs[i].arg_flags & FNARGS_REGIDX_MASK) {
+			case FNARGS_VARARG:
 				bnappendf(&b, "(vararg)");
 				break;
-			case FUNC_ARG_UNKN:
+			case FNARGS_UNKN:
 				bnappendf(&b, "(unsupp)");
 				break;
-			case FUNC_ARG_STACKOFF_2BIG:
+			case FNARGS_STACKOFF_2BIG:
 				bnappendf(&b, "(stack-too-far)");
 				break;
 			default:
