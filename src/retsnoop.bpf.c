@@ -291,7 +291,7 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 	u64 i, rec_sz;
 
 	/* we waste *args_max_any_arg_sz* + 12 * 8 (for raw ptrs value) to simplify verification */
-	rec_sz = sizeof(*r) + args_max_total_args_sz + args_max_any_arg_sz + 8 * MAX_FNARGS_ARG_SPEC_CNT;
+	rec_sz = sizeof(*r) + args_max_total_args_sz + args_max_any_arg_sz /* + 8 * MAX_FNARGS_ARG_SPEC_CNT */;
 	r = bpf_ringbuf_reserve(&rb, rec_sz, 0);
 	if (!r) {
 		stat_dropped_record(sess);
