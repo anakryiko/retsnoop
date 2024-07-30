@@ -79,10 +79,12 @@ const volatile bool capture_raw_ptrs = true;
 const volatile bool use_lbr = true;
 const volatile bool use_kprobes = true;
 
-const volatile int args_max_total_args_sz;
-const volatile int args_max_sized_arg_sz;
-const volatile int args_max_str_arg_sz;
-const volatile int args_max_any_arg_sz;
+const volatile int args_max_total_args_sz = DEFAULT_FNARGS_TOTAL_ARGS_SZ;
+const volatile int args_max_sized_arg_sz = DEFAULT_FNARGS_SIZED_ARG_SZ;
+const volatile int args_max_str_arg_sz = DEFAULT_FNARGS_STR_ARG_SZ;
+const volatile int args_max_any_arg_sz = DEFAULT_FNARGS_SIZED_ARG_SZ > DEFAULT_FNARGS_STR_ARG_SZ
+				       ? DEFAULT_FNARGS_SIZED_ARG_SZ
+				       : DEFAULT_FNARGS_STR_ARG_SZ;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
