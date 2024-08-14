@@ -229,7 +229,7 @@ static void capture_vararg(struct func_args_capture *r, u32 arg_idx, void *data)
 	r->arg_lens[arg_idx] = len;
 }
 
-static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u32 len, u32 arg_spec)
+static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u64 len, u32 arg_spec)
 {
 	size_t data_off;
 	void *dst;
@@ -257,6 +257,9 @@ static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u3
 		r->arg_ptrs |= (1 << arg_idx);
 		r->data_len += 8;
 	}
+
+	/* ensure compiler won't reload len if capture_arg() is inlined */
+	barrier_var(len);
 
 	if (kind == FNARGS_KIND_STR) {
 		if (len > args_max_str_arg_sz) /* truncate, if necessary */
@@ -308,7 +311,7 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 	fi = func_info(func_id);
 	for (i = 0; i < MAX_FNARGS_ARG_SPEC_CNT; i++) {
 		u32 spec = fi->arg_specs[i], reg_idx, off, kind, loc;
-		u16 len = spec & FNARGS_LEN_MASK;
+		u64 len = spec & FNARGS_LEN_MASK;
 		void *data_ptr = NULL;
 		u64 vals[2];
 		int err;
