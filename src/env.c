@@ -769,11 +769,12 @@ static char *help_filter(int key, const char *text, void *input)
 		if (!f)
 			return (char *)text;
 
-		fprintf(f, "%s", text);
+		fprintf(f, "\n%s", text);
 		for (i = 0; i < ARRAY_SIZE(cfg_specs); i++) {
 			fprintf(f, "\n%s.%s - %s",
 				cfg_specs[i].group, cfg_specs[i].key, cfg_specs[i].short_help);
 		}
+		fprintf(f, "\n");
 		fclose(f);
 		return msg;
 	}
