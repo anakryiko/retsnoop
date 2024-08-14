@@ -88,7 +88,7 @@ __hidden int copy_lbrs(void *dst, size_t dst_sz)
 
 
 SEC("kprobe")
-int kentry(struct pt_regs *ctx)
+int retsn_kentry(struct pt_regs *ctx)
 {
 	const char *name;
 	long ip;
@@ -129,7 +129,7 @@ int kentry(struct pt_regs *ctx)
 }
 
 SEC("kretprobe")
-int kexit(struct pt_regs *ctx)
+int retsn_kexit(struct pt_regs *ctx)
 {
 	const char *name;
 	u32 id, cpu;
@@ -262,17 +262,17 @@ out:
 
 #define DEF_PROGS(arg_cnt) \
 SEC("fentry") \
-int fentry ## arg_cnt(void *ctx) \
+int retsn_fentry ## arg_cnt(void *ctx) \
 { \
 	return handle_fentry(ctx, arg_cnt); \
 } \
 SEC("fexit") \
-int fexit ## arg_cnt(void *ctx) \
+int retsn_fexit ## arg_cnt(void *ctx) \
 { \
 	return handle_fexit(ctx, arg_cnt, false /*is_void_ret*/); \
 } \
 SEC("fexit") \
-int fexit_void ## arg_cnt(void *ctx) \
+int retsn_fexit_void ## arg_cnt(void *ctx) \
 { \
 	return handle_fexit(ctx, arg_cnt, true /*is_void_ret*/); \
 }

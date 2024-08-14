@@ -366,27 +366,27 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	}
 
 	_Static_assert(MAX_FUNC_ARG_CNT == 6, "Unexpected maximum function arg count");
-	att->fentries[0] = att->skel->progs.fentry0;
-	att->fentries[1] = att->skel->progs.fentry1;
-	att->fentries[2] = att->skel->progs.fentry2;
-	att->fentries[3] = att->skel->progs.fentry3;
-	att->fentries[4] = att->skel->progs.fentry4;
-	att->fentries[5] = att->skel->progs.fentry5;
-	att->fentries[6] = att->skel->progs.fentry6;
-	att->fexits[0] = att->skel->progs.fexit0;
-	att->fexits[1] = att->skel->progs.fexit1;
-	att->fexits[2] = att->skel->progs.fexit2;
-	att->fexits[3] = att->skel->progs.fexit3;
-	att->fexits[4] = att->skel->progs.fexit4;
-	att->fexits[5] = att->skel->progs.fexit5;
-	att->fexits[6] = att->skel->progs.fexit6;
-	att->fexit_voids[0] = att->skel->progs.fexit_void0;
-	att->fexit_voids[1] = att->skel->progs.fexit_void1;
-	att->fexit_voids[2] = att->skel->progs.fexit_void2;
-	att->fexit_voids[3] = att->skel->progs.fexit_void3;
-	att->fexit_voids[4] = att->skel->progs.fexit_void4;
-	att->fexit_voids[5] = att->skel->progs.fexit_void5;
-	att->fexit_voids[6] = att->skel->progs.fexit_void6;
+	att->fentries[0] = att->skel->progs.retsn_fentry0;
+	att->fentries[1] = att->skel->progs.retsn_fentry1;
+	att->fentries[2] = att->skel->progs.retsn_fentry2;
+	att->fentries[3] = att->skel->progs.retsn_fentry3;
+	att->fentries[4] = att->skel->progs.retsn_fentry4;
+	att->fentries[5] = att->skel->progs.retsn_fentry5;
+	att->fentries[6] = att->skel->progs.retsn_fentry6;
+	att->fexits[0] = att->skel->progs.retsn_fexit0;
+	att->fexits[1] = att->skel->progs.retsn_fexit1;
+	att->fexits[2] = att->skel->progs.retsn_fexit2;
+	att->fexits[3] = att->skel->progs.retsn_fexit3;
+	att->fexits[4] = att->skel->progs.retsn_fexit4;
+	att->fexits[5] = att->skel->progs.retsn_fexit5;
+	att->fexits[6] = att->skel->progs.retsn_fexit6;
+	att->fexit_voids[0] = att->skel->progs.retsn_fexit_void0;
+	att->fexit_voids[1] = att->skel->progs.retsn_fexit_void1;
+	att->fexit_voids[2] = att->skel->progs.retsn_fexit_void2;
+	att->fexit_voids[3] = att->skel->progs.retsn_fexit_void3;
+	att->fexit_voids[4] = att->skel->progs.retsn_fexit_void4;
+	att->fexit_voids[5] = att->skel->progs.retsn_fexit_void5;
+	att->fexit_voids[6] = att->skel->progs.retsn_fexit_void6;
 
 	att->vmlinux_btf = libbpf_find_kernel_btf();
 	err = libbpf_get_error(att->vmlinux_btf);
@@ -509,8 +509,8 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	}
 
 	if (att->use_fentries) {
-		bpf_program__set_autoload(att->skel->progs.kentry, false);
-		bpf_program__set_autoload(att->skel->progs.kexit, false);
+		bpf_program__set_autoload(att->skel->progs.retsn_kentry, false);
+		bpf_program__set_autoload(att->skel->progs.retsn_kexit, false);
 
 		for (i = 0; i <= MAX_FUNC_ARG_CNT; i++) {
 			struct mass_attacher_func_info *finfo;
@@ -536,8 +536,8 @@ int mass_attacher__prepare(struct mass_attacher *att)
 			bpf_program__set_autoload(att->fexit_voids[i], false);
 		}
 		if (att->use_kprobe_multi) {
-			bpf_program__set_expected_attach_type(att->skel->progs.kentry, BPF_TRACE_KPROBE_MULTI);
-			bpf_program__set_expected_attach_type(att->skel->progs.kexit, BPF_TRACE_KPROBE_MULTI);
+			bpf_program__set_expected_attach_type(att->skel->progs.retsn_kentry, BPF_TRACE_KPROBE_MULTI);
+			bpf_program__set_expected_attach_type(att->skel->progs.retsn_kexit, BPF_TRACE_KPROBE_MULTI);
 		}
 	}
 
@@ -994,7 +994,7 @@ static void debug_multi_kprobe(struct mass_attacher *att, unsigned long *addrs,
 	opts.addrs = addrs ? addrs + l : NULL;
 	opts.syms = syms ? syms + l : NULL;
 	opts.cnt = r - l + 1;
-	link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kentry, NULL, &opts);
+	link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.retsn_kentry, NULL, &opts);
 	if (link) {
 		/* entire batch has been successfully attached */
 		bpf_link__destroy(link);
@@ -1081,7 +1081,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 			kprobe_opts.retprobe = false;
 			if (att->has_bpf_cookie)
 				kprobe_opts.bpf_cookie = i;
-			finfo->kentry_link = bpf_program__attach_kprobe_opts(att->skel->progs.kentry,
+			finfo->kentry_link = bpf_program__attach_kprobe_opts(att->skel->progs.retsn_kentry,
 									     func_name, &kprobe_opts);
 			err = libbpf_get_error(finfo->kentry_link);
 			if (err) {
@@ -1093,7 +1093,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 			kprobe_opts.retprobe = true;
 			if (att->has_bpf_cookie)
 				kprobe_opts.bpf_cookie = i;
-			finfo->kexit_link = bpf_program__attach_kprobe_opts(att->skel->progs.kexit,
+			finfo->kexit_link = bpf_program__attach_kprobe_opts(att->skel->progs.retsn_kexit,
 									    func_name, &kprobe_opts);
 			err = libbpf_get_error(finfo->kexit_link);
 			if (err) {
@@ -1138,7 +1138,7 @@ skip_attach:
 		 * kprobe.
 		 */
 		multi_opts.retprobe = false;
-		multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kentry,
+		multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.retsn_kentry,
 								   NULL, &multi_opts);
 		if (!multi_link && att->debug_multi_kprobe) {
 			libbpf_print_fn_t old_print_fn;
@@ -1156,7 +1156,7 @@ skip_attach:
 		if (!multi_link) {
 			multi_opts.addrs = NULL;
 			multi_opts.syms = syms;
-			multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kentry,
+			multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.retsn_kentry,
 									   NULL, &multi_opts);
 		}
 		if (!multi_link) {
@@ -1168,7 +1168,7 @@ skip_attach:
 		att->kentry_multi_link = multi_link;
 
 		multi_opts.retprobe = true;
-		multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.kexit,
+		multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.retsn_kexit,
 								   NULL, &multi_opts);
 		if (!multi_link) {
 			err = -errno;
