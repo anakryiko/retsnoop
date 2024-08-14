@@ -116,7 +116,8 @@ static const struct argp_option opts[] = {
 	  "Only emit stacks that took at least a given amount of milliseconds" },
 	{ "success-stacks", 'S', "VALUE", OPTION_ARG_OPTIONAL,
 	  "Specify whether emitting non-erroring (successful) call stacks is allowed" },
-	{ "allow-errors", 'x', "ERROR", 0, "Record stacks only with specified errors" },
+	{ "allow-errors", 'x', "ERROR", 0,
+	  "Record stacks only with specified errors (e.g., EINVAL, EFAULT, etc.; also accepts special 'any' value)" },
 	{ "deny-errors", 'X', "ERROR", 0, "Ignore stacks that have specified errors" },
 
 	/* Misc more rarely used/advanced settings */
@@ -547,17 +548,30 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return -EINVAL;
 		}
 		env.emit_success_stacks = -1; /* force failing stacks only */
+
+		if (strcasecmp(arg, "any") == 0) {
+			memset(env.allow_error_mask, 0xFF, sizeof(env.allow_error_mask));
+			env.allow_error_cnt = MAX_ERRNO + 1;
+			env.has_allow_error_filter = false;
+			break;
+		}
+
 		err = str_to_err(arg);
 		if (err < 0)
 			return err;
+
 		/* we start out with all errors allowed, but as soon as we get
 		 * the first allowed error specified, we need to reset
 		 * all the error to be not allowed by default
 		 */
 		if (env.allow_error_cnt == 0)
 			memset(env.allow_error_mask, 0, sizeof(env.allow_error_mask));
+
+		if (is_err_in_mask(env.allow_error_mask, err))
+			break;
+
 		env.allow_error_cnt++;
-		env.has_error_filter = true;
+		env.has_allow_error_filter = true;
 		err_mask_set(env.allow_error_mask, err);
 		break;
 	case 'X':
@@ -568,7 +582,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		 * because we start with no errors blacklisted by default
 		 * anyways, which differs from the logic for error whitelist
 		 */
-		env.has_error_filter = true;
+		env.has_deny_error_filter = true;
 		err_mask_set(env.deny_error_mask, err);
 		break;
 	case 'S':

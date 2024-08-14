@@ -118,7 +118,8 @@ struct env {
 	int emit_success_stacks;
 
 	int allow_error_cnt;
-	bool has_error_filter;
+	bool has_allow_error_filter;
+	bool has_deny_error_filter;
 	uint64_t allow_error_mask[(MAX_ERRNO + 1) / 64];
 	uint64_t deny_error_mask[(MAX_ERRNO + 1) / 64];
 

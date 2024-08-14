@@ -130,7 +130,7 @@ static bool should_report_stack(struct ctx *ctx, const struct call_stack *s)
 	int i, id, flags, res;
 	bool allowed = false;
 
-	if (!env.has_error_filter)
+	if (!env.has_allow_error_filter && !env.has_deny_error_filter)
 		return true;
 
 	for (i = 0; i < s->max_depth; i++) {
@@ -1139,7 +1139,7 @@ static int handle_session_end(struct ctx *dctx, struct session *sess, const stru
 	if (!s->is_err && !env.emit_success_stacks)
 		goto out_purge;
 
-	if (s->is_err && env.has_error_filter && !should_report_stack(dctx, s))
+	if (s->is_err && !should_report_stack(dctx, s))
 		goto out_purge;
 
 	if (env.debug) {
