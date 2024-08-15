@@ -94,8 +94,6 @@ static const char *sleepable_deny_globs[] = {
 
 struct mass_attacher;
 
-static _Thread_local struct mass_attacher *cur_attacher;
-
 struct kprobe_info {
 	char *name;
 	char *mod;
@@ -894,15 +892,9 @@ int mass_attacher__load(struct mass_attacher *att)
 {
 	int err = 0, i, map_fd;
 
-	/* we can't pass extra context to hijack_progs, so we set thread-local
-	 * cur_attacher variable temporarily for the duration of skeleton's
-	 * load phase
-	 */
-	cur_attacher = att;
 	/* Load & verify BPF programs */
 	if (!att->dry_run)
 		err = SKEL_LOAD(att->skel);
-	cur_attacher = NULL;
 
 	if (err) {
 		elog("Failed to load and verify BPF skeleton\n");
