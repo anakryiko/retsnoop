@@ -8,9 +8,13 @@
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
-/* these two are defined by custom BPF code outside of mass_attacher */
+/* these are defined by custom BPF code outside of mass_attacher */
 extern int handle_func_entry(void *ctx, u32 func_id, u64 func_ip);
 extern int handle_func_exit(void *ctx, u32 func_id, u64 func_ip, u64 ret);
+extern int handle_inj_kprobe(struct pt_regs *ctx, u32 probe_id);
+extern int handle_inj_kretprobe(struct pt_regs *ctx, u32 probe_id);
+extern int handle_inj_rawtp(void *ctx, u32 probe_id);
+extern int handle_inj_tp(void *ctx, u32 probe_id);
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -65,10 +69,6 @@ static __always_inline u64 get_kret_func_ip(void *ctx)
 static __always_inline void capture_lbrs(int cpu)
 {
 	long lbr_sz;
-
-	/* prioritize straight path logic if LBR is requested */
-	if (unlikely(!use_lbr))
-		return;
 
 	lbr_sz = bpf_get_branch_snapshot(&lbrs[cpu & max_cpu_mask], sizeof(lbrs[0]), 0);
 	lbr_szs[cpu & max_cpu_mask] = lbr_sz;
@@ -132,14 +132,19 @@ SEC("kretprobe")
 int retsn_kexit(struct pt_regs *ctx)
 {
 	const char *name;
-	u32 id, cpu;
+	u32 id;
 	long ip;
 
 	if (unlikely(!ready))
 		return 0;
 
-	cpu = bpf_get_smp_processor_id();
-	capture_lbrs(cpu);
+	/* prioritize straight path logic if LBR is requested */
+	if (likely(use_lbr)) {
+		u32 cpu;
+
+		cpu = bpf_get_smp_processor_id();
+		capture_lbrs(cpu);
+	}
 
 	ip = get_kret_func_ip(ctx);
 
@@ -160,6 +165,68 @@ int retsn_kexit(struct pt_regs *ctx)
 	handle_func_exit(ctx, id, ip, PT_REGS_RC(ctx));
 
 	return 0;
+}
+
+SEC("?kprobe")
+int retsn_inj_kprobe(void *ctx)
+{
+	u32 id;
+
+	if (unlikely(!ready))
+		return 0;
+
+	if (likely(use_lbr)) {
+		u32 cpu;
+
+		cpu = bpf_get_smp_processor_id();
+		capture_lbrs(cpu);
+	}
+
+	id = bpf_get_attach_cookie(ctx);
+	return handle_inj_kprobe(ctx, id);
+}
+
+SEC("?kretprobe")
+int retsn_inj_kretprobe(void *ctx)
+{
+	u32 id;
+
+	if (unlikely(!ready))
+		return 0;
+
+	if (likely(use_lbr)) {
+		u32 cpu;
+
+		cpu = bpf_get_smp_processor_id();
+		capture_lbrs(cpu);
+	}
+
+	id = bpf_get_attach_cookie(ctx);
+	return handle_inj_kretprobe(ctx, id);
+}
+
+SEC("?raw_tp")
+int retsn_inj_rawtp(void *ctx)
+{
+	u32 id;
+
+	if (unlikely(!ready))
+		return 0;
+
+	id = bpf_get_attach_cookie(ctx);
+	return handle_inj_rawtp(ctx, id);
+}
+
+SEC("?tp")
+int retsn_inj_tp(void *ctx)
+{
+	u32 id;
+
+	if (unlikely(!ready))
+		return 0;
+
+	id = bpf_get_attach_cookie(ctx);
+	return handle_inj_tp(ctx, id);
 }
 
 static __always_inline bool recur_enter(u32 cpu)
@@ -243,7 +310,9 @@ static __always_inline int handle_fexit(void *ctx, int arg_cnt, bool is_void_ret
 	if (unlikely(!recur_enter(cpu)))
 		return 0;
 
-	capture_lbrs(cpu);
+	/* prioritize straight path logic if LBR is requested */
+	if (likely(use_lbr))
+		capture_lbrs(cpu);
 
 	ip = get_ftrace_func_ip(ctx, arg_cnt);
 	id_ptr = bpf_map_lookup_elem(&ip_to_id, &ip);

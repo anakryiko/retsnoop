@@ -33,6 +33,38 @@ struct mass_attacher_func_info {
 	int fexit_link_fd;
 };
 
+enum inj_probe_type {
+	INJ_KPROBE,
+	INJ_KRETPROBE,
+	INJ_RAWTP,
+	INJ_TP,
+};
+
+struct inj_kprobe {
+	char *name;
+	unsigned long offset;
+	bool retprobe;
+};
+
+struct inj_rawtp {
+	char *name;
+};
+
+struct inj_tp {
+	char *category;
+	char *name;
+};
+
+struct inj_probe_info {
+	enum inj_probe_type type;
+	struct bpf_link *link;
+	union {
+		struct inj_kprobe kprobe;
+		struct inj_rawtp rawtp;
+		struct inj_tp tp;
+	};
+};
+
 enum mass_attacher_mode {
 	MASS_ATTACH_KPROBE, /* prefer multi, fallback to single */
 	MASS_ATTACH_KPROBE_SINGLE, /* enforce single */
@@ -62,8 +94,14 @@ int mass_attacher__load(struct mass_attacher *att);
 int mass_attacher__attach(struct mass_attacher *att);
 void mass_attacher__activate(struct mass_attacher *att);
 
+int mass_attacher__inject_kprobe(struct mass_attacher *att, const char *name, unsigned long offset);
+int mass_attacher__inject_kretprobe(struct mass_attacher *att, const char *name);
+int mass_attacher__inject_rawtp(struct mass_attacher *att, const char *name);
+int mass_attacher__inject_tp(struct mass_attacher *att, const char *category, const char *name);
+
 size_t mass_attacher__func_cnt(const struct mass_attacher *att);
 const struct mass_attacher_func_info * mass_attacher__func(const struct mass_attacher *att, int id);
+const struct inj_probe_info *mass_attacher__inj_probe(const struct mass_attacher *att, int id);
 const struct btf *mass_attacher__btf(const struct mass_attacher *att);
 
 #endif /* __MASS_ATTACHER_H */

@@ -101,6 +101,9 @@ struct env {
 	int cu_deny_glob_cnt;
 	int cu_entry_glob_cnt;
 
+	char **inject_probes;
+	int inject_probe_cnt;
+
 	int *allow_pids;
 	int *deny_pids;
 	int allow_pid_cnt;

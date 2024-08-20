@@ -86,6 +86,9 @@ static const struct argp_option opts[] = {
 	{ "call-stack", 'E', NULL, 0, "Capture and emit call stacks (default mode)" },
 	{ "trace", 'T', NULL, 0, "Capture and emit function call traces" },
 	{ "capture-args", 'A', NULL, 0, "Capture and emit function arguments" },
+	{ "inject-probe", 'J', "PROBE", 0,
+	  "Inject extra probe to capture extra information (LBR, registers, etc.). "
+	  "Supported forms: 'kprobe:<name>[+<offset>]', 'rawtp:<name>', 'tp:<category>:<name>'" },
 	{ "lbr", 'B', "SPEC", OPTION_ARG_OPTIONAL,
 	  "Capture and print LBR (Last Branch Record) entries (defaults to any_return). "
 	  "Exact set of captured LBR records can be specified using "
@@ -495,6 +498,15 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		if (err)
 			return err;
+		break;
+	case 'J':
+		if (arg[0] == '@') {
+			err = append_str_file(&env.inject_probes, &env.inject_probe_cnt, arg + 1);
+			if (err)
+				return err;
+		} else if (append_str(&env.inject_probes, &env.inject_probe_cnt, arg)) {
+			return -ENOMEM;
+		}
 		break;
 	case 's':
 		env.symb_mode = SYMB_LINEINFO;

@@ -587,11 +587,34 @@ static int handle_func_trace_entry(struct ctx *ctx, struct session *sess,
 
 	fti = &sess->ft_entries[sess->ft_cnt];
 	fti->ts = r->ts;
+	fti->is_inj_probe = false;
 	fti->func_id = r->func_id;
 	fti->depth = r->type == REC_FUNC_TRACE_ENTRY ? r->depth : -r->depth;
 	fti->seq_id = r->seq_id;
 	fti->func_lat = r->func_lat;
 	fti->func_res = r->func_res;
+
+	sess->ft_cnt++;
+
+	return 0;
+}
+
+static int handle_inj_probe(struct ctx *dctx, struct session *sess, const struct inj_probe *r)
+{
+	struct func_trace_item *fti;
+	void *tmp;
+
+	tmp = realloc(sess->ft_entries, (sess->ft_cnt + 1) * sizeof(sess->ft_entries[0]));
+	if (!tmp)
+		return -ENOMEM;
+	sess->ft_entries = tmp;
+
+	fti = &sess->ft_entries[sess->ft_cnt];
+	fti->ts = r->ts;
+	fti->is_inj_probe = true;
+	fti->depth = r->depth;
+	fti->seq_id = r->seq_id;
+	fti->func_id = r->probe_id;
 
 	sess->ft_cnt++;
 
@@ -643,7 +666,6 @@ static struct func_args_item *find_fnargs_item(const struct session *sess, int s
 static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 			     int pid, int last_seq_id)
 {
-	const struct mass_attacher_func_info *finfo;
 	const char *sp, *mark;
 	struct stack_item *s;
 	struct session *sess;
@@ -658,7 +680,6 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 
 	for (i = 0; i < sess->ft_cnt; prev_seq_id = f->seq_id, i++) {
 		f = &sess->ft_entries[i];
-		finfo = mass_attacher__func(ctx->att, f->func_id);
 		d = f->depth > 0 ? f->depth : -f->depth;
 		sp = spaces + sizeof(spaces) - 1 - 4 * min(d - 1, 20);
 
@@ -675,6 +696,7 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 		orig_seq_id = f->seq_id;
 		fn = &sess->ft_entries[i + 1];
 		if (i + 1 < sess->ft_cnt &&
+		    !fn->is_inj_probe && !f->is_inj_probe &&
 		    fn->seq_id == f->seq_id + 1 && /* consecutive items */
 		    fn->func_id == f->func_id && /* same function */
 		    f->depth > 0 && f->depth == -fn->depth /* matching entry and exit */) {
@@ -684,6 +706,8 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 
 		if (f == fn)		  /* collapsed leaf */
 			mark = "\u2194 "; /* unicode <-> character */
+		else if (f->is_inj_probe) /* injected probe */
+			mark = "\u25c9 "; /* unicode fisheye character */
 		else if (f->depth > 0)	  /* entry */
 			mark = "\u2192 "; /* unicode -> character */
 		else			  /* exit */
@@ -692,7 +716,35 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 		/* store function name and space indentation in sym, it should
 		 * be enough even with deep nestedness levels (we cap them)
 		 */
-		snappendf(s->sym, "%s%s%s", sp, mark, finfo->name);
+		snappendf(s->sym, "%s%s", sp, mark);
+		if (f->is_inj_probe) {
+			const struct inj_probe_info *inj;
+
+			inj = mass_attacher__inj_probe(ctx->att, f->func_id);
+			switch (inj->type) {
+			case INJ_KPROBE:
+				snappendf(s->sym, "kprobe:%s+0x%lx",
+					  inj->kprobe.name, inj->kprobe.offset);
+				break;
+			case INJ_KRETPROBE:
+				snappendf(s->sym, "kretprobe:%s", inj->kprobe.name);
+				break;
+			case INJ_RAWTP:
+				snappendf(s->sym, "rawtp:%s", inj->rawtp.name);
+				break;
+			case INJ_TP:
+				snappendf(s->sym, "tp:%s:%s", inj->tp.category, inj->tp.name);
+				break;
+			default:
+				snappendf(s->sym, "<inj_unknown:%d>", inj->type);
+				break;
+			}
+		} else {
+			const struct mass_attacher_func_info *finfo;
+
+			finfo = mass_attacher__func(ctx->att, f->func_id);
+			snappendf(s->sym, "%s", finfo->name);
+		}
 
 		if (f->depth < 0) {
 			snappendf(s->dur, "%.3fus", f->func_lat / 1000.0);
@@ -727,6 +779,7 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 	if (last_seq_id != prev_seq_id)
 		add_missing_records_msg(cache, last_seq_id - prev_seq_id);
 }
+
 static void print_fnargs_item(struct stack_item *s, const struct func_args_item *fai,
 			      int indent_shift)
 {
@@ -1268,6 +1321,15 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 			return -EINVAL;
 		}
 		return handle_lbr_stack(ctx, sess, r);
+	}
+	case REC_INJ_PROBE: {
+		const struct inj_probe *r = data;
+
+		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
+			fprintf(stderr, "BUG: PID %d session data not found (INJ_PROBE)!\n", r->pid);
+			return -EINVAL;
+		}
+		return handle_inj_probe(ctx, sess, r);
 	}
 	case REC_SESSION_END: {
 		const struct session_end *r = data;

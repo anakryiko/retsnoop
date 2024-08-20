@@ -147,6 +147,9 @@ struct mass_attacher {
 	struct kprobe_info *kprobes;
 	int kprobe_cnt;
 
+	struct inj_probe_info *inj_probes;
+	int inj_probe_cnt;
+
 	int func_skip_cnt;
 
 	struct glob_set globs;
@@ -242,6 +245,26 @@ void mass_attacher__free(struct mass_attacher *att)
 		free(att->kprobes);
 	}
 
+	for (i = 0; i < att->inj_probe_cnt; i++) {
+		struct inj_probe_info *inj = &att->inj_probes[i];
+
+		bpf_link__destroy(inj->link);
+
+		switch (inj->type) {
+		case INJ_KPROBE:
+		case INJ_KRETPROBE:
+			free(inj->kprobe.name);
+			break;
+		case INJ_RAWTP:
+			free(inj->rawtp.name);
+			break;
+		case INJ_TP:
+			free(inj->tp.category);
+			free(inj->tp.name);
+			break;
+		}
+	}
+
 	for (i = 0; i <= MAX_FUNC_ARG_CNT; i++) {
 		free(att->fentries_insns[i]);
 		free(att->fexits_insns[i]);
@@ -261,6 +284,115 @@ int mass_attacher__allow_glob(struct mass_attacher *att, const char *glob, const
 int mass_attacher__deny_glob(struct mass_attacher *att, const char *glob, const char *mod_glob)
 {
 	return glob_set__add_glob(&att->globs, glob, mod_glob, GLOB_DENY);
+}
+
+static struct inj_probe_info *add_inj_probe(struct mass_attacher *att)
+{
+	struct inj_probe_info *inj;
+	void *tmp;
+
+	tmp = realloc(att->inj_probes, (att->inj_probe_cnt + 1) * sizeof(*att->inj_probes));
+	if (!tmp)
+		return NULL;
+
+	att->inj_probes = tmp;
+	inj = &att->inj_probes[att->inj_probe_cnt];
+	memset(inj, 0, sizeof(*inj));
+
+	att->inj_probe_cnt++;
+	return inj;
+}
+
+int mass_attacher__inject_kprobe(struct mass_attacher *att,
+				 const char *name, unsigned long offset)
+{
+	struct inj_probe_info *inj;
+
+	if (!att->has_bpf_cookie) {
+		elog("Kernel doesn't support BPF cookies required for probes.\n");
+		return -EOPNOTSUPP;
+	}
+
+	inj = add_inj_probe(att);
+	if (!inj)
+		return -ENOMEM;
+
+	inj->type = INJ_KPROBE;
+	inj->kprobe.offset = offset;
+	inj->kprobe.name = strdup(name);
+	if (!inj->kprobe.name)
+		return -ENOMEM;
+
+	return att->inj_probe_cnt - 1;
+}
+
+int mass_attacher__inject_kretprobe(struct mass_attacher *att, const char *name)
+{
+	struct inj_probe_info *inj;
+
+	if (!att->has_bpf_cookie) {
+		elog("Kernel doesn't support BPF cookies required for probes.\n");
+		return -EOPNOTSUPP;
+	}
+
+	inj = add_inj_probe(att);
+	if (!inj)
+		return -ENOMEM;
+
+	inj->type = INJ_KRETPROBE;
+	inj->kprobe.name = strdup(name);
+	if (!inj->kprobe.name)
+		return -ENOMEM;
+
+	return att->inj_probe_cnt - 1;
+}
+
+int mass_attacher__inject_rawtp(struct mass_attacher *att, const char *name)
+{
+	struct inj_probe_info *inj;
+
+	if (!att->has_bpf_cookie) {
+		elog("Kernel doesn't support BPF cookies required for probes.\n");
+		return -EOPNOTSUPP;
+	}
+	if (!att->has_rawtp_cookie) {
+		elog("Kernel doesn't support BPF cookies for *raw tracepoints*. "
+		     "Consider using tracepoint-based probes on older kernels.\n");
+		return -EOPNOTSUPP;
+	}
+
+	inj = add_inj_probe(att);
+	if (!inj)
+		return -ENOMEM;
+
+	inj->type = INJ_RAWTP;
+	inj->rawtp.name = strdup(name);
+	if (!inj->rawtp.name)
+		return -ENOMEM;
+
+	return att->inj_probe_cnt - 1;
+}
+
+int mass_attacher__inject_tp(struct mass_attacher *att, const char *category, const char *name)
+{
+	struct inj_probe_info *inj;
+
+	if (!att->has_bpf_cookie) {
+		elog("Kernel doesn't support BPF cookies required for probes.\n");
+		return -EOPNOTSUPP;
+	}
+
+	inj = add_inj_probe(att);
+	if (!inj)
+		return -ENOMEM;
+
+	inj->type = INJ_TP;
+	inj->tp.category = strdup(category);
+	inj->tp.name = strdup(name);
+	if (!inj->tp.category || !inj->tp.name)
+		return -ENOMEM;
+
+	return att->inj_probe_cnt - 1;
 }
 
 static int bump_rlimit(int resource, rlim_t max);
@@ -894,6 +1026,28 @@ int mass_attacher__load(struct mass_attacher *att)
 {
 	int err = 0, i, map_fd;
 
+	for (i = 0; i < att->inj_probe_cnt; i++) {
+		struct inj_probe_info *inj = &att->inj_probes[i];
+
+		switch (inj->type) {
+		case INJ_KPROBE:
+			bpf_program__set_autoload(att->skel->progs.retsn_inj_kprobe, true);
+			break;
+		case INJ_KRETPROBE:
+			bpf_program__set_autoload(att->skel->progs.retsn_inj_kretprobe, true);
+			break;
+		case INJ_RAWTP:
+			bpf_program__set_autoload(att->skel->progs.retsn_inj_rawtp, true);
+			break;
+		case INJ_TP:
+			bpf_program__set_autoload(att->skel->progs.retsn_inj_tp, true);
+			break;
+		default:
+			elog("Unrecognized type of injected probe: %d\n", inj->type);
+			return -EINVAL;
+		}
+	}
+
 	/* Load & verify BPF programs */
 	if (!att->dry_run)
 		err = SKEL_LOAD(att->skel);
@@ -1025,6 +1179,74 @@ int mass_attacher__attach(struct mass_attacher *att)
 	const char **syms = NULL;
 	__u64 *cookies = NULL;
 	int i, err;
+
+	for (i = 0; i < att->inj_probe_cnt; i++) {
+		struct inj_probe_info *inj = &att->inj_probes[i];
+		char desc[256];
+
+		switch (inj->type) {
+		case INJ_KPROBE:
+		case INJ_KRETPROBE: {
+			LIBBPF_OPTS(bpf_kprobe_opts, opts,
+				.offset = inj->kprobe.offset,
+				.bpf_cookie = i,
+				.retprobe = inj->type == INJ_KRETPROBE,
+			);
+			struct bpf_program *prog;
+
+			if (inj->type == INJ_KRETPROBE) {
+				prog = att->skel->progs.retsn_inj_kretprobe;
+				snprintf(desc, sizeof(desc), "kretprobe:%s", inj->kprobe.name);
+			} else {
+				prog = att->skel->progs.retsn_inj_kprobe;
+				snprintf(desc, sizeof(desc), "kprobe:%s+0x%lx",
+					 inj->kprobe.name, inj->kprobe.offset);
+			}
+
+			if (!att->dry_run) {
+				inj->link = bpf_program__attach_kprobe_opts(
+						prog, inj->kprobe.name, &opts);
+			}
+			break;
+		}
+		case INJ_RAWTP: {
+			LIBBPF_OPTS(bpf_raw_tracepoint_opts, opts, .cookie = i);
+
+			snprintf(desc, sizeof(desc), "rawtp:%s", inj->rawtp.name);
+
+			if (!att->dry_run) {
+				inj->link = bpf_program__attach_raw_tracepoint_opts(
+						att->skel->progs.retsn_inj_rawtp,
+						inj->rawtp.name, &opts);
+			}
+			break;
+		}
+		case INJ_TP: {
+			LIBBPF_OPTS(bpf_tracepoint_opts, opts, .bpf_cookie = i);
+
+			snprintf(desc, sizeof(desc), "tp:%s:%s", inj->tp.category, inj->tp.name);
+
+			if (!att->dry_run) {
+				inj->link = bpf_program__attach_tracepoint_opts(
+						att->skel->progs.retsn_inj_tp,
+						inj->tp.category, inj->tp.name, &opts);
+			}
+			break;
+		}
+		default:
+			elog("Unrecognized type of injected probe: %d\n", inj->type);
+			err = -EINVAL;
+			goto err_out;
+		}
+		if (!att->dry_run && !inj->link) {
+			err = -errno;
+			elog("Failed to attach injected probe #%d '%s': %d\n",
+			     i + 1, desc, err);
+			goto err_out;
+		}
+		vlog("Attached%s injected probe #%d '%s'.\n",
+		     att->dry_run ? " (dry run)" : "", i + 1, desc);
+	}
 
 	if (att->use_kprobe_multi) {
 		addrs = calloc(att->func_cnt, sizeof(*addrs));
@@ -1207,6 +1429,13 @@ const struct mass_attacher_func_info *mass_attacher__func(const struct mass_atta
 	if (id < 0 || id >= att->func_cnt)
 		return NULL;
 	return &att->func_infos[id];
+}
+
+const struct inj_probe_info *mass_attacher__inj_probe(const struct mass_attacher *att, int id)
+{
+	if (id < 0 || id >= att->inj_probe_cnt)
+		return NULL;
+	return &att->inj_probes[id];
 }
 
 static struct kprobe_info *find_kprobe(const struct mass_attacher *att,
