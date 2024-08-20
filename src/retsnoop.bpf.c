@@ -901,11 +901,10 @@ skip_ft_exit:;
 	return true;
 }
 
-static void handle_inj_probe(void *ctx, u32 id)
+static void handle_inj_probe(void *ctx, u32 id, u32 ctx_sz)
 {
 	struct session *sess;
-	struct inj_probe *r;
-	int seq_id;
+	int seq_id, err;
 	u32 pid;
 
 	pid = (u32)bpf_get_current_pid_tgid();
@@ -916,20 +915,44 @@ static void handle_inj_probe(void *ctx, u32 id)
 	seq_id = sess->next_seq_id;
 	sess->next_seq_id++;
 
-	r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
-	if (!r) {
-		stat_dropped_record(sess);
-		return;
+	if (emit_func_trace) {
+		struct inj_probe *r;
+
+		r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
+		if (!r) {
+			stat_dropped_record(sess);
+			return;
+		}
+
+		r->type = REC_INJ_PROBE;
+		r->ts = bpf_ktime_get_ns();
+		r->pid = pid;
+		r->seq_id = seq_id;
+		r->probe_id = id;
+		r->depth = sess->stack.depth + 1;
+
+		bpf_ringbuf_submit(r, 0);
 	}
 
-	r->type = REC_INJ_PROBE;
-	r->ts = bpf_ktime_get_ns();
-	r->pid = pid;
-	r->seq_id = seq_id;
-	r->probe_id = id;
-	r->depth = sess->stack.depth + 1;
+	if (emit_func_trace && capture_args) {
+		struct ctx_capture *r;
 
-	bpf_ringbuf_submit(r, 0);
+		r = bpf_ringbuf_reserve(&rb, sizeof(*r) + ctx_sz, 0);
+		if (!r) {
+			stat_dropped_record(sess);
+			return;
+		}
+
+		r->type = REC_CTX_CAPTURE;
+		r->pid = pid;
+		r->seq_id = seq_id;
+		r->probe_id = id;
+
+		err = bpf_probe_read_kernel(r->data, ctx_sz, ctx);
+		r->data_len = err ?: ctx_sz;
+
+		bpf_ringbuf_submit(r, 0);
+	}
 }
 
 static __always_inline bool tgid_allowed(void)
@@ -992,25 +1015,25 @@ __hidden int handle_func_exit(void *ctx, u32 func_id, u64 func_ip, u64 ret)
 
 __hidden int handle_inj_kprobe(struct pt_regs *ctx, u32 probe_id)
 {
-	handle_inj_probe(ctx, probe_id);
+	handle_inj_probe(ctx, probe_id, sizeof(*ctx));
 	return 0;
 }
 
 __hidden int handle_inj_kretprobe(struct pt_regs *ctx, u32 probe_id)
 {
-	handle_inj_probe(ctx, probe_id);
+	handle_inj_probe(ctx, probe_id, sizeof(*ctx));
 	return 0;
 }
 
 __hidden int handle_inj_rawtp(void *ctx, u32 probe_id)
 {
-	handle_inj_probe(ctx, probe_id);
+	handle_inj_probe(ctx, probe_id, 0);
 	return 0;
 }
 
 __hidden int handle_inj_tp(void *ctx, u32 probe_id)
 {
-	handle_inj_probe(ctx, probe_id);
+	handle_inj_probe(ctx, probe_id, 0);
 	return 0;
 }
 

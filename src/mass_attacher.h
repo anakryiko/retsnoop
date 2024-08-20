@@ -57,6 +57,12 @@ struct inj_tp {
 
 struct inj_probe_info {
 	enum inj_probe_type type;
+	/* BTF ID of a type representing the context of a given injected
+	 * probe:
+	 *   - for kprobe/kretprobe, ID of `struct pt_regs`;
+	 */
+	int ctx_btf_id;
+	const struct btf *btf;
 	struct bpf_link *link;
 	union {
 		struct inj_kprobe kprobe;

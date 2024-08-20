@@ -149,6 +149,7 @@ struct mass_attacher {
 
 	struct inj_probe_info *inj_probes;
 	int inj_probe_cnt;
+	int pt_regs_btf_id;
 
 	int func_skip_cnt;
 
@@ -303,8 +304,8 @@ static struct inj_probe_info *add_inj_probe(struct mass_attacher *att)
 	return inj;
 }
 
-int mass_attacher__inject_kprobe(struct mass_attacher *att,
-				 const char *name, unsigned long offset)
+static int add_inj_kprobe(struct mass_attacher *att, const char *name,
+			  unsigned long offset, bool is_kretprobe)
 {
 	struct inj_probe_info *inj;
 
@@ -317,34 +318,28 @@ int mass_attacher__inject_kprobe(struct mass_attacher *att,
 	if (!inj)
 		return -ENOMEM;
 
-	inj->type = INJ_KPROBE;
+	inj->type = is_kretprobe ? INJ_KRETPROBE : INJ_KPROBE;
 	inj->kprobe.offset = offset;
 	inj->kprobe.name = strdup(name);
 	if (!inj->kprobe.name)
 		return -ENOMEM;
 
+	inj->btf = att->vmlinux_btf;
+	if (att->pt_regs_btf_id == 0)
+		att->pt_regs_btf_id = btf__find_by_name_kind(inj->btf, "pt_regs", BTF_KIND_STRUCT);
+	inj->ctx_btf_id = att->pt_regs_btf_id;
+
 	return att->inj_probe_cnt - 1;
+}
+
+int mass_attacher__inject_kprobe(struct mass_attacher *att, const char *name, unsigned long offset)
+{
+	return add_inj_kprobe(att, name, offset, false /* !is_kretprobe */);
 }
 
 int mass_attacher__inject_kretprobe(struct mass_attacher *att, const char *name)
 {
-	struct inj_probe_info *inj;
-
-	if (!att->has_bpf_cookie) {
-		elog("Kernel doesn't support BPF cookies required for probes.\n");
-		return -EOPNOTSUPP;
-	}
-
-	inj = add_inj_probe(att);
-	if (!inj)
-		return -ENOMEM;
-
-	inj->type = INJ_KRETPROBE;
-	inj->kprobe.name = strdup(name);
-	if (!inj->kprobe.name)
-		return -ENOMEM;
-
-	return att->inj_probe_cnt - 1;
+	return add_inj_kprobe(att, name, 0, true /* is_kretprobe */);
 }
 
 int mass_attacher__inject_rawtp(struct mass_attacher *att, const char *name)
