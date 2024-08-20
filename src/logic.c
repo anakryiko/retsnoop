@@ -663,8 +663,8 @@ static struct func_args_item *find_fnargs_item(const struct session *sess, int s
 	return NULL;
 }
 
-static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
-			     int pid, int last_seq_id)
+static void prepare_trace_items(struct ctx *ctx, struct stack_items_cache *cache,
+				int pid, int last_seq_id)
 {
 	const char *sp, *mark;
 	struct stack_item *s;
@@ -705,13 +705,13 @@ static void prepare_ft_items(struct ctx *ctx, struct stack_items_cache *cache,
 		}
 
 		if (f == fn)		  /* collapsed leaf */
-			mark = "\u2194 "; /* unicode <-> character */
+			mark = "\u2194 "; /* unicode '<->' character */
 		else if (f->is_inj_probe) /* injected probe */
-			mark = "\u25c9 "; /* unicode fisheye character */
+			mark = "\u25CE "; /* unicode 'bullseye' character */
 		else if (f->depth > 0)	  /* entry */
-			mark = "\u2192 "; /* unicode -> character */
+			mark = "\u2192 "; /* unicode '->' character */
 		else			  /* exit */
-			mark = "\u2190 "; /* unicode <- character */
+			mark = "\u2190 "; /* unicode '<-' character */
 
 		/* store function name and space indentation in sym, it should
 		 * be enough even with deep nestedness levels (we cap them)
@@ -800,7 +800,7 @@ static void print_fnargs_item(struct stack_item *s, const struct func_args_item 
 	}
 }
 
-static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cache)
+static void print_trace_items(struct ctx *ctx, const struct stack_items_cache *cache)
 {
 	int dur_len = 5, res_len = 0, sym_len = 0, arg_len = 0, i;
 	struct stack_item *s;
@@ -1217,8 +1217,8 @@ static int handle_session_end(struct ctx *dctx, struct session *sess, const stru
 	 * call stack trace (depth == 0)
 	 */
 	if (env.emit_func_trace && s->depth == 0) {
-		prepare_ft_items(dctx, &stack_items1, sess->pid, r->last_seq_id);
-		print_ft_items(dctx, &stack_items1);
+		prepare_trace_items(dctx, &stack_items1, sess->pid, r->last_seq_id);
+		print_trace_items(dctx, &stack_items1);
 	}
 
 	if (!env.emit_call_stack && !env.use_lbr)

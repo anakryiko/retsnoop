@@ -134,7 +134,7 @@ struct func_args_capture {
 	unsigned short data_len;
 	unsigned short arg_ptrs; /* whether we put raw ptr value into arg_data */
 	short arg_lens[MAX_FNARGS_ARG_SPEC_CNT];
-	char arg_data[]; /* BPF side sizes is according to settings */
+	char arg_data[]; /* BPF side sizes it according to settings */
 };
 
 struct ctx_capture {
@@ -144,9 +144,7 @@ struct ctx_capture {
 	int seq_id;
 	unsigned short probe_id;
 	unsigned short data_len;
-	unsigned short arg_ptrs; /* whether we put raw ptr value into arg_data */
-	short arg_lens[MAX_FNARGS_ARG_SPEC_CNT];
-	char arg_data[]; /* BPF side sizes is according to settings */
+	char data[]; /* BPF side sizes it according to settings */
 };
 
 struct lbr_stack {
