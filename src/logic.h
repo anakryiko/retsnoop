@@ -11,11 +11,12 @@
 
 struct func_trace_item {
 	long ts;
-	long func_lat;
-	int func_id;
-	int depth; /* 1-based, negative means exit from function */
 	int seq_id;
+	int depth; /* 1-based, negative means exit from function */
+	bool is_inj_probe;
+	int func_id; /* or probe ID */
 	long func_res;
+	long func_lat;
 };
 
 struct func_args_item {

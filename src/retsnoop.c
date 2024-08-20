@@ -527,6 +527,40 @@ int main(int argc, char **argv, char **envp)
 		}
 	}
 
+	for (i = 0; i < env.inject_probe_cnt; i++) {
+		const char *spec = env.inject_probes[i];
+		char cat[256], name[256];
+		unsigned long off;
+		int len, n;
+
+		len = strlen(spec);
+		err = -EINVAL;
+
+		if (sscanf(spec, "kprobe:%255[a-zA-Z0-9._]%li%n", name, &off, &n) == 2 && len == n) {
+			err = mass_attacher__inject_kprobe(att, name, off);
+		} else if (sscanf(spec, "kprobe:%255[a-zA-Z0-9._]%n", name, &n) == 1 && len == n) {
+			err = mass_attacher__inject_kprobe(att, name, 0);
+		} else if (sscanf(spec, "kretprobe:%255[a-zA-Z0-9._]%n", name, &n) == 1 && len == n) {
+			err = mass_attacher__inject_kretprobe(att, name);
+		} else if (sscanf(spec, "rawtp:%255[a-zA-Z0-9_]%n", name, &n) == 1 && len == n) {
+			err = mass_attacher__inject_rawtp(att, name);
+		} else if (sscanf(spec, "tp:%255[a-zA-Z0-9_]:%255[a-zA-Z0-9_]%n", cat, name, &n) == 2 && len == n) {
+			err = mass_attacher__inject_tp(att, cat, name);
+		}
+
+		if (err < 0) {
+			if (err != -EOPNOTSUPP) {
+				elog("Unrecognized injection probe spec '%s'. Supported formats are:\n"
+				     "  - 'kprobe:<name>+<offset>' for kprobes;\n"
+				     "  - 'kretprobe:<name>' for kretprobes;\n"
+				     "  - 'rawtp:<name>' for raw tracepoints;\n"
+				     "  - 'tp:<category>:<name>' for tracepoints.\n",
+				     spec);
+			}
+			goto cleanup_silent;
+		}
+	}
+
 	for (i = 0; i < n; i++) {
 		const struct mass_attacher_func_info *finfo;
 		const struct glob *glob;

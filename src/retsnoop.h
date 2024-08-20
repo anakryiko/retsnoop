@@ -27,6 +27,7 @@ enum rec_type {
 	REC_FUNC_TRACE_EXIT,
 	REC_FUNC_ARGS_CAPTURE,
 	REC_LBR_STACK,
+	REC_INJ_PROBE,
 	REC_SESSION_END,
 };
 
@@ -142,6 +143,17 @@ struct lbr_stack {
 
 	int lbrs_sz;
 	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
+};
+
+struct inj_probe {
+	/* REC_INJ_PROBE */
+	enum rec_type type;
+	int pid;
+	long ts;
+
+	int seq_id;
+	int probe_id;
+	short depth;
 };
 
 /*

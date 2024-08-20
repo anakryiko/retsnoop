@@ -901,6 +901,37 @@ skip_ft_exit:;
 	return true;
 }
 
+static void handle_inj_probe(void *ctx, u32 id)
+{
+	struct session *sess;
+	struct inj_probe *r;
+	int seq_id;
+	u32 pid;
+
+	pid = (u32)bpf_get_current_pid_tgid();
+	sess = bpf_map_lookup_elem(&sessions, &pid);
+	if (!sess || sess->defunct)
+		return;
+
+	seq_id = sess->next_seq_id;
+	sess->next_seq_id++;
+
+	r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
+	if (!r) {
+		stat_dropped_record(sess);
+		return;
+	}
+
+	r->type = REC_INJ_PROBE;
+	r->ts = bpf_ktime_get_ns();
+	r->pid = pid;
+	r->seq_id = seq_id;
+	r->probe_id = id;
+	r->depth = sess->stack.depth + 1;
+
+	bpf_ringbuf_submit(r, 0);
+}
+
 static __always_inline bool tgid_allowed(void)
 {
 	bool *verdict_ptr;
@@ -958,3 +989,28 @@ __hidden int handle_func_exit(void *ctx, u32 func_id, u64 func_ip, u64 ret)
 	pop_call_stack(ctx, func_id, func_ip, ret);
 	return 0;
 }
+
+__hidden int handle_inj_kprobe(struct pt_regs *ctx, u32 probe_id)
+{
+	handle_inj_probe(ctx, probe_id);
+	return 0;
+}
+
+__hidden int handle_inj_kretprobe(struct pt_regs *ctx, u32 probe_id)
+{
+	handle_inj_probe(ctx, probe_id);
+	return 0;
+}
+
+__hidden int handle_inj_rawtp(void *ctx, u32 probe_id)
+{
+	handle_inj_probe(ctx, probe_id);
+	return 0;
+}
+
+__hidden int handle_inj_tp(void *ctx, u32 probe_id)
+{
+	handle_inj_probe(ctx, probe_id);
+	return 0;
+}
+
