@@ -9,16 +9,6 @@
 #include <linux/perf_event.h>
 #include "retsnoop.h"
 
-struct func_trace_item {
-	long ts;
-	int seq_id;
-	int depth; /* 1-based, negative means exit from function */
-	bool is_inj_probe;
-	int func_id; /* or probe ID */
-	long func_res;
-	long func_lat;
-};
-
 struct func_args_item {
 	int func_id;
 	int seq_id;
@@ -28,6 +18,32 @@ struct func_args_item {
 	char *arg_data;
 };
 
+struct ctx_capture_item {
+	int probe_id;
+	int seq_id;
+	short data_len;
+	char *data;
+};
+
+enum trace_item_kind {
+	TRACE_ITEM_FUNC,
+	TRACE_ITEM_PROBE,
+};
+
+struct trace_item {
+	enum trace_item_kind kind;
+	int id; /* func ID or probe ID */
+	long ts;
+	int seq_id;
+	int depth; /* 1-based, negative means exit from function */
+	long func_res;
+	long func_lat;
+	union {
+		const struct func_args_item *fai;
+		const struct ctx_capture_item *cci;
+	};
+};
+
 struct session {
 	int pid;
 	int tgid;
@@ -35,14 +51,15 @@ struct session {
 	char proc_comm[16];
 	char task_comm[16];
 
-	struct perf_branch_entry *lbrs;
 	int lbrs_sz;
-
 	int ft_cnt;
-	struct func_trace_item *ft_entries;
-
-	struct func_args_item *fn_args_entries;
 	int fn_args_cnt;
+	int ctx_cnt;
+
+	struct perf_branch_entry *lbrs;
+	struct trace_item *trace_entries;
+	struct func_args_item *fn_args_entries;
+	struct ctx_capture_item *ctx_entries;
 };
 
 struct func_arg_spec {
@@ -124,10 +141,16 @@ int prepare_fn_args_specs(int func_idx, const struct mass_attacher_func_info *fi
 struct func_args_capture;
 int handle_func_args_capture(struct ctx *ctx, struct session *sess,
 			     const struct func_args_capture *r);
+int handle_ctx_capture(struct ctx *ctx, struct session *sess, const struct ctx_capture *r);
 
 void emit_fnargs_data(FILE *f, struct stack_item *s,
 		      const struct func_args_info *fn_args,
 		      const struct func_args_item *fai,
 		      int indent_shift);
+
+struct inj_probe_info;
+void emit_ctx_data(FILE *f, struct stack_item *s, int indent_shift,
+		   const struct inj_probe_info *inj,
+		   const struct ctx_capture_item *cci);
 
 #endif /* __LOGIC_H */

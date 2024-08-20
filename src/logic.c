@@ -41,9 +41,14 @@ static void free_session(struct session *sess)
 	}
 	free(sess->fn_args_entries);
 
+	for (i = 0; i < sess->ctx_cnt; i++) {
+		free(sess->ctx_entries[i].data);
+	}
+	free(sess->ctx_entries);
+
 	free(sess->lbrs);
 
-	free(sess->ft_entries);
+	free(sess->trace_entries);
 	free(sess);
 }
 
@@ -577,22 +582,22 @@ static void prepare_func_res(struct stack_item *s, long res, enum func_flags fun
 static int handle_func_trace_entry(struct ctx *ctx, struct session *sess,
 				   const struct func_trace_entry *r)
 {
-	struct func_trace_item *fti;
+	struct trace_item *ti;
 	void *tmp;
 
-	tmp = realloc(sess->ft_entries, (sess->ft_cnt + 1) * sizeof(sess->ft_entries[0]));
+	tmp = realloc(sess->trace_entries, (sess->ft_cnt + 1) * sizeof(sess->trace_entries[0]));
 	if (!tmp)
 		return -ENOMEM;
-	sess->ft_entries = tmp;
+	sess->trace_entries = tmp;
 
-	fti = &sess->ft_entries[sess->ft_cnt];
-	fti->ts = r->ts;
-	fti->is_inj_probe = false;
-	fti->func_id = r->func_id;
-	fti->depth = r->type == REC_FUNC_TRACE_ENTRY ? r->depth : -r->depth;
-	fti->seq_id = r->seq_id;
-	fti->func_lat = r->func_lat;
-	fti->func_res = r->func_res;
+	ti = &sess->trace_entries[sess->ft_cnt];
+	ti->kind = TRACE_ITEM_FUNC;
+	ti->ts = r->ts;
+	ti->id = r->func_id;
+	ti->seq_id = r->seq_id;
+	ti->depth = r->type == REC_FUNC_TRACE_ENTRY ? r->depth : -r->depth;
+	ti->func_lat = r->func_lat;
+	ti->func_res = r->func_res;
 
 	sess->ft_cnt++;
 
@@ -601,20 +606,20 @@ static int handle_func_trace_entry(struct ctx *ctx, struct session *sess,
 
 static int handle_inj_probe(struct ctx *dctx, struct session *sess, const struct inj_probe *r)
 {
-	struct func_trace_item *fti;
+	struct trace_item *ti;
 	void *tmp;
 
-	tmp = realloc(sess->ft_entries, (sess->ft_cnt + 1) * sizeof(sess->ft_entries[0]));
+	tmp = realloc(sess->trace_entries, (sess->ft_cnt + 1) * sizeof(sess->trace_entries[0]));
 	if (!tmp)
 		return -ENOMEM;
-	sess->ft_entries = tmp;
+	sess->trace_entries = tmp;
 
-	fti = &sess->ft_entries[sess->ft_cnt];
-	fti->ts = r->ts;
-	fti->is_inj_probe = true;
-	fti->depth = r->depth;
-	fti->seq_id = r->seq_id;
-	fti->func_id = r->probe_id;
+	ti = &sess->trace_entries[sess->ft_cnt];
+	ti->kind = TRACE_ITEM_PROBE;
+	ti->ts = r->ts;
+	ti->id = r->probe_id;
+	ti->seq_id = r->seq_id;
+	ti->depth = r->depth;
 
 	sess->ft_cnt++;
 
@@ -666,25 +671,27 @@ static struct func_args_item *find_fnargs_item(const struct session *sess, int s
 static void prepare_trace_items(struct ctx *ctx, struct stack_items_cache *cache,
 				int pid, int last_seq_id)
 {
+	const struct mass_attacher_func_info *finfo;
+	const struct inj_probe_info *inj;
 	const char *sp, *mark;
 	struct stack_item *s;
 	struct session *sess;
-	struct func_trace_item *f, *fn;
+	struct trace_item *t, *tn;
 	int i, d, prev_seq_id = -1, orig_seq_id;
-	int args_idx = 0;
+	int args_idx = 0, ctx_idx = 0;
 
 	if (!hashmap__find(&sessions_hash, (long)pid, &sess))
 		return;
 
 	cache->cnt = 0;
 
-	for (i = 0; i < sess->ft_cnt; prev_seq_id = f->seq_id, i++) {
-		f = &sess->ft_entries[i];
-		d = f->depth > 0 ? f->depth : -f->depth;
+	for (i = 0; i < sess->ft_cnt; prev_seq_id = t->seq_id, i++) {
+		t = &sess->trace_entries[i];
+		d = t->depth > 0 ? t->depth : -t->depth;
 		sp = spaces + sizeof(spaces) - 1 - 4 * min(d - 1, 20);
 
-		if (f->seq_id > prev_seq_id + 1)
-			add_missing_records_msg(cache, f->seq_id - prev_seq_id - 1);
+		if (t->seq_id > prev_seq_id + 1)
+			add_missing_records_msg(cache, t->seq_id - prev_seq_id - 1);
 
 		s = get_stack_item(cache);
 		if (!s) {
@@ -693,22 +700,22 @@ static void prepare_trace_items(struct ctx *ctx, struct stack_items_cache *cache
 		}
 
 		/* see if we can collapse leaf function entry/exit into one */
-		orig_seq_id = f->seq_id;
-		fn = &sess->ft_entries[i + 1];
+		orig_seq_id = t->seq_id;
+		tn = &sess->trace_entries[i + 1];
 		if (i + 1 < sess->ft_cnt &&
-		    !fn->is_inj_probe && !f->is_inj_probe &&
-		    fn->seq_id == f->seq_id + 1 && /* consecutive items */
-		    fn->func_id == f->func_id && /* same function */
-		    f->depth > 0 && f->depth == -fn->depth /* matching entry and exit */) {
-			f = fn; /* use exit item as main data source */
+		    t->kind == TRACE_ITEM_FUNC && tn->kind == t->kind &&
+		    tn->seq_id == t->seq_id + 1 && /* consecutive items */
+		    tn->id == t->id && /* same function */
+		    t->depth > 0 && t->depth == -tn->depth /* matching entry and exit */) {
+			t = tn; /* use exit item as main data source */
 			i += 1; /* skip exit entry */
 		}
 
-		if (f == fn)		  /* collapsed leaf */
+		if (t == tn)		  /* collapsed leaf */
 			mark = "\u2194 "; /* unicode '<->' character */
-		else if (f->is_inj_probe) /* injected probe */
+		else if (t->kind == TRACE_ITEM_PROBE) /* injected probe */
 			mark = "\u25CE "; /* unicode 'bullseye' character */
-		else if (f->depth > 0)	  /* entry */
+		else if (t->depth > 0)	  /* entry */
 			mark = "\u2192 "; /* unicode '->' character */
 		else			  /* exit */
 			mark = "\u2190 "; /* unicode '<-' character */
@@ -717,10 +724,13 @@ static void prepare_trace_items(struct ctx *ctx, struct stack_items_cache *cache
 		 * be enough even with deep nestedness levels (we cap them)
 		 */
 		snappendf(s->sym, "%s%s", sp, mark);
-		if (f->is_inj_probe) {
-			const struct inj_probe_info *inj;
-
-			inj = mass_attacher__inj_probe(ctx->att, f->func_id);
+		switch (t->kind) {
+		case TRACE_ITEM_FUNC:
+			finfo = mass_attacher__func(ctx->att, t->id);
+			snappendf(s->sym, "%s", finfo->name);
+			break;
+		case TRACE_ITEM_PROBE:
+			inj = mass_attacher__inj_probe(ctx->att, t->id);
 			switch (inj->type) {
 			case INJ_KPROBE:
 				snappendf(s->sym, "kprobe:%s+0x%lx",
@@ -739,40 +749,60 @@ static void prepare_trace_items(struct ctx *ctx, struct stack_items_cache *cache
 				snappendf(s->sym, "<inj_unknown:%d>", inj->type);
 				break;
 			}
-		} else {
-			const struct mass_attacher_func_info *finfo;
-
-			finfo = mass_attacher__func(ctx->att, f->func_id);
-			snappendf(s->sym, "%s", finfo->name);
 		}
 
-		if (f->depth < 0) {
-			snappendf(s->dur, "%.3fus", f->func_lat / 1000.0);
-			prepare_func_res(s, f->func_res, func_info(ctx, f->func_id)->flags);
+		if (t->depth < 0) {
+			snappendf(s->dur, "%.3fus", t->func_lat / 1000.0);
+			prepare_func_res(s, t->func_res, func_info(ctx, t->id)->flags);
 		}
+
+		s->extra = t;
 
 		if (env.capture_args) {
 			struct func_args_item *fai = NULL;
-			bool args_found = false;
+			struct ctx_capture_item *cci = NULL;
+			bool found = false;
 
-			while (args_idx < sess->fn_args_cnt) {
-				fai = &sess->fn_args_entries[args_idx];
-				if (fai->seq_id > orig_seq_id)
-					break;
-				/* advance regardless if we found a match or not */
-				args_idx++;
-				if (fai->seq_id == orig_seq_id) {
-					args_found = true;
-					break;
+			switch (t->kind) {
+			case TRACE_ITEM_FUNC:
+				while (args_idx < sess->fn_args_cnt) {
+					fai = &sess->fn_args_entries[args_idx];
+					if (fai->seq_id > orig_seq_id)
+						break;
+					/* advance regardless if we found a match or not */
+					args_idx++;
+					if (fai->seq_id == orig_seq_id) {
+						found = true;
+						break;
+					}
 				}
-			}
 
-			if (args_found)
-				s->extra = fai;
-			else if (f->depth > 0) /* func entry */
-				s->extra = FNARGS_MISSING_RECORD;
-			else
-				s->extra = NULL;
+				if (found)
+					t->fai = fai;
+				else if (t->depth > 0) /* func entry */
+					t->fai = FNARGS_MISSING_RECORD;
+				else
+					t->fai = NULL;
+				break;
+			case TRACE_ITEM_PROBE:
+				while (ctx_idx < sess->ctx_cnt) {
+					cci = &sess->ctx_entries[ctx_idx];
+					if (cci->seq_id > orig_seq_id)
+						break;
+					/* advance regardless if we found a match or not */
+					ctx_idx++;
+					if (cci->seq_id == orig_seq_id) {
+						found = true;
+						break;
+					}
+				}
+
+				if (found)
+					t->cci = cci;
+				else
+					t->cci = NULL;
+				break;
+			}
 		}
 	}
 
@@ -780,9 +810,11 @@ static void prepare_trace_items(struct ctx *ctx, struct stack_items_cache *cache
 		add_missing_records_msg(cache, last_seq_id - prev_seq_id);
 }
 
-static void print_fnargs_item(struct stack_item *s, const struct func_args_item *fai,
-			      int indent_shift)
+static void print_fnargs_item(struct stack_item *s, int indent_shift,
+			      const struct func_args_item *fai)
 {
+	const struct func_args_info *fn_args;
+
 	if (!fai)
 		return;
 
@@ -793,11 +825,28 @@ static void print_fnargs_item(struct stack_item *s, const struct func_args_item 
 		if (env.args_fmt_mode != ARGS_FMT_COMPACT)
 			printf("\n%*.s", indent_shift, "");
 		printf("... data missing ...");
-	} else {
-		const struct func_args_info *fn_args = func_args_info(fai->func_id);
-
-		emit_fnargs_data(stdout, s, fn_args, fai, indent_shift);
+		return;
 	}
+
+	fn_args = func_args_info(fai->func_id);
+	emit_fnargs_data(stdout, s, fn_args, fai, indent_shift);
+}
+
+static void print_ctx_item(struct stack_item *s, int indent_shift,
+			   const struct inj_probe_info *inj,
+			   const struct ctx_capture_item *cci)
+{
+	if (env.args_fmt_mode == ARGS_FMT_COMPACT)
+		printf("  ");
+
+	if (!cci) {
+		if (env.args_fmt_mode != ARGS_FMT_COMPACT)
+			printf("\n%*.s", indent_shift, "");
+		printf("... data missing ...");
+		return;
+	}
+
+	emit_ctx_data(stdout, s, indent_shift, inj, cci);
 }
 
 static void print_trace_items(struct ctx *ctx, const struct stack_items_cache *cache)
@@ -848,8 +897,20 @@ static void print_trace_items(struct ctx *ctx, const struct stack_items_cache *c
 		       res_len, s->err,
 		       dur_len, s->dur);
 
-		if (env.capture_args)
-			print_fnargs_item(s, s->extra, sym_len + 1);
+		if (env.capture_args) {
+			struct trace_item *ti = s->extra;
+			const struct inj_probe_info *inj;
+
+			switch (ti->kind) {
+			case TRACE_ITEM_FUNC:
+				print_fnargs_item(s, sym_len + 1, ti->fai);
+				break;
+			case TRACE_ITEM_PROBE:
+				inj = mass_attacher__inj_probe(ctx->att, ti->cci->probe_id);
+				print_ctx_item(s, sym_len + 1, inj, ti->cci);
+				break;
+			}
+		}
 
 		printf("\n");
 	}
@@ -965,8 +1026,8 @@ static void print_stack_items(struct stack_items_cache *cache)
 		       dur_len, s->dur, err_len, s->err,
 		       sym_len, s->sym, src_len, s->src);
 
-		if (env.capture_args)
-			print_fnargs_item(s, s->extra, 3 + dur_len + 1);
+		if (env.capture_args && s->extra)
+			print_fnargs_item(s, 3 + dur_len + 1, s->extra);
 
 		printf("\n");
 	}
@@ -1332,6 +1393,15 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 			return -EINVAL;
 		}
 		return handle_inj_probe(ctx, sess, r);
+	}
+	case REC_CTX_CAPTURE: {
+		const struct ctx_capture *r = data;
+
+		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
+			fprintf(stderr, "BUG: PID %d session data not found (CTX_CAPTURE)!\n", r->pid);
+			return -EINVAL;
+		}
+		return handle_ctx_capture(ctx, sess, r);
 	}
 	case REC_SESSION_END: {
 		const struct session_end *r = data;

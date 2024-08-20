@@ -353,14 +353,43 @@ static void btf_data_dump_printf(void *ctx, const char *fmt, va_list args)
 	vbnappendf(b, fmt, args);
 }
 
-static void prepare_fn_arg(struct fmt_buf *b,
-			   const struct func_args_info *fn_args,
-			   const struct func_arg_spec *spec,
-			   void *data, size_t data_len, int indent_shift)
+static void fmt_capture_item(struct fmt_buf *b, const struct btf *btf, int btf_id,
+			     void *data, size_t data_len, int indent_shift)
 {
 	struct btf_data_dump_opts opts = {};
 	int err;
 
+	opts.emit_zeroes = false;
+	opts.indent_str = "    ";
+	opts.indent_level = 0;
+	opts.indent_shift = indent_shift;
+	opts.skip_names = false;
+	if (env.args_fmt_mode == ARGS_FMT_VERBOSE) {
+		opts.compact = false;
+	} else {
+		opts.compact = true;
+	}
+
+	err = btf_data_dump(btf, btf_id, data, data_len, btf_data_dump_printf, b, &opts);
+	if (err == -E2BIG) {
+		/* truncated data */
+		bnappendf(b, "\u2026");
+	} else if (err < 0) {
+		/* unexpected error */
+		const char *errstr = err_to_str(err);
+
+		if (errstr)
+			bnappendf(b, "...DUMP ERR=-%s...", errstr);
+		else
+			bnappendf(b, "...DUMP ERR=%d...", err);
+	}
+}
+
+static void fmt_fnargs_item(struct fmt_buf *b,
+			   const struct func_args_info *fn_args,
+			   const struct func_arg_spec *spec,
+			   void *data, size_t data_len, int indent_shift)
+{
 	if (!fn_args->btf) {
 		char buf[32];
 
@@ -381,32 +410,8 @@ static void prepare_fn_arg(struct fmt_buf *b,
 	if (spec->pointee_btf_id) /* append pointer mark */
 		bnappendf(b, "&");
 
-	opts.emit_zeroes = false;
-	opts.indent_str = "    ";
-	opts.indent_level = 0;
-	opts.indent_shift = indent_shift;
-	opts.skip_names = false;
-	if (env.args_fmt_mode == ARGS_FMT_VERBOSE) {
-		opts.compact = false;
-	} else {
-		opts.compact = true;
-	}
-
-	err = btf_data_dump(fn_args->btf, spec->pointee_btf_id ?: spec->btf_id,
-			    data, data_len,
-			    btf_data_dump_printf, b, &opts);
-	if (err == -E2BIG) {
-		/* truncated data */
-		bnappendf(b, "\u2026");
-	} else if (err < 0) {
-		/* unexpected error */
-		const char *errstr = err_to_str(err);
-
-		if (errstr)
-			bnappendf(b, "...DUMP ERR=-%s...", errstr);
-		else
-			bnappendf(b, "...DUMP ERR=%d...", err);
-	}
+	fmt_capture_item(b, fn_args->btf, spec->pointee_btf_id ?: spec->btf_id,
+			 data, data_len, indent_shift);
 }
 
 void emit_fnargs_data(FILE *f, struct stack_item *s,
@@ -516,8 +521,8 @@ void emit_fnargs_data(FILE *f, struct stack_item *s,
 			else
 				bnappendf(&b, "<ERR:%d>", len);
 		} else {
-			prepare_fn_arg(&b, fn_args, &fn_args->arg_specs[i],
-				       data, len, indent_shift);
+			fmt_fnargs_item(&b, fn_args, &fn_args->arg_specs[i],
+				        data, len, indent_shift);
 			data += (len + 7) / 8 * 8;
 		}
 
@@ -528,6 +533,75 @@ print_ellipsis:
 		if (width_lim && b.sublen > b.max_sublen)
 			fprintf(f, "%s", UNICODE_HELLIP);
 	}
+}
+
+void emit_ctx_data(FILE *f, struct stack_item *s, int indent_shift,
+		   const struct inj_probe_info *inj,
+		   const struct ctx_capture_item *cci)
+{
+	const char *sep = env.args_fmt_mode == ARGS_FMT_COMPACT ? "" : " ";
+	int width_lim = env.args_fmt_max_arg_width;
+	struct fmt_buf b;
+
+	/* verbose args output mode doesn't have width limit */
+	if (env.args_fmt_mode == ARGS_FMT_VERBOSE)
+		width_lim = 0;
+	b = FMT_FILE(f, s->src, width_lim);
+
+	if (env.args_fmt_mode != ARGS_FMT_COMPACT)
+		/* emit Unicode's slightly smaller-sized '>' as a marker of an argument */
+		fprintf(f, "\n%*.s\u203A ", indent_shift, "");
+
+	if (!inj->btf || inj->ctx_btf_id <= 0) {
+		fprintf(f, "... missing BTF information ...");
+		goto print_ellipsis;
+	}
+
+	fprintf(f, "%s%s=%s", "regs", sep, sep);
+
+	if (cci->data_len < 0) {
+		const char *errstr = err_to_str(cci->data_len);
+
+		if (errstr)
+			bnappendf(&b, "<ERR:-%s>", errstr);
+		else
+			bnappendf(&b, "<ERR:%d>", cci->data_len);
+
+		goto print_ellipsis;
+	}
+
+	fmt_capture_item(&b, inj->btf, inj->ctx_btf_id, cci->data, cci->data_len, indent_shift);
+
+print_ellipsis:
+	/* append Unicode horizontal ellipsis (single-character triple dots)
+	 * if output was truncated to mark its truncation visually
+	 */
+	if (width_lim && b.sublen > b.max_sublen)
+		fprintf(f, "%s", UNICODE_HELLIP);
+}
+
+int handle_ctx_capture(struct ctx *ctx, struct session *sess, const struct ctx_capture *r)
+{
+	struct ctx_capture_item *d;
+	void *tmp;
+
+	tmp = realloc(sess->ctx_entries, (sess->ctx_cnt + 1) * sizeof(sess->ctx_entries[0]));
+	if (!tmp)
+		return -ENOMEM;
+	sess->ctx_entries = tmp;
+
+	d = &sess->ctx_entries[sess->ctx_cnt];
+	d->probe_id = r->probe_id;
+	d->seq_id = r->seq_id;
+	d->data_len = r->data_len;
+	d->data = malloc(r->data_len);
+	if (!d->data)
+		return -ENOMEM;
+	memcpy(d->data, r->data, r->data_len);
+
+	sess->ctx_cnt++;
+
+	return 0;
 }
 
 __attribute__((destructor))
