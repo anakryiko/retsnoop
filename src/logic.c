@@ -792,9 +792,11 @@ static void print_fnargs_item(struct stack_item *s, const struct func_args_item 
 	if (fai == FNARGS_MISSING_RECORD) {
 		if (env.args_fmt_mode != ARGS_FMT_COMPACT)
 			printf("\n%*.s", indent_shift, "");
-		printf("... args data missing ...");
+		printf("... data missing ...");
 	} else {
-		emit_fnargs_data(stdout, s, fai, indent_shift);
+		const struct func_args_info *fn_args = func_args_info(fai->func_id);
+
+		emit_fnargs_data(stdout, s, fn_args, fai, indent_shift);
 	}
 }
 
@@ -816,7 +818,7 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 	dur_len = max(dur_len, sizeof("DURATION") - 1);
 	res_len = max(res_len, sizeof("RESULT") - 1);
 	sym_len = max(sym_len, 2 + sizeof("FUNCTION CALLS") - 1);
-	arg_len = max(arg_len, sizeof("ARGS") - 1);
+	arg_len = max(arg_len, sizeof("CONTEXT") - 1);
 	/* but truncate to maximum buffer sizes */
 	dur_len = min(dur_len, sizeof(s->dur));
 	res_len = min(res_len, sizeof(s->err));
@@ -828,7 +830,7 @@ static void print_ft_items(struct ctx *ctx, const struct stack_items_cache *cach
 	       res_len, "RESULT",
 	       dur_len, "DURATION");
 	if (env.capture_args && env.args_fmt_mode == ARGS_FMT_COMPACT)
-		printf("  %-*s", arg_len, "ARGS");
+		printf("  %-*s", arg_len, "CONTEXT");
 	printf("\n");
 
 	printf("%-.*s   %-.*s  %.*s",

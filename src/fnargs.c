@@ -409,10 +409,11 @@ static void prepare_fn_arg(struct fmt_buf *b,
 	}
 }
 
-void emit_fnargs_data(FILE *f, struct stack_item *s, const struct func_args_item *fai,
+void emit_fnargs_data(FILE *f, struct stack_item *s,
+		      const struct func_args_info *fn_args,
+		      const struct func_args_item *fai,
 		      int indent_shift)
 {
-	const struct func_args_info *fn_args = &fn_infos[fai->func_id];
 	int i, len, vararg_start_idx = 0, kind, vararg_end_idx = 0;
 	void *data = fai->arg_data, *prev_data = NULL;
 	const char *sep = env.args_fmt_mode == ARGS_FMT_COMPACT ? "" : " ";
