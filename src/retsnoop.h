@@ -26,6 +26,7 @@ enum rec_type {
 	REC_FUNC_TRACE_ENTRY,
 	REC_FUNC_TRACE_EXIT,
 	REC_FUNC_ARGS_CAPTURE,
+	REC_CTX_CAPTURE,
 	REC_LBR_STACK,
 	REC_INJ_PROBE,
 	REC_SESSION_END,
@@ -130,6 +131,18 @@ struct func_args_capture {
 	int pid;
 	int seq_id;
 	unsigned short func_id;
+	unsigned short data_len;
+	unsigned short arg_ptrs; /* whether we put raw ptr value into arg_data */
+	short arg_lens[MAX_FNARGS_ARG_SPEC_CNT];
+	char arg_data[]; /* BPF side sizes is according to settings */
+};
+
+struct ctx_capture {
+	/* REC_CTX_CAPTURE */
+	enum rec_type type;
+	int pid;
+	int seq_id;
+	unsigned short probe_id;
 	unsigned short data_len;
 	unsigned short arg_ptrs; /* whether we put raw ptr value into arg_data */
 	short arg_lens[MAX_FNARGS_ARG_SPEC_CNT];
