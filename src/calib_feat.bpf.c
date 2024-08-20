@@ -23,6 +23,7 @@ bool has_branch_snapshot = false;
 bool has_ringbuf = false;
 bool has_bpf_cookie = false;
 bool has_kprobe_multi = false;
+bool has_rawtp_cookie = false;
 
 SEC("ksyscall/nanosleep")
 int calib_entry(struct pt_regs *ctx)
@@ -74,10 +75,15 @@ int calib_entry(struct pt_regs *ctx)
 	 */
 	has_ringbuf = bpf_core_enum_value_exists(enum bpf_map_type, BPF_MAP_TYPE_RINGBUF);
 
-	/* Detect if BPF cookie is supported for kprobes.
+	/* Detect if BPF cookie is supported for *kprobes*.
 	 * Added in: 7adfc6c9b315 ("bpf: Add bpf_get_attach_cookie() BPF helper to access bpf_cookie value")
 	 */
 	has_bpf_cookie = bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_get_attach_cookie);
+
+	/* Detect if BPF cookie is supported for *raw tracepoints*.
+	 * Added in: 68ca5d4eebb8 ("bpf: support BPF cookie in raw tracepoint (raw_tp, tp_btf) programs")
+	 */
+	has_rawtp_cookie = bpf_core_field_exists(union bpf_attr, raw_tracepoint.cookie);
 
 	/* Detect if multi-attach kprobes are supported.
 	 * Added in: 0dcac2725406 ("bpf: Add multi kprobe link")

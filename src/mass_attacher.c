@@ -135,6 +135,7 @@ struct mass_attacher {
 	bool has_fexit_sleep_fix;
 	bool has_fentry_protection;
 	bool has_bpf_cookie;
+	bool has_rawtp_cookie;
 	bool has_kprobe_multi;
 
 	struct mass_attacher_func_info *func_infos;
@@ -602,6 +603,7 @@ static int calibrate_features(struct mass_attacher *att)
 	att->has_fexit_sleep_fix = skel->bss->has_fexit_sleep_fix;
 	att->has_fentry_protection = skel->bss->has_fentry_protection;
 	att->has_bpf_cookie = skel->bss->has_bpf_cookie;
+	att->has_rawtp_cookie = skel->bss->has_rawtp_cookie;
 	att->has_kprobe_multi = skel->bss->has_kprobe_multi;
 
 	calib_feat_bpf__destroy(skel);

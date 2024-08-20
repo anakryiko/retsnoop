@@ -133,11 +133,13 @@ static int detect_kernel_features(void)
 		       "\tbpf_get_func_ip() supported: %s\n"
 		       "\tbpf_get_branch_snapshot() supported: %s\n"
 		       "\tBPF cookie supported: %s\n"
+		       "\tBPF cookie supported (raw tracepoint): %s\n"
 		       "\tmulti-attach kprobe supported: %s\n",
 		       skel->bss->has_ringbuf ? "yes" : "no",
 		       skel->bss->has_bpf_get_func_ip ? "yes" : "no",
 		       skel->bss->has_branch_snapshot ? "yes" : "no",
 		       skel->bss->has_bpf_cookie ? "yes" : "no",
+		       skel->bss->has_rawtp_cookie ? "yes" : "no",
 		       skel->bss->has_kprobe_multi ? "yes" : "no");
 		printf("Feature calibration:\n"
 		       "\tkretprobe IP offset: %d\n"
