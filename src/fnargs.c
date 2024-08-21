@@ -647,7 +647,8 @@ static int prepare_kprobe_ctx_specs(int probe_id,
 		pt_regs_btf_id = btf__find_by_name_kind(info->btf, "pt_regs", BTF_KIND_STRUCT);
 
 	if (pt_regs_btf_id < 0) {
-		elog("Failed to find `struct pt_regs` BTF type for injection probe!\n");
+		elog("Failed to find 'struct pt_regs' BTF type for injection probe: %d\n",
+		     pt_regs_btf_id);
 		return -ESRCH;
 	}
 
@@ -662,6 +663,143 @@ static int prepare_kprobe_ctx_specs(int probe_id,
 	spec->flags = t->size;
 	spec->flags |= CTXARG_KIND_VALUE << CTXARG_OFF_SHIFT;
 	spec->flags |= 0 << CTXARG_OFF_SHIFT;
+
+	return 0;
+}
+
+/* expects TYPEDEF -> PTR -> FUNC_PROTO, returns ID of FUNC_PROTO */
+static bool btf_is_typedef_ptr_fnproto(const struct btf *btf, int btf_id, int *fn_btf_id)
+{
+	const struct btf_type *t;
+
+	t = btf__type_by_id(btf, btf_id);
+	if (!btf_is_typedef(t))
+		return false;
+
+	t = btf_strip_mods_and_typedefs(btf, t->type, NULL);
+	if (!btf_is_ptr(t))
+		return false;
+
+	t = btf_strip_mods_and_typedefs(btf, t->type, fn_btf_id);
+	if (!btf_is_func_proto(t))
+		return false;
+
+	return true;
+}
+
+/* expects FUNC -> FUNC_PROTO, returns IF of FUNC_PROTO */
+static bool btf_is_func_fnproto(const struct btf *btf, int btf_id, int *fn_btf_id)
+{
+	const struct btf_type *t;
+
+	t = btf__type_by_id(btf, btf_id);
+	if (!btf_is_func(t))
+		return false;
+
+	t = btf_strip_mods_and_typedefs(btf, t->type, fn_btf_id);
+	if (!btf_is_func_proto(t))
+		return false;
+
+	return true;
+}
+
+
+static int prepare_rawtp_ctx_specs(int probe_id,
+				   const struct inj_probe_info *inj,
+				   struct ctx_args_info *info)
+{
+	const struct btf *btf = info->btf;
+	const struct btf_type *t, *tr, *ti;
+	const struct btf_param *trp, *tip;
+	char buf[256];
+	int btf_id, traceiter_btf_id, i;
+
+	/* Each raw tracepoint has a corresponding 'btf_trace_<name>' BTF type
+	 * of the form TYPEDEF -> PTR -> FUNC_PROTO. The very first argument
+	 * is always void * and isn't really a part of raw tracepoint data.
+	 *
+	 * E.g., for module_get raw tracepoint:
+	 *
+	 * typedef void (*btf_trace_module_get)(void *, struct module *, unsigned long);
+	 *
+	 * Unfortunately, parameter names are lost and can't be recovered from
+	 * this type. BUT!
+	 *
+	 * Kernel also defines __traceiter_<name> FUNC -> FUNC_PROTO (and
+	 * earlier it was called __tracepoint_iter_<name>, so we try to find
+	 * that as well), which does preserve argument names.
+	 *
+	 * __traceiter_<name> doesn't record correct types, though, so we need
+	 * to rely on both types for most complete information.
+	 *
+	 * Names are considered optional, so we don't fail if we don't find
+	 * __traceiter/__tracepoint_iter types. But we do rely on btf_trace
+	 * type heavily, so if it's not found, we bail.
+	 */
+	snprintf(buf, sizeof(buf), "btf_trace_%s", inj->rawtp.name);
+	btf_id = btf__find_by_name_kind(btf, buf, BTF_KIND_TYPEDEF);
+	if (btf_id < 0) {
+		elog("Failed to find BTF type '%s' for raw tracepoint '%s': %d\n",
+		     buf, inj->rawtp.name, btf_id);
+		return -ESRCH;
+	}
+	if (!btf_is_typedef_ptr_fnproto(btf, btf_id, &btf_id)) {
+		elog("Invalid form of BTF type '%s' for raw tracepoint '%s': %d\n",
+		     buf, inj->rawtp.name, btf_id);
+		return -ESRCH;
+	}
+	tr = btf__type_by_id(btf, btf_id);
+
+	/* optionally find traceiter to recover argument names */
+	snprintf(buf, sizeof(buf), "__traceiter_%s", inj->rawtp.name);
+	traceiter_btf_id = btf__find_by_name_kind(btf, buf, BTF_KIND_FUNC);
+	if (traceiter_btf_id < 0) {
+		snprintf(buf, sizeof(buf), "__tracepoint_iter_%s", inj->rawtp.name);
+		traceiter_btf_id = btf__find_by_name_kind(btf, buf, BTF_KIND_FUNC);
+	}
+	ti = traceiter_btf_id > 0 ? btf__type_by_id(btf, traceiter_btf_id) : NULL;
+	if (ti && !btf_is_func_fnproto(btf, traceiter_btf_id, &traceiter_btf_id))
+		ti = NULL;
+	ti = traceiter_btf_id > 0 ? btf__type_by_id(btf, traceiter_btf_id) : NULL;
+
+	info->spec_cnt = 0;
+	for (i = 0; i < btf_vlen(tr) - 1; i++) {
+		struct ctx_arg_spec *spec = &info->specs[i];
+
+		trp = btf_params(tr) + 1 + i; /* skip first `void *` param */
+		tip = ti ? btf_params(ti) + 1 + i : NULL;
+
+		spec->btf_id = trp->type;
+		spec->name = tip ? btf__str_by_offset(btf, tip->name_off) : "arg";
+		spec->flags = (i * 8) << CTXARG_OFF_SHIFT;
+
+		t = btf_strip_mods_and_typedefs(btf, trp->type, NULL);
+		if (btf_is_ptr(t)) {
+			/* NOTE: we fill out spec->pointee_btf_id here */
+			t = btf_strip_mods_and_typedefs(btf, t->type, &spec->pointee_btf_id);
+			if (btf_is_char(btf, t)) {
+				spec->flags |= env.args_max_str_arg_size;
+				spec->flags |= CTXARG_KIND_PTR_STR << CTXARG_KIND_SHIFT;
+				spec->pointee_btf_id = -1; /* special string marker */
+			} else if (btf_is_fixed_sized(btf, t)) {
+				spec->flags |= min(t->size, env.args_max_sized_arg_size);
+				spec->flags |= CTXARG_KIND_PTR_FIXED << CTXARG_KIND_SHIFT;
+			} else {
+				/* generic pointer, treat as u64 */
+				spec->flags |= 8;
+				spec->flags |= CTXARG_KIND_VALUE << CTXARG_KIND_SHIFT;
+				spec->pointee_btf_id = 0; /* raw pointer doesn't set pointee */
+			}
+		} else if (btf_is_fixed_sized(btf, t)) {
+			spec->flags |= min(t->size, env.args_max_sized_arg_size);
+			spec->flags |= CTXARG_KIND_VALUE << CTXARG_KIND_SHIFT;
+		} else {
+			dlog("!!!UNKNOWN ARG #%d KIND %d!!!", i, btf_kind(t));
+			spec->flags |= CTXARG_KIND_VALUE << CTXARG_OFF_SHIFT; /* no len, skip it */
+		}
+
+		info->spec_cnt++;
+	}
 
 	return 0;
 }
@@ -698,6 +836,8 @@ int prepare_ctx_args_specs(int probe_id, const struct inj_probe_info *inj)
 		err = prepare_kprobe_ctx_specs(probe_id, inj, ctx_args);
 		break;
 	case INJ_RAWTP:
+		err = prepare_rawtp_ctx_specs(probe_id, inj, ctx_args);
+		break;
 	case INJ_TP:
 		err = -EINVAL;
 		break;
@@ -709,12 +849,13 @@ int prepare_ctx_args_specs(int probe_id, const struct inj_probe_info *inj)
 		return err;
 	}
 
-	dlog("Probe    '%s' ctx spec:", desc);
+	dlog("Probe '%s' ctx spec:", desc);
 
 	for (i = 0; i < ctx_args->spec_cnt; i++) {
 		const struct ctx_arg_spec *spec = &ctx_args->specs[i];
 		enum ctxarg_kind kind = (spec->flags & CTXARG_KIND_MASK) >> CTXARG_KIND_SHIFT;
-		int len = spec->flags & CTXARG_LEN_MASK;
+		const struct btf_type *t;
+		int len = spec->flags & CTXARG_LEN_MASK, true_len;
 		int off = (spec->flags & CTXARG_OFF_MASK) >> CTXARG_OFF_SHIFT;
 
 		dlog(" %s=(", spec->name);
@@ -724,10 +865,13 @@ int prepare_ctx_args_specs(int probe_id, const struct inj_probe_info *inj)
 			dlog("off=%d,len=%d", off, len);
 			break;
 		case CTXARG_KIND_PTR_FIXED:
-			dlog("->off=%d,len=%d", off, len);
+			t = btf__type_by_id(ctx_args->btf, spec->pointee_btf_id);
+			true_len = t->size;
+			dlog("->id=%d,off=%d,len=%d(%d)", spec->pointee_btf_id,
+			     off, true_len, len);
 			break;
 		case CTXARG_KIND_PTR_STR:
-			dlog("->off=%d,len=str(%d)", off, len);
+			dlog("->str,off=%d,len=str(%d)", off, len);
 			break;
 		case CTXARG_KIND_TP_STR:
 			dlog("->off=%d,len=tp_str(%d)", off, len);
