@@ -846,7 +846,7 @@ static void print_ctx_item(struct stack_item *s, int indent_shift,
 		return;
 	}
 
-	emit_ctx_data(stdout, s, indent_shift, inj, cci);
+	emit_ctxargs_data(stdout, s, indent_shift, inj, cci);
 }
 
 static void print_trace_items(struct ctx *ctx, const struct stack_items_cache *cache)

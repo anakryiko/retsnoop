@@ -132,6 +132,15 @@ static __always_inline const struct func_info *func_info(u32 id)
 	return &func_infos[id & func_info_mask];
 }
 
+/* dynamically sized from the user space */
+struct ctxargs_info ctxargs_infos[1] SEC(".data.ctxargs_infos");
+const volatile __u32 ctxargs_info_mask;
+
+static __always_inline const struct ctxargs_info *ctxargs_info(u32 id)
+{
+	return &ctxargs_infos[id & ctxargs_info_mask];
+}
+
 #ifdef __TARGET_ARCH_x86
 static u64 get_arg_reg_value(void *ctx, u32 arg_idx)
 {
@@ -950,6 +959,9 @@ static void handle_inj_probe(void *ctx, u32 id, u32 ctx_sz)
 
 		err = bpf_probe_read_kernel(r->data, ctx_sz, ctx);
 		r->data_len = err ?: ctx_sz;
+
+		r->ptrs = 0;
+		r->lens[0] = err ?: ctx_sz;
 
 		bpf_ringbuf_submit(r, 0);
 	}

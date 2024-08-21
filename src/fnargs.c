@@ -17,9 +17,17 @@
 static struct func_args_info *fn_infos;
 static int fn_info_cnt, fn_info_cap;
 
+static struct ctx_args_info *ctx_infos;
+static int ctx_info_cnt, ctx_info_cap;
+
 const struct func_args_info *func_args_info(int func_id)
 {
 	return &fn_infos[func_id];
+}
+
+const struct ctx_args_info *ctx_args_info(int probe_id)
+{
+	return &ctx_infos[probe_id];
 }
 
 static bool btf_is_fixed_sized(const struct btf *btf, const struct btf_type *t)
@@ -172,7 +180,6 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 	n = btf_vlen(fn_t);
 	if (n > MAX_FNARGS_ARG_SPEC_CNT)
 		n = MAX_FNARGS_ARG_SPEC_CNT;
-
 
 	fn_args->arg_spec_cnt = (is_printf_like ? MAX_FNARGS_ARG_SPEC_CNT : n);
 
@@ -353,11 +360,32 @@ static void btf_data_dump_printf(void *ctx, const char *fmt, va_list args)
 	vbnappendf(b, fmt, args);
 }
 
-static void fmt_capture_item(struct fmt_buf *b, const struct btf *btf, int btf_id,
+static void fmt_capture_item(struct fmt_buf *b, const struct btf *btf,
+			     int btf_id, int pointee_btf_id,
 			     void *data, size_t data_len, int indent_shift)
 {
 	struct btf_data_dump_opts opts = {};
 	int err;
+
+	if (!btf) {
+		char buf[32];
+
+		/* fallback "raw registers" mode, data_len should be 8 */
+		snprintf_smart_uint(buf, sizeof(buf), *(long long *)data);
+		bnappendf(b, "%s", buf);
+
+		return;
+	}
+
+	if (pointee_btf_id < 0) {
+		/* variable-length string */
+		sanitize_string(data, data_len);
+		bnappendf(b, "'%s'", (char *)data);
+		return;
+	}
+
+	if (pointee_btf_id) /* append pointer mark */
+		bnappendf(b, "&");
 
 	opts.emit_zeroes = false;
 	opts.indent_str = "    ";
@@ -370,7 +398,8 @@ static void fmt_capture_item(struct fmt_buf *b, const struct btf *btf, int btf_i
 		opts.compact = true;
 	}
 
-	err = btf_data_dump(btf, btf_id, data, data_len, btf_data_dump_printf, b, &opts);
+	err = btf_data_dump(btf, pointee_btf_id ?: btf_id, data, data_len,
+			    btf_data_dump_printf, b, &opts);
 	if (err == -E2BIG) {
 		/* truncated data */
 		bnappendf(b, "\u2026");
@@ -385,35 +414,6 @@ static void fmt_capture_item(struct fmt_buf *b, const struct btf *btf, int btf_i
 	}
 }
 
-static void fmt_fnargs_item(struct fmt_buf *b,
-			   const struct func_args_info *fn_args,
-			   const struct func_arg_spec *spec,
-			   void *data, size_t data_len, int indent_shift)
-{
-	if (!fn_args->btf) {
-		char buf[32];
-
-		/* fallback "raw registers" mode, data_len should be 8 */
-		snprintf_smart_uint(buf, sizeof(buf), *(long long *)data);
-		bnappendf(b, "%s", buf);
-
-		return;
-	}
-
-	if (spec->pointee_btf_id < 0) {
-		/* variable-length string */
-		sanitize_string(data, data_len);
-		bnappendf(b, "'%s'", (char *)data);
-		return;
-	}
-
-	if (spec->pointee_btf_id) /* append pointer mark */
-		bnappendf(b, "&");
-
-	fmt_capture_item(b, fn_args->btf, spec->pointee_btf_id ?: spec->btf_id,
-			 data, data_len, indent_shift);
-}
-
 void emit_fnargs_data(FILE *f, struct stack_item *s,
 		      const struct func_args_info *fn_args,
 		      const struct func_args_item *fai,
@@ -425,13 +425,14 @@ void emit_fnargs_data(FILE *f, struct stack_item *s,
 	char buf[32];
 
 	for (i = 0; i < fn_args->arg_spec_cnt; i++) {
+		const struct func_arg_spec *spec = &fn_args->arg_specs[i];
 		int width_lim = env.args_fmt_max_arg_width, vararg_n;
 		struct fmt_buf b;
 		bool is_vararg, has_ptr;
 
 		has_ptr = fai->arg_ptrs & (1 << i);
 
-		kind = (fn_args->arg_specs[i].arg_flags & FNARGS_KIND_MASK) >> FNARGS_KIND_SHIFT;
+		kind = (spec->arg_flags & FNARGS_KIND_MASK) >> FNARGS_KIND_SHIFT;
 		is_vararg = (kind == FNARGS_KIND_VARARG);
 		if (is_vararg && vararg_start_idx == 0) {
 			vararg_start_idx = i;
@@ -457,7 +458,7 @@ void emit_fnargs_data(FILE *f, struct stack_item *s,
 			if (is_vararg)
 				fprintf(f, "vararg%d%s=%s", i - vararg_start_idx, sep, sep);
 			else
-				fprintf(f, "%s%s=%s", fn_args->arg_specs[i].name, sep, sep);
+				fprintf(f, "%s%s=%s", spec->name, sep, sep);
 		} else { /* "raw" BTF-less mode */
 			fprintf(f, "arg%d%s=%s", i, sep, sep);
 		}
@@ -496,7 +497,7 @@ void emit_fnargs_data(FILE *f, struct stack_item *s,
 
 		if (len == 0) {
 			/* we encode special conditions in REGIDX mask */
-			switch (fn_args->arg_specs[i].arg_flags & FNARGS_REGIDX_MASK) {
+			switch (spec->arg_flags & FNARGS_REGIDX_MASK) {
 			case FNARGS_UNKN_VARARG:
 				bnappendf(&b, "(vararg)");
 				break;
@@ -521,8 +522,8 @@ void emit_fnargs_data(FILE *f, struct stack_item *s,
 			else
 				bnappendf(&b, "<ERR:%d>", len);
 		} else {
-			fmt_fnargs_item(&b, fn_args, &fn_args->arg_specs[i],
-				        data, len, indent_shift);
+			fmt_capture_item(&b, fn_args->btf, spec->btf_id, spec->pointee_btf_id,
+				         data, len, indent_shift);
 			data += (len + 7) / 8 * 8;
 		}
 
@@ -535,49 +536,72 @@ print_ellipsis:
 	}
 }
 
-void emit_ctx_data(FILE *f, struct stack_item *s, int indent_shift,
-		   const struct inj_probe_info *inj,
-		   const struct ctx_capture_item *cci)
+void emit_ctxargs_data(FILE *f, struct stack_item *s, int indent_shift,
+		       const struct inj_probe_info *inj,
+		       const struct ctx_capture_item *cci)
 {
 	const char *sep = env.args_fmt_mode == ARGS_FMT_COMPACT ? "" : " ";
-	int width_lim = env.args_fmt_max_arg_width;
-	struct fmt_buf b;
+	const struct ctx_args_info *info = ctx_args_info(cci->probe_id);
+	void *data = cci->data;
+	int i, len;//, kind;
 
-	/* verbose args output mode doesn't have width limit */
-	if (env.args_fmt_mode == ARGS_FMT_VERBOSE)
-		width_lim = 0;
-	b = FMT_FILE(f, s->src, width_lim);
+	for (i = 0; i < info->spec_cnt; i++) {
+		const struct ctx_arg_spec *spec = &info->specs[i];
+		int width_lim = env.args_fmt_max_arg_width;
+		struct fmt_buf b;
+		bool has_ptr;
 
-	if (env.args_fmt_mode != ARGS_FMT_COMPACT)
-		/* emit Unicode's slightly smaller-sized '>' as a marker of an argument */
-		fprintf(f, "\n%*.s\u203A ", indent_shift, "");
+		has_ptr = cci->ptrs & (1 << i);
+		//kind = (spec->flags & CTXARG_KIND_MASK) >> CTXARG_KIND_SHIFT;
 
-	if (!inj->btf || inj->ctx_btf_id <= 0) {
-		fprintf(f, "... missing BTF information ...");
-		goto print_ellipsis;
+		/* verbose args output mode doesn't have width limit */
+		if (env.args_fmt_mode == ARGS_FMT_VERBOSE)
+			width_lim = 0;
+		b = FMT_FILE(f, s->src, width_lim);
+
+		if (env.args_fmt_mode == ARGS_FMT_COMPACT)
+			fprintf(f, "%s", i == 0 ? "" : " ");
+		else /* emit Unicode's slightly smaller-sized '>' as a marker of an argument */
+			fprintf(f, "\n%*.s\u203A ", indent_shift, "");
+
+		if (info->btf) {
+			fprintf(f, "%s%s=%s", spec->name, sep, sep);
+		} else { /* "raw" BTF-less mode */
+			fprintf(f, "ctx%d%s=%s", i, sep, sep);
+		}
+
+		len = cci->lens[i];
+
+		if (env.args_capture_raw_ptrs && has_ptr) {
+			bnappendf(&b, "(0x%llx)", *(long long *)data);
+			data += 8;
+		}
+
+		if (len == 0) {
+			bnappendf(&b, "(empty)");
+		} else if (len == -ENODATA) {
+			bnappendf(&b, "NULL");
+		} else if (len == -ENOSPC) {
+			bnappendf(&b, "(trunc)");
+		} else if (len < 0) {
+			const char *errstr = err_to_str(len);
+
+			if (errstr)
+				bnappendf(&b, "<ERR:-%s>", errstr);
+			else
+				bnappendf(&b, "<ERR:%d>", len);
+		} else {
+			fmt_capture_item(&b, info->btf, spec->btf_id, spec->pointee_btf_id,
+					data, len, indent_shift);
+			data += (len + 7) / 8 * 8;
+		}
+
+		/* append Unicode horizontal ellipsis (single-character triple dots)
+		 * if output was truncated to mark its truncation visually
+		 */
+		if (width_lim && b.sublen > b.max_sublen)
+			fprintf(f, "%s", UNICODE_HELLIP);
 	}
-
-	fprintf(f, "%s%s=%s", "regs", sep, sep);
-
-	if (cci->data_len < 0) {
-		const char *errstr = err_to_str(cci->data_len);
-
-		if (errstr)
-			bnappendf(&b, "<ERR:-%s>", errstr);
-		else
-			bnappendf(&b, "<ERR:%d>", cci->data_len);
-
-		goto print_ellipsis;
-	}
-
-	fmt_capture_item(&b, inj->btf, inj->ctx_btf_id, cci->data, cci->data_len, indent_shift);
-
-print_ellipsis:
-	/* append Unicode horizontal ellipsis (single-character triple dots)
-	 * if output was truncated to mark its truncation visually
-	 */
-	if (width_lim && b.sublen > b.max_sublen)
-		fprintf(f, "%s", UNICODE_HELLIP);
 }
 
 int handle_ctx_capture(struct ctx *ctx, struct session *sess, const struct ctx_capture *r)
@@ -594,12 +618,129 @@ int handle_ctx_capture(struct ctx *ctx, struct session *sess, const struct ctx_c
 	d->probe_id = r->probe_id;
 	d->seq_id = r->seq_id;
 	d->data_len = r->data_len;
+	d->ptrs = r->ptrs;
+	memcpy(d->lens, r->lens, sizeof(r->lens));
 	d->data = malloc(r->data_len);
 	if (!d->data)
 		return -ENOMEM;
 	memcpy(d->data, r->data, r->data_len);
 
 	sess->ctx_cnt++;
+
+	return 0;
+}
+
+/* Prepare specifications of context arguments capture (happening on BPF side)
+ * and post-processing (happening on user space side) for injected probes.
+ */
+
+static int pt_regs_btf_id;
+
+static int prepare_kprobe_ctx_specs(int probe_id,
+				    const struct inj_probe_info *inj,
+				    struct ctx_args_info *info)
+{
+	struct ctx_arg_spec *spec;
+	const struct btf_type *t;
+
+	if (pt_regs_btf_id == 0)
+		pt_regs_btf_id = btf__find_by_name_kind(info->btf, "pt_regs", BTF_KIND_STRUCT);
+
+	if (pt_regs_btf_id < 0) {
+		elog("Failed to find `struct pt_regs` BTF type for injection probe!\n");
+		return -ESRCH;
+	}
+
+	info->spec_cnt = 1;
+
+	/* regs -> struct pt_regs */
+	spec = &info->specs[0];
+	spec->name = "regs";
+	spec->btf_id = pt_regs_btf_id;
+
+	t = btf__type_by_id(info->btf, pt_regs_btf_id);
+	spec->flags = t->size;
+	spec->flags |= CTXARG_KIND_VALUE << CTXARG_OFF_SHIFT;
+	spec->flags |= 0 << CTXARG_OFF_SHIFT;
+
+	return 0;
+}
+
+int prepare_ctx_args_specs(int probe_id, const struct inj_probe_info *inj)
+{
+	struct ctx_args_info *ctx_args;
+	char desc[256];
+	int i, err;
+
+	snprintf_inj_probe(desc, sizeof(desc), inj);
+
+	if (probe_id >= ctx_info_cnt) {
+		int new_cap = max((probe_id + 1) * 4 / 3, 16);
+		void *tmp;
+
+		tmp = realloc(ctx_infos, new_cap * sizeof(*ctx_infos));
+		if (!tmp)
+			return -ENOMEM;
+		ctx_infos = tmp;
+
+		memset(ctx_infos + ctx_info_cnt, 0, (new_cap - ctx_info_cnt) * sizeof(*ctx_infos));
+
+		ctx_info_cnt = probe_id + 1;
+		ctx_info_cap = new_cap;
+	}
+
+	ctx_args = &ctx_infos[probe_id];
+	ctx_args->btf = inj->btf;
+
+	switch (inj->type) {
+	case INJ_KPROBE:
+	case INJ_KRETPROBE:
+		err = prepare_kprobe_ctx_specs(probe_id, inj, ctx_args);
+		break;
+	case INJ_RAWTP:
+	case INJ_TP:
+		err = -EINVAL;
+		break;
+	}
+
+	if (err) {
+		elog("Failed to prepare context data capture for injected probe '%s': %d\n",
+		     desc, err);
+		return err;
+	}
+
+	dlog("Probe    '%s' ctx spec:", desc);
+
+	for (i = 0; i < ctx_args->spec_cnt; i++) {
+		const struct ctx_arg_spec *spec = &ctx_args->specs[i];
+		enum ctxarg_kind kind = (spec->flags & CTXARG_KIND_MASK) >> CTXARG_KIND_SHIFT;
+		int len = spec->flags & CTXARG_LEN_MASK;
+		int off = (spec->flags & CTXARG_OFF_MASK) >> CTXARG_OFF_SHIFT;
+
+		dlog(" %s=(", spec->name);
+
+		switch (kind) {
+		case CTXARG_KIND_VALUE:
+			dlog("off=%d,len=%d", off, len);
+			break;
+		case CTXARG_KIND_PTR_FIXED:
+			dlog("->off=%d,len=%d", off, len);
+			break;
+		case CTXARG_KIND_PTR_STR:
+			dlog("->off=%d,len=str(%d)", off, len);
+			break;
+		case CTXARG_KIND_TP_STR:
+			dlog("->off=%d,len=tp_str(%d)", off, len);
+			break;
+		default:
+			dlog("???,off=%d,len=%d", off, len);
+		}
+
+		dlog(",btf_id=%d)", spec->btf_id);
+	}
+
+	dlog("\n");
+
 
 	return 0;
 }
