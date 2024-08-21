@@ -318,12 +318,11 @@ static int add_inj_kprobe(struct mass_attacher *att, const char *name,
 		return -ENOMEM;
 
 	inj->type = is_kretprobe ? INJ_KRETPROBE : INJ_KPROBE;
+	inj->btf = att->vmlinux_btf;
 	inj->kprobe.offset = offset;
 	inj->kprobe.name = strdup(name);
 	if (!inj->kprobe.name)
 		return -ENOMEM;
-
-	inj->btf = att->vmlinux_btf;
 
 	return att->inj_probe_cnt - 1;
 }
@@ -357,6 +356,7 @@ int mass_attacher__inject_rawtp(struct mass_attacher *att, const char *name)
 		return -ENOMEM;
 
 	inj->type = INJ_RAWTP;
+	inj->btf = att->vmlinux_btf;
 	inj->rawtp.name = strdup(name);
 	if (!inj->rawtp.name)
 		return -ENOMEM;
@@ -378,6 +378,7 @@ int mass_attacher__inject_tp(struct mass_attacher *att, const char *category, co
 		return -ENOMEM;
 
 	inj->type = INJ_TP;
+	inj->btf = att->vmlinux_btf;
 	inj->tp.category = strdup(category);
 	inj->tp.name = strdup(name);
 	if (!inj->tp.category || !inj->tp.name)
