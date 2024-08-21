@@ -198,7 +198,7 @@ static __always_inline bool is_kernel_addr(void *addr)
 	return (long)addr <= 0;
 }
 
-static void capture_vararg(struct func_args_capture *r, u32 arg_idx, void *data)
+static void capture_vararg(struct rec_fnargs_capture *r, u32 arg_idx, void *data)
 {
 	size_t data_off;
 	void *dst;
@@ -238,7 +238,8 @@ static void capture_vararg(struct func_args_capture *r, u32 arg_idx, void *data)
 	r->arg_lens[arg_idx] = len;
 }
 
-static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u64 len, u32 arg_spec)
+static void capture_arg(struct rec_fnargs_capture *r, u32 arg_idx,
+			void *data, u64 len, u32 arg_spec)
 {
 	size_t data_off;
 	void *dst;
@@ -296,9 +297,9 @@ static void capture_arg(struct func_args_capture *r, u32 arg_idx, void *data, u6
 	r->arg_lens[arg_idx] = len;
 }
 
-static __noinline void record_args(void *ctx, struct session *sess, u32 func_id, u32 seq_id)
+static __noinline void record_fnargs(void *ctx, struct session *sess, u32 func_id, u32 seq_id)
 {
-	struct func_args_capture *r;
+	struct rec_fnargs_capture *r;
 	const struct func_info *fi;
 	u64 i, rec_sz;
 
@@ -310,7 +311,7 @@ static __noinline void record_args(void *ctx, struct session *sess, u32 func_id,
 		return;
 	}
 
-	r->type = REC_FUNC_ARGS_CAPTURE;
+	r->type = REC_FNARGS_CAPTURE;
 	r->pid = sess->pid;
 	r->seq_id = seq_id;
 	r->func_id = func_id;
@@ -426,7 +427,7 @@ static const struct session empty_session;
 
 static bool emit_session_start(struct session *sess)
 {
-	struct session_start *r;
+	struct rec_session_start *r;
 
 	r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
 	if (!r) {
@@ -513,7 +514,7 @@ out_defunct:
 	sess->stack.func_lat[d] = bpf_ktime_get_ns();
 
 	if (emit_func_trace) {
-		struct func_trace_entry *fe;
+		struct rec_func_trace_entry *fe;
 
 		fe = bpf_ringbuf_reserve(&rb, sizeof(*fe), 0);
 		if (!fe) {
@@ -535,7 +536,7 @@ skip_ft_entry:;
 	}
 
 	if (capture_args)
-		record_args(ctx, sess, id, seq_id);
+		record_fnargs(ctx, sess, id, seq_id);
 
 	if (verbose) {
 		const char *func_name = func_info(id)->name;
@@ -728,7 +729,7 @@ static int submit_session(void *ctx, struct session *sess)
 	}
 
 	if (emit_session && use_lbr) {
-		struct lbr_stack *r;
+		struct rec_lbr_stack *r;
 
 		if (sess->lbrs_sz <= 0)
 			goto skip_lbrs;
@@ -751,7 +752,7 @@ skip_lbrs:;
 	}
 
 	if (emit_session || sess->start_emitted) {
-		struct session_end *r;
+		struct rec_session_end *r;
 
 		r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
 		if (!r) {
@@ -843,7 +844,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	lat = bpf_ktime_get_ns() - sess->stack.func_lat[d];
 
 	if (emit_func_trace) {
-		struct func_trace_entry *fe;
+		struct rec_func_trace_entry *fe;
 
 		fe = bpf_ringbuf_reserve(&rb, sizeof(*fe), 0);
 		if (!fe) {
@@ -925,7 +926,7 @@ static void handle_inj_probe(void *ctx, u32 id, u32 ctx_sz)
 	sess->next_seq_id++;
 
 	if (emit_func_trace) {
-		struct inj_probe *r;
+		struct rec_inj_probe *r;
 
 		r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
 		if (!r) {
@@ -944,7 +945,7 @@ static void handle_inj_probe(void *ctx, u32 id, u32 ctx_sz)
 	}
 
 	if (emit_func_trace && capture_args) {
-		struct ctx_capture *r;
+		struct rec_ctxargs_capture *r;
 
 		r = bpf_ringbuf_reserve(&rb, sizeof(*r) + ctx_sz, 0);
 		if (!r) {
@@ -952,7 +953,7 @@ static void handle_inj_probe(void *ctx, u32 id, u32 ctx_sz)
 			return;
 		}
 
-		r->type = REC_CTX_CAPTURE;
+		r->type = REC_CTXARGS_CAPTURE;
 		r->pid = pid;
 		r->seq_id = seq_id;
 		r->probe_id = id;

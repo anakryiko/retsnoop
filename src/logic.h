@@ -153,8 +153,8 @@ struct mass_attacher_func_info;
 int prepare_fn_args_specs(int func_idx, const struct mass_attacher_func_info *finfo);
 
 struct func_args_capture;
-int handle_func_args_capture(struct ctx *ctx, struct session *sess,
-			     const struct func_args_capture *r);
+int handle_fnargs_capture(struct ctx *ctx, struct session *sess,
+			  const struct rec_fnargs_capture *r);
 
 void emit_fnargs_data(FILE *f, struct stack_item *s,
 		      const struct func_args_info *fn_args,
@@ -170,8 +170,8 @@ const struct ctx_args_info *ctx_args_info(int probe_id);
 struct inj_probe_info;
 int prepare_ctx_args_specs(int probe_id, const struct inj_probe_info *inj);
 
-struct ctx_capture;
-int handle_ctx_capture(struct ctx *ctx, struct session *sess, const struct ctx_capture *r);
+struct rec_ctxargs_capture;
+int handle_ctx_capture(struct ctx *ctx, struct session *sess, const struct rec_ctxargs_capture *r);
 
 void emit_ctxargs_data(FILE *f, struct stack_item *s, int indent_shift,
 		       const struct inj_probe_info *inj,
