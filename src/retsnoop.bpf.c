@@ -198,109 +198,118 @@ static __always_inline bool is_kernel_addr(void *addr)
 	return (long)addr <= 0;
 }
 
-static void capture_vararg(struct rec_fnargs_capture *r, u32 arg_idx, void *data)
+struct data_capture_ctx {
+	char *data;
+	unsigned short *data_len;
+	short *arg_lens;
+	unsigned short *arg_ptrs;
+	bool is_ptr;
+	bool is_str;
+};
+
+static void capture_vararg(struct data_capture_ctx *dctx, u32 arg_idx, void *src)
 {
 	size_t data_off;
 	void *dst;
 	int err, kind, len;
 
-	data_off = r->data_len;
+	data_off = *dctx->data_len;
 	barrier_var(data_off); /* prevent compiler from re-reading it */
 
 	if (data_off >= args_max_total_args_sz) {
-		r->arg_lens[arg_idx] = -ENOSPC;
+		dctx->arg_lens[arg_idx] = -ENOSPC;
 		return;
 	}
 
-	dst = r->arg_data + data_off;
+	dst = dctx->data + data_off;
 
 	/* at least capture raw 8 byte value */
-	*(long *)dst = (long)data;
+	*(long *)dst = (long)src;
 	len = 8;
 	dst += 8;
-	r->data_len += 8;
+	*dctx->data_len += 8;
 
 	/* if this looks like a kernel addrs, also try to read kernel string */
-	if (is_kernel_addr(data)) {
+	if (is_kernel_addr(src)) {
 		/* in this case we mark that we have a raw pointer value */
-		r->arg_ptrs |= (1 << arg_idx);
+		*dctx->arg_ptrs |= (1 << arg_idx);
 
-		err = bpf_probe_read_kernel_str(dst, args_max_str_arg_sz, data);
+		err = bpf_probe_read_kernel_str(dst, args_max_str_arg_sz, src);
 		if (err < 0) {
-			r->arg_lens[arg_idx] = err;
+			dctx->arg_lens[arg_idx] = err;
 			return;
 		}
 
 		len = err;
-		r->data_len += (len + 7) / 8 * 8;
+		*dctx->data_len += (len + 7) / 8 * 8;
 	}
 
-	r->arg_lens[arg_idx] = len;
+	dctx->arg_lens[arg_idx] = len;
 }
 
-static void capture_arg(struct rec_fnargs_capture *r, u32 arg_idx,
-			void *data, u64 len, u32 arg_spec)
+static void capture_arg(struct data_capture_ctx *dctx, u32 arg_idx,
+			void *src, u64 len)
 {
 	size_t data_off;
 	void *dst;
-	int err, kind;
+	int err;
 
-	if (data == NULL) {
-		r->arg_lens[arg_idx] = -ENODATA;
+	if (src == NULL) {
+		dctx->arg_lens[arg_idx] = -ENODATA;
 		return;
 	}
 
-	data_off = r->data_len;
+	data_off = *dctx->data_len;
 	barrier_var(data_off); /* prevent compiler from re-reading it */
 
 	if (data_off >= args_max_total_args_sz) {
-		r->arg_lens[arg_idx] = -ENOSPC;
+		dctx->arg_lens[arg_idx] = -ENOSPC;
 		return;
 	}
 
-	dst = r->arg_data + data_off;
+	dst = dctx->data + data_off;
 
-	kind = (arg_spec & FNARGS_KIND_MASK) >> FNARGS_KIND_SHIFT;
-	if (capture_raw_ptrs && (kind == FNARGS_KIND_PTR || kind == FNARGS_KIND_STR)) {
-		*(long *)dst = (long)data;
+	if (capture_raw_ptrs && (dctx->is_ptr || dctx->is_str)) {
+		*(long *)dst = (long)src;
 		dst += 8;
-		r->arg_ptrs |= (1 << arg_idx);
-		r->data_len += 8;
+		*dctx->arg_ptrs |= (1 << arg_idx);
+		*dctx->data_len += 8;
 	}
 
 	/* ensure compiler won't reload len if capture_arg() is inlined */
 	barrier_var(len);
 
-	if (kind == FNARGS_KIND_STR) {
+	if (dctx->is_str) {
 		if (len > args_max_str_arg_sz) /* truncate, if necessary */
 			len = args_max_str_arg_sz;
-		if (is_kernel_addr(data))
-			err = bpf_probe_read_kernel_str(dst, len, data);
+		if (is_kernel_addr(src))
+			err = bpf_probe_read_kernel_str(dst, len, src);
 		else
-			err = bpf_probe_read_user_str(dst, len, data);
+			err = bpf_probe_read_user_str(dst, len, src);
 		len = err; /* len is meaningful only if successful */
 	} else {
 		if (len > args_max_sized_arg_sz) /* truncate, if necessary */
 			len = args_max_sized_arg_sz;
-		if (is_kernel_addr(data))
-			err = bpf_probe_read_kernel(dst, len, data);
+		if (is_kernel_addr(src))
+			err = bpf_probe_read_kernel(dst, len, src);
 		else
-			err = bpf_probe_read_user(dst, len, data);
+			err = bpf_probe_read_user(dst, len, src);
 	}
 
 	if (err < 0) {
-		r->arg_lens[arg_idx] = err;
+		dctx->arg_lens[arg_idx] = err;
 		return;
 	}
 
-	r->data_len += (len + 7) / 8 * 8;
-	r->arg_lens[arg_idx] = len;
+	*dctx->data_len += (len + 7) / 8 * 8;
+	dctx->arg_lens[arg_idx] = len;
 }
 
 static __noinline void record_fnargs(void *ctx, struct session *sess, u32 func_id, u32 seq_id)
 {
 	struct rec_fnargs_capture *r;
 	const struct func_info *fi;
+	struct data_capture_ctx dctx;
 	u64 i, rec_sz;
 
 	/* we waste *args_max_any_arg_sz* + 12 * 8 (for raw ptrs value) to simplify verification */
@@ -317,6 +326,11 @@ static __noinline void record_fnargs(void *ctx, struct session *sess, u32 func_i
 	r->func_id = func_id;
 	r->arg_ptrs = 0;
 	r->data_len = 0;
+
+	dctx.data = r->arg_data;
+	dctx.data_len = &r->data_len;
+	dctx.arg_lens = r->arg_lens;
+	dctx.arg_ptrs = &r->arg_ptrs;
 
 	fi = func_info(func_id);
 	for (i = 0; i < MAX_FNARGS_ARG_SPEC_CNT; i++) {
@@ -375,10 +389,13 @@ static __noinline void record_fnargs(void *ctx, struct session *sess, u32 func_i
 			continue;
 		}
 
-		if (kind == FNARGS_KIND_VARARG)
-			capture_vararg(r, i, data_ptr);
-		else
-			capture_arg(r, i, data_ptr, len, spec);
+		if (kind == FNARGS_KIND_VARARG) {
+			capture_vararg(&dctx, i, data_ptr);
+		} else {
+			dctx.is_ptr = kind == FNARGS_KIND_PTR;
+			dctx.is_str = kind == FNARGS_KIND_STR;
+			capture_arg(&dctx, i, data_ptr, len);
+		}
 	}
 
 	bpf_ringbuf_submit(r, 0);
