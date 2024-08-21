@@ -138,6 +138,9 @@ static inline ssize_t bnappendf(struct fmt_buf *b, const char *fmt, ...)
 int snprintf_smart_uint(char *buf, size_t buf_sz, unsigned long long value);
 int snprintf_smart_int(char *buf, size_t buf_sz, long long value);
 
+struct inj_probe_info;
+void snprintf_inj_probe(char *buf, size_t buf_sz, const struct inj_probe_info *inj);
+
 /*
  * Atomic helpers
  */

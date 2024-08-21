@@ -149,7 +149,6 @@ struct mass_attacher {
 
 	struct inj_probe_info *inj_probes;
 	int inj_probe_cnt;
-	int pt_regs_btf_id;
 
 	int func_skip_cnt;
 
@@ -325,9 +324,6 @@ static int add_inj_kprobe(struct mass_attacher *att, const char *name,
 		return -ENOMEM;
 
 	inj->btf = att->vmlinux_btf;
-	if (att->pt_regs_btf_id == 0)
-		att->pt_regs_btf_id = btf__find_by_name_kind(inj->btf, "pt_regs", BTF_KIND_STRUCT);
-	inj->ctx_btf_id = att->pt_regs_btf_id;
 
 	return att->inj_probe_cnt - 1;
 }
@@ -1189,14 +1185,10 @@ int mass_attacher__attach(struct mass_attacher *att)
 			);
 			struct bpf_program *prog;
 
-			if (inj->type == INJ_KRETPROBE) {
+			if (inj->type == INJ_KRETPROBE)
 				prog = att->skel->progs.retsn_inj_kretprobe;
-				snprintf(desc, sizeof(desc), "kretprobe:%s", inj->kprobe.name);
-			} else {
+			else
 				prog = att->skel->progs.retsn_inj_kprobe;
-				snprintf(desc, sizeof(desc), "kprobe:%s+0x%lx",
-					 inj->kprobe.name, inj->kprobe.offset);
-			}
 
 			if (!att->dry_run) {
 				inj->link = bpf_program__attach_kprobe_opts(
@@ -1207,8 +1199,6 @@ int mass_attacher__attach(struct mass_attacher *att)
 		case INJ_RAWTP: {
 			LIBBPF_OPTS(bpf_raw_tracepoint_opts, opts, .cookie = i);
 
-			snprintf(desc, sizeof(desc), "rawtp:%s", inj->rawtp.name);
-
 			if (!att->dry_run) {
 				inj->link = bpf_program__attach_raw_tracepoint_opts(
 						att->skel->progs.retsn_inj_rawtp,
@@ -1218,8 +1208,6 @@ int mass_attacher__attach(struct mass_attacher *att)
 		}
 		case INJ_TP: {
 			LIBBPF_OPTS(bpf_tracepoint_opts, opts, .bpf_cookie = i);
-
-			snprintf(desc, sizeof(desc), "tp:%s:%s", inj->tp.category, inj->tp.name);
 
 			if (!att->dry_run) {
 				inj->link = bpf_program__attach_tracepoint_opts(
@@ -1233,6 +1221,7 @@ int mass_attacher__attach(struct mass_attacher *att)
 			err = -EINVAL;
 			goto err_out;
 		}
+		snprintf_inj_probe(desc, sizeof(desc), inj);
 		if (!att->dry_run && !inj->link) {
 			err = -errno;
 			elog("Failed to attach injected probe #%d '%s': %d\n",
@@ -1424,6 +1413,11 @@ const struct mass_attacher_func_info *mass_attacher__func(const struct mass_atta
 	if (id < 0 || id >= att->func_cnt)
 		return NULL;
 	return &att->func_infos[id];
+}
+
+size_t mass_attacher__inj_probe_cnt(const struct mass_attacher *att)
+{
+	return att->inj_probe_cnt;
 }
 
 const struct inj_probe_info *mass_attacher__inj_probe(const struct mass_attacher *att, int id)

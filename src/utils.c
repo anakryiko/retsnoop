@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <time.h>
 #include "utils.h"
+#include "mass_attacher.h"
 
 static const char *err_map[] = {
 	[0] = "NULL",
@@ -452,5 +453,23 @@ int snprintf_smart_int(char *buf, size_t buf_sz, long long value)
 		return snprintf(buf, buf_sz, "%lld", value);
 	else
 		return snprintf(buf, buf_sz, "0x%llx", value);
+}
+
+void snprintf_inj_probe(char *buf, size_t buf_sz, const struct inj_probe_info *inj)
+{
+	switch (inj->type) {
+	case INJ_KPROBE:
+		snprintf(buf, buf_sz, "kprobe:%s+0x%lx", inj->kprobe.name, inj->kprobe.offset);
+		break;
+	case INJ_KRETPROBE:
+		snprintf(buf, buf_sz, "kretprobe:%s", inj->kprobe.name);
+		break;
+	case INJ_RAWTP:
+		snprintf(buf, buf_sz, "rawtp:%s", inj->rawtp.name);
+		break;
+	case INJ_TP:
+		snprintf(buf, buf_sz, "tp:%s:%s", inj->tp.category, inj->tp.name);
+		break;
+	}
 }
 

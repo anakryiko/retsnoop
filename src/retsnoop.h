@@ -101,6 +101,32 @@ struct func_info {
 	unsigned arg_specs[MAX_FNARGS_ARG_SPEC_CNT];
 } __attribute__((aligned(8)));
 
+#define MAX_CTXARGS_SPEC_CNT 12
+
+enum ctxarg_kind {
+	CTXARG_KIND_VALUE,
+	CTXARG_KIND_PTR_FIXED,
+	CTXARG_KIND_PTR_STR,
+	CTXARG_KIND_TP_STR,
+};
+
+enum ctxarg_flags {
+	/* lowest 16 bits specify the amount of data to be captured */
+	CTXARG_LEN_MASK = 0xffff,
+
+	/* next 8 bits specify offset to read from (relative to context) */
+	CTXARG_OFF_MASK = 0xff0000,
+	CTXARG_OFF_SHIFT = 16,
+
+	/* next 2 bits specify the kind of context argument */
+	CTXARG_KIND_MASK = 0x3000000,
+	CTXARG_KIND_SHIFT = 24,
+};
+
+struct ctxargs_info {
+	unsigned specs[MAX_CTXARGS_SPEC_CNT];
+} __attribute__((aligned(8)));
+
 struct session_start {
 	/* REC_SESSION_START */
 	enum rec_type type;
@@ -144,6 +170,8 @@ struct ctx_capture {
 	int seq_id;
 	unsigned short probe_id;
 	unsigned short data_len;
+	unsigned short ptrs; /* whether we put raw ptr value into arg_data */
+	short lens[MAX_CTXARGS_SPEC_CNT];
 	char data[]; /* BPF side sizes it according to settings */
 };
 

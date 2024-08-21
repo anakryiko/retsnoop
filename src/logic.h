@@ -22,6 +22,8 @@ struct ctx_capture_item {
 	int probe_id;
 	int seq_id;
 	short data_len;
+	short ptrs;
+	short lens[MAX_CTXARGS_SPEC_CNT];
 	char *data;
 };
 
@@ -71,6 +73,18 @@ struct func_arg_spec {
 struct func_args_info {
 	struct func_arg_spec arg_specs[MAX_FNARGS_ARG_SPEC_CNT];
 	int arg_spec_cnt;
+	const struct btf *btf; /* WARNING: references mass_attacher's BTFs */
+};
+
+struct ctx_arg_spec {
+	const char *name;
+	int btf_id, pointee_btf_id;
+	enum ctxarg_flags flags;
+};
+
+struct ctx_args_info {
+	struct ctx_arg_spec specs[MAX_CTXARGS_SPEC_CNT];
+	int spec_cnt;
 	const struct btf *btf; /* WARNING: references mass_attacher's BTFs */
 };
 
@@ -141,16 +155,26 @@ int prepare_fn_args_specs(int func_idx, const struct mass_attacher_func_info *fi
 struct func_args_capture;
 int handle_func_args_capture(struct ctx *ctx, struct session *sess,
 			     const struct func_args_capture *r);
-int handle_ctx_capture(struct ctx *ctx, struct session *sess, const struct ctx_capture *r);
 
 void emit_fnargs_data(FILE *f, struct stack_item *s,
 		      const struct func_args_info *fn_args,
 		      const struct func_args_item *fai,
 		      int indent_shift);
 
+/*
+ * Injection probe context args capture
+ */
+
+const struct ctx_args_info *ctx_args_info(int probe_id);
+
 struct inj_probe_info;
-void emit_ctx_data(FILE *f, struct stack_item *s, int indent_shift,
-		   const struct inj_probe_info *inj,
-		   const struct ctx_capture_item *cci);
+int prepare_ctx_args_specs(int probe_id, const struct inj_probe_info *inj);
+
+struct ctx_capture;
+int handle_ctx_capture(struct ctx *ctx, struct session *sess, const struct ctx_capture *r);
+
+void emit_ctxargs_data(FILE *f, struct stack_item *s, int indent_shift,
+		       const struct inj_probe_info *inj,
+		       const struct ctx_capture_item *cci);
 
 #endif /* __LOGIC_H */

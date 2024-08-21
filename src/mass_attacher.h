@@ -57,11 +57,6 @@ struct inj_tp {
 
 struct inj_probe_info {
 	enum inj_probe_type type;
-	/* BTF ID of a type representing the context of a given injected
-	 * probe:
-	 *   - for kprobe/kretprobe, ID of `struct pt_regs`;
-	 */
-	int ctx_btf_id;
 	const struct btf *btf;
 	struct bpf_link *link;
 	union {
@@ -107,6 +102,7 @@ int mass_attacher__inject_tp(struct mass_attacher *att, const char *category, co
 
 size_t mass_attacher__func_cnt(const struct mass_attacher *att);
 const struct mass_attacher_func_info * mass_attacher__func(const struct mass_attacher *att, int id);
+size_t mass_attacher__inj_probe_cnt(const struct mass_attacher *att);
 const struct inj_probe_info *mass_attacher__inj_probe(const struct mass_attacher *att, int id);
 const struct btf *mass_attacher__btf(const struct mass_attacher *att);
 

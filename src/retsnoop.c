@@ -194,6 +194,24 @@ static inline bool is_pow_of_2(long x)
 	return x && (x & (x - 1)) == 0;
 }
 
+static int round_pow_of_2(int n)
+{
+	int tmp_n;
+
+	if (is_pow_of_2(n))
+		return n;
+
+	for (tmp_n = 1; tmp_n <= INT_MAX / 4; tmp_n *= 2) {
+		if (tmp_n >= n)
+			break;
+	}
+
+	if (tmp_n >= INT_MAX / 2)
+		return -E2BIG;
+
+	return tmp_n;
+}
+
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
 	if (level == LIBBPF_DEBUG && !env.debug_extra)
@@ -237,7 +255,6 @@ int main(int argc, char **argv, char **envp)
 	char vmlinux_path[1024] = {};
 	const struct ksym *stext_sym = 0;
 	int err, i, j, n;
-	size_t tmp_n;
 	uint64_t ts1, ts2;
 
 	if (setvbuf(stdout, NULL, _IOLBF, BUFSIZ))
@@ -490,29 +507,43 @@ int main(int argc, char **argv, char **envp)
 		goto cleanup_silent;
 
 	n = mass_attacher__func_cnt(att);
-	/* Set up dynamically sized array of func_infos. On BPF side we need
-	 * it to be a power-of-2 sized.
-	 */
-	if (is_pow_of_2(n)) {
-		tmp_n = n;
-	} else {
-		for (tmp_n = 1; tmp_n <= INT_MAX / 4; tmp_n *= 2) {
-			if (tmp_n >= n)
-				break;
-		}
-		if (tmp_n >= INT_MAX / 2) {
+	{
+		/* Set up dynamically sized array of func_infos. On BPF side we need
+		 * it to be a power-of-2 sized.
+		 */
+		size_t tmp_n = round_pow_of_2(n);
+
+		if (tmp_n < 0) {
 			err = -E2BIG;
 			fprintf(stderr, "Unrealistically large number of functions: %zu!\n", tmp_n);
 			goto cleanup_silent;
 		}
+		skel->rodata->func_info_mask = tmp_n - 1;
+		err = bpf_map__set_value_size(skel->maps.data_func_infos, tmp_n * sizeof(struct func_info));
+		if (err) {
+			fprintf(stderr, "Failed to dynamically size func info table: %d\n", err);
+			goto cleanup_silent;
+		}
+		skel->data_func_infos = bpf_map__initial_value(skel->maps.data_func_infos, &tmp_n);
 	}
-	skel->rodata->func_info_mask = tmp_n - 1;
-	err = bpf_map__set_value_size(skel->maps.data_func_infos, tmp_n * sizeof(struct func_info));
-	if (err) {
-		fprintf(stderr, "Failed to dynamically size func info table: %d\n", err);
-		goto cleanup_silent;
+
+	if (env.capture_args && env.inject_probe_cnt) {
+		size_t tmp_n = round_pow_of_2(n);
+
+		if (tmp_n < 0) {
+			err = -E2BIG;
+			fprintf(stderr, "Unrealistically large number of probes: %zu!\n", tmp_n);
+			goto cleanup_silent;
+		}
+		skel->rodata->ctxargs_info_mask = tmp_n - 1;
+		err = bpf_map__set_value_size(skel->maps.data_ctxargs_infos,
+					      tmp_n * sizeof(struct ctxargs_info));
+		if (err) {
+			fprintf(stderr, "Failed to dynamically size ctxarg info table: %d\n", err);
+			goto cleanup_silent;
+		}
+		skel->data_ctxargs_infos = bpf_map__initial_value(skel->maps.data_ctxargs_infos, &tmp_n);
 	}
-	skel->data_func_infos = bpf_map__initial_value(skel->maps.data_func_infos, &tmp_n);
 
 	if (env.capture_args) {
 		for (i = 0; i < n; i++) {
@@ -531,25 +562,25 @@ int main(int argc, char **argv, char **envp)
 		const char *spec = env.inject_probes[i];
 		char cat[256], name[256];
 		unsigned long off;
-		int len, n;
+		int len, n, id;
 
 		len = strlen(spec);
-		err = -EINVAL;
+		id = -EINVAL;
 
 		if (sscanf(spec, "kprobe:%255[a-zA-Z0-9._]%li%n", name, &off, &n) == 2 && len == n) {
-			err = mass_attacher__inject_kprobe(att, name, off);
+			id = mass_attacher__inject_kprobe(att, name, off);
 		} else if (sscanf(spec, "kprobe:%255[a-zA-Z0-9._]%n", name, &n) == 1 && len == n) {
-			err = mass_attacher__inject_kprobe(att, name, 0);
+			id = mass_attacher__inject_kprobe(att, name, 0);
 		} else if (sscanf(spec, "kretprobe:%255[a-zA-Z0-9._]%n", name, &n) == 1 && len == n) {
-			err = mass_attacher__inject_kretprobe(att, name);
+			id = mass_attacher__inject_kretprobe(att, name);
 		} else if (sscanf(spec, "rawtp:%255[a-zA-Z0-9_]%n", name, &n) == 1 && len == n) {
-			err = mass_attacher__inject_rawtp(att, name);
+			id = mass_attacher__inject_rawtp(att, name);
 		} else if (sscanf(spec, "tp:%255[a-zA-Z0-9_]:%255[a-zA-Z0-9_]%n", cat, name, &n) == 2 && len == n) {
-			err = mass_attacher__inject_tp(att, cat, name);
+			id = mass_attacher__inject_tp(att, cat, name);
 		}
 
-		if (err < 0) {
-			if (err != -EOPNOTSUPP) {
+		if (id < 0) {
+			if (id != -EOPNOTSUPP) {
 				elog("Unrecognized injection probe spec '%s'. Supported formats are:\n"
 				     "  - 'kprobe:<name>+<offset>' for kprobes;\n"
 				     "  - 'kretprobe:<name>' for kretprobes;\n"
@@ -558,6 +589,24 @@ int main(int argc, char **argv, char **envp)
 				     spec);
 			}
 			goto cleanup_silent;
+		}
+
+		if (env.capture_args) {
+			struct ctxargs_info *ci = &skel->data_ctxargs_infos->ctxargs_infos[id];
+			const struct inj_probe_info *inj = mass_attacher__inj_probe(att, id);
+			const struct ctx_args_info *info;
+
+			err = prepare_ctx_args_specs(id, inj);
+			if (err) {
+				elog("Failed to prepare context argument capture for injected probe #%d: %d\n", id, err);
+				goto cleanup_silent;
+			}
+
+			info = ctx_args_info(id);
+
+			for (j = 0; j < info->spec_cnt; j++) {
+				ci->specs[j] = info->specs[j].flags;
+			}
 		}
 	}
 
