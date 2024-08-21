@@ -170,7 +170,7 @@ struct rec_ctxargs_capture {
 	int seq_id;
 	unsigned short probe_id;
 	unsigned short data_len;
-	unsigned short ptrs; /* whether we put raw ptr value into arg_data */
+	unsigned short ptrs_mask; /* whether we put raw ptr value into arg_data */
 	short lens[MAX_CTXARGS_SPEC_CNT];
 	char data[]; /* BPF side sizes it according to settings */
 };
@@ -249,6 +249,9 @@ struct rec_session_end {
 #endif
 #ifndef EDOM
 #define EDOM 33
+#endif
+#ifndef EOPNOTSUPP
+#define EOPNOTSUPP 95
 #endif
 
 #endif /* __RETSNOOP_H */

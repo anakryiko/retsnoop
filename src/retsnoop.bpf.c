@@ -401,6 +401,81 @@ static __noinline void record_fnargs(void *ctx, struct session *sess, u32 func_i
 	bpf_ringbuf_submit(r, 0);
 }
 
+static __noinline void record_ctxargs(void *ctx, struct session *sess, u32 probe_id, u32 seq_id)
+{
+	struct rec_ctxargs_capture *r;
+	const struct ctxargs_info *ci;
+	struct data_capture_ctx dctx;
+	u64 i, rec_sz;
+
+	/* we waste *args_max_any_arg_sz* + 12 * 8 (for raw ptrs value) to simplify verification */
+	rec_sz = sizeof(*r) + args_max_total_args_sz + args_max_any_arg_sz + 8 * MAX_CTXARGS_SPEC_CNT;
+	r = bpf_ringbuf_reserve(&rb, rec_sz, 0);
+	if (!r) {
+		stat_dropped_record(sess);
+		return;
+	}
+
+	r->type = REC_CTXARGS_CAPTURE;
+	r->pid = sess->pid;
+	r->seq_id = seq_id;
+	r->probe_id = probe_id;
+	r->ptrs_mask = 0;
+	r->data_len = 0;
+
+	dctx.data = r->data;
+	dctx.data_len = &r->data_len;
+	dctx.arg_lens = r->lens;
+	dctx.arg_ptrs = &r->ptrs_mask;
+
+	ci = ctxargs_info(probe_id);
+	for (i = 0; i < MAX_CTXARGS_SPEC_CNT; i++) {
+		u32 spec = ci->specs[i], off, kind;
+		u64 len = spec & CTXARG_LEN_MASK;
+		void *src_ptr = NULL;
+		int err;
+
+		if (spec == 0)
+			break;
+
+		if (len == 0) {
+			r->lens[i] = 0;
+			continue;
+		}
+
+		off = (spec & CTXARG_OFF_MASK) >> CTXARG_OFF_SHIFT;
+		kind = (spec & CTXARG_KIND_MASK) >> CTXARG_KIND_SHIFT;
+
+		switch (kind) {
+		case CTXARG_KIND_VALUE:
+			dctx.is_ptr = false;
+			dctx.is_str = false;
+			src_ptr = ctx + off;
+			break;
+		case CTXARG_KIND_PTR_FIXED:
+		case CTXARG_KIND_PTR_STR:
+			dctx.is_ptr = kind == CTXARG_KIND_PTR_FIXED;
+			dctx.is_str = kind == CTXARG_KIND_PTR_STR;
+			err = bpf_probe_read_kernel(&src_ptr, 8, ctx + off);
+			if (err) {
+				r->lens[i] = err;
+				continue;
+			}
+			break;
+		case CTXARG_KIND_TP_STR:
+			r->lens[i] = -EOPNOTSUPP;
+			continue;
+		default:
+			r->lens[i] = -EDOM;
+			continue;
+		}
+
+		capture_arg(&dctx, i, src_ptr, len);
+	}
+
+	bpf_ringbuf_submit(r, 0);
+}
+
 static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 {
 	u64 d = stack->depth;
@@ -961,28 +1036,8 @@ static void handle_inj_probe(void *ctx, u32 id, u32 ctx_sz)
 		bpf_ringbuf_submit(r, 0);
 	}
 
-	if (emit_func_trace && capture_args) {
-		struct rec_ctxargs_capture *r;
-
-		r = bpf_ringbuf_reserve(&rb, sizeof(*r) + ctx_sz, 0);
-		if (!r) {
-			stat_dropped_record(sess);
-			return;
-		}
-
-		r->type = REC_CTXARGS_CAPTURE;
-		r->pid = pid;
-		r->seq_id = seq_id;
-		r->probe_id = id;
-
-		err = bpf_probe_read_kernel(r->data, ctx_sz, ctx);
-		r->data_len = err ?: ctx_sz;
-
-		r->ptrs = 0;
-		r->lens[0] = err ?: ctx_sz;
-
-		bpf_ringbuf_submit(r, 0);
-	}
+	if (emit_func_trace && capture_args)
+		record_ctxargs(ctx, sess, id, seq_id);
 }
 
 static __always_inline bool tgid_allowed(void)

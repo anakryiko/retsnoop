@@ -22,7 +22,7 @@ struct ctx_capture_item {
 	int probe_id;
 	int seq_id;
 	short data_len;
-	short ptrs;
+	short ptrs_mask;
 	short lens[MAX_CTXARGS_SPEC_CNT];
 	char *data;
 };

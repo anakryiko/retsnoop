@@ -551,7 +551,7 @@ void emit_ctxargs_data(FILE *f, struct stack_item *s, int indent_shift,
 		struct fmt_buf b;
 		bool has_ptr;
 
-		has_ptr = cci->ptrs & (1 << i);
+		has_ptr = cci->ptrs_mask & (1 << i);
 		//kind = (spec->flags & CTXARG_KIND_MASK) >> CTXARG_KIND_SHIFT;
 
 		/* verbose args output mode doesn't have width limit */
@@ -618,7 +618,7 @@ int handle_ctx_capture(struct ctx *ctx, struct session *sess, const struct rec_c
 	d->probe_id = r->probe_id;
 	d->seq_id = r->seq_id;
 	d->data_len = r->data_len;
-	d->ptrs = r->ptrs;
+	d->ptrs_mask = r->ptrs_mask;
 	memcpy(d->lens, r->lens, sizeof(r->lens));
 	d->data = malloc(r->data_len);
 	if (!d->data)
