@@ -25,8 +25,8 @@ enum rec_type {
 	REC_SESSION_START,
 	REC_FUNC_TRACE_ENTRY,
 	REC_FUNC_TRACE_EXIT,
-	REC_FUNC_ARGS_CAPTURE,
-	REC_CTX_CAPTURE,
+	REC_FNARGS_CAPTURE,
+	REC_CTXARGS_CAPTURE,
 	REC_LBR_STACK,
 	REC_INJ_PROBE,
 	REC_SESSION_END,
@@ -127,7 +127,7 @@ struct ctxargs_info {
 	unsigned specs[MAX_CTXARGS_SPEC_CNT];
 } __attribute__((aligned(8)));
 
-struct session_start {
+struct rec_session_start {
 	/* REC_SESSION_START */
 	enum rec_type type;
 	int pid;
@@ -136,7 +136,7 @@ struct session_start {
 	char task_comm[16], proc_comm[16];
 };
 
-struct func_trace_entry {
+struct rec_func_trace_entry {
 	/* REC_FUNC_TRACE_ENTRY or REC_FUNC_TRACE_EXIT */
 	enum rec_type type;
 
@@ -151,8 +151,8 @@ struct func_trace_entry {
 	long func_res;
 };
 
-struct func_args_capture {
-	/* REC_FUNC_ARGS_CAPTURE */
+struct rec_fnargs_capture {
+	/* REC_FNARGS_CAPTURE */
 	enum rec_type type;
 	int pid;
 	int seq_id;
@@ -163,8 +163,8 @@ struct func_args_capture {
 	char arg_data[]; /* BPF side sizes it according to settings */
 };
 
-struct ctx_capture {
-	/* REC_CTX_CAPTURE */
+struct rec_ctxargs_capture {
+	/* REC_CTXARGS_CAPTURE */
 	enum rec_type type;
 	int pid;
 	int seq_id;
@@ -175,7 +175,7 @@ struct ctx_capture {
 	char data[]; /* BPF side sizes it according to settings */
 };
 
-struct lbr_stack {
+struct rec_lbr_stack {
 	/* REC_LBR_STACK */
 	enum rec_type type;
 	int pid;
@@ -184,7 +184,7 @@ struct lbr_stack {
 	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
 };
 
-struct inj_probe {
+struct rec_inj_probe {
 	/* REC_INJ_PROBE */
 	enum rec_type type;
 	int pid;
@@ -221,7 +221,7 @@ struct call_stack {
 	long kstack_sz;
 };
 
-struct session_end {
+struct rec_session_end {
 	/* REC_SESSION_END */
 	enum rec_type type;
 	int pid;

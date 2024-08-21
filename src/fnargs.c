@@ -315,8 +315,8 @@ skip_arg:
 	return 0;
 }
 
-int handle_func_args_capture(struct ctx *ctx, struct session *sess,
-			     const struct func_args_capture *r)
+int handle_fnargs_capture(struct ctx *ctx, struct session *sess,
+			  const struct rec_fnargs_capture *r)
 {
 	struct func_args_item *fai;
 	void *tmp;
@@ -604,7 +604,7 @@ void emit_ctxargs_data(FILE *f, struct stack_item *s, int indent_shift,
 	}
 }
 
-int handle_ctx_capture(struct ctx *ctx, struct session *sess, const struct ctx_capture *r)
+int handle_ctx_capture(struct ctx *ctx, struct session *sess, const struct rec_ctxargs_capture *r)
 {
 	struct ctx_capture_item *d;
 	void *tmp;
