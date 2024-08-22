@@ -1017,7 +1017,7 @@ skip_ft_exit:;
 	return true;
 }
 
-static void handle_inj_probe(void *ctx, u32 id, u32 ctx_sz)
+static void handle_inj_probe(void *ctx, u32 id)
 {
 	struct session *sess;
 	int seq_id, err;
@@ -1114,24 +1114,24 @@ __hidden int handle_func_exit(void *ctx, u32 func_id, u64 func_ip, u64 ret)
 
 __hidden int handle_inj_kprobe(struct pt_regs *ctx, u32 probe_id)
 {
-	handle_inj_probe(ctx, probe_id, sizeof(*ctx));
+	handle_inj_probe(ctx, probe_id);
 	return 0;
 }
 
 __hidden int handle_inj_kretprobe(struct pt_regs *ctx, u32 probe_id)
 {
-	handle_inj_probe(ctx, probe_id, sizeof(*ctx));
+	handle_inj_probe(ctx, probe_id);
 	return 0;
 }
 
 __hidden int handle_inj_rawtp(void *ctx, u32 probe_id)
 {
-	handle_inj_probe(ctx, probe_id, 0);
+	handle_inj_probe(ctx, probe_id);
 	return 0;
 }
 
 __hidden int handle_inj_tp(void *ctx, u32 probe_id)
 {
-	handle_inj_probe(ctx, probe_id, 0);
+	handle_inj_probe(ctx, probe_id);
 	return 0;
 }

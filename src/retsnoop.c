@@ -254,7 +254,7 @@ int main(int argc, char **argv, char **envp)
 	int *lbr_perf_fds = NULL;
 	char vmlinux_path[1024] = {};
 	const struct ksym *stext_sym = 0;
-	int err, i, j, n;
+	int err, i, j, func_cnt;
 	uint64_t ts1, ts2;
 
 	if (setvbuf(stdout, NULL, _IOLBF, BUFSIZ))
@@ -506,12 +506,12 @@ int main(int argc, char **argv, char **envp)
 	if (err)
 		goto cleanup_silent;
 
-	n = mass_attacher__func_cnt(att);
+	func_cnt = mass_attacher__func_cnt(att);
 	{
 		/* Set up dynamically sized array of func_infos. On BPF side we need
 		 * it to be a power-of-2 sized.
 		 */
-		size_t tmp_n = round_pow_of_2(n);
+		size_t tmp_n = round_pow_of_2(func_cnt);
 
 		if (tmp_n < 0) {
 			err = -E2BIG;
@@ -527,8 +527,21 @@ int main(int argc, char **argv, char **envp)
 		skel->data_func_infos = bpf_map__initial_value(skel->maps.data_func_infos, &tmp_n);
 	}
 
+	if (env.capture_args) {
+		for (i = 0; i < func_cnt; i++) {
+			const struct mass_attacher_func_info *finfo;
+
+			finfo = mass_attacher__func(att, i);
+			err = prepare_fn_args_specs(i, finfo);
+			if (err) {
+				elog("Failed to preprocess function argument specs: %d\n", err);
+				goto cleanup_silent;
+			}
+		}
+	}
+
 	if (env.capture_args && env.inject_probe_cnt) {
-		size_t tmp_n = round_pow_of_2(n);
+		size_t tmp_n = round_pow_of_2(env.inject_probe_cnt);
 
 		if (tmp_n < 0) {
 			err = -E2BIG;
@@ -543,19 +556,6 @@ int main(int argc, char **argv, char **envp)
 			goto cleanup_silent;
 		}
 		skel->data_ctxargs_infos = bpf_map__initial_value(skel->maps.data_ctxargs_infos, &tmp_n);
-	}
-
-	if (env.capture_args) {
-		for (i = 0; i < n; i++) {
-			const struct mass_attacher_func_info *finfo;
-
-			finfo = mass_attacher__func(att, i);
-			err = prepare_fn_args_specs(i, finfo);
-			if (err) {
-				elog("Failed to preprocess function argument specs: %d\n", err);
-				goto cleanup_silent;
-			}
-		}
 	}
 
 	for (i = 0; i < env.inject_probe_cnt; i++) {
@@ -610,7 +610,7 @@ int main(int argc, char **argv, char **envp)
 		}
 	}
 
-	for (i = 0; i < n; i++) {
+	for (i = 0; i < func_cnt; i++) {
 		const struct mass_attacher_func_info *finfo;
 		const struct glob *glob;
 		struct func_info *fi;
@@ -653,7 +653,7 @@ int main(int argc, char **argv, char **envp)
 		const struct glob *glob = &env.entry_globs[i];
 		bool matched = false;
 
-		for (j = 0; j < n; j++) {
+		for (j = 0; j < func_cnt; j++) {
 			const struct mass_attacher_func_info *finfo = mass_attacher__func(att, j);
 
 			if (full_glob_matches(glob->name, glob->mod, finfo->name, finfo->module)) {
