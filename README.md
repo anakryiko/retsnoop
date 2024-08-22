@@ -254,6 +254,55 @@ unfamiliar parts of it. See
 [the function call trace mode example](https://nakryiko.com/posts/retsnoop-intro/#tracing-bpf-verification-flow)
 in the companion blog post for more details.
 
+### Injected probes
+
+Retsnoop also support adding pointed probes that can be captured in addition
+to function calls in the trace output. Currently, four different probe kinds
+are supported:
+
+  - kprobes (e.g., `-J 'kprobe:bprm_execve+0x5'`), with optional offset within
+    the kernel function. Injected kprobe doesn't necessarily have to be
+    attached at the kernel function entry, which allows to trace deeper into
+    the function, including tracing inside the inlined functions.
+  - kretprobes (e.g., `-J 'kretprobe:bprm_execve'`), which is similar to
+    kprobe, but doesn't allow offsets and will be triggered as probed
+    functions returns to the caller.
+  - tracepoints (e.g., `-J 'tp:sched:sched_process_exec'`), which attaches to
+    specified kernel tracepoint, which is specified as a combination of
+    tracepoint category and name.
+  - raw tracepoints (e.g., `-J 'rawtp:task_newtask'`), which, similarly to
+    (classic) tracepoints, attaches to kernel-defined tracepoint.
+
+Classic tracepoints are normally "derived" from raw tracepoints. But there are
+important differences between them, which makes supporting and using both
+important and worthwhile. They are by far not equivalent.
+
+Most obviously, performance-wise, raw tracepoints are faster and have smaller
+tracing overhead. When debugging with retsnoop this should be a pretty
+negligible factor, but it's there for those who care.
+
+More importantly, arguments passed to a raw tracepoint can be sufficiently
+different compared to a corresponding classic tracepoint. Raw tracepoints tend
+to accept "raw" pointers to full kernel objects (like `struct task_struct`),
+while classic tracepoints have post-processed extracted values (like task's
+`comm` field, i.e., task name). Both have advantages and disadvantages and
+heavily come into play when [arguments capture feature](#function-arguments-capture)
+is used. Some of the classic tracepoint arguments might be hard to fish out
+out of raw tracepoint, for instance.
+
+Another big difference is syscall tracepoints. Syscall-specific tracepoints
+are special and are only available through classic tracepoints. They are
+triggered dynamically with a special code in the kernel. There are only
+generic `sys_enter` and `sys_exit` raw tracepoints, which would have to be
+additionally filtered by syscall number, which is one of the raw tracepoint
+arguments. In this sense, classic tracepoints are more convenient and allow
+more fine-tuned targeting.
+
+Finally, some tracepoints are only defined as raw (a.k.a., "bare")
+tracepoints, normally for very performance critical parts of the kernel. You
+can find a bunch of them in scheduler (see `include/trace/events/sched.h`),
+grep for `DECLARE_TRACE()` uses in the kernel.
+
 ### LBR (Last Branch Records) mode
 
 [LBR](https://lwn.net/Articles/680985/) (Last Branch Records) is an Intel CPU
@@ -342,6 +391,18 @@ For pointer arguments, not just the pointer value is captured, but also
 pointee type data as well! `retsnoop` also understands strings and will
 capture and render string contents. This makes this functionality much more
 useful in practice for values passed by pointer and strings.
+
+As mentioned in [injected probes](#injected-probes) section above, when
+arguments capture is used together with injected probes, retsnoop will automatically capture and
+print probe's context data. What exactly is captured differs depending on the
+kind of injected probe:
+  - for kprobes (`-J kprobe:...`) and kretprobes (`-J kretprobe:...`),
+    `struct pt_regs`, which records the state of CPU registers at the point of
+    tracing, is captured and printed;
+  - for classic tracepoints (`-J tp:...`) all post-processed tracepoint
+    arguments are captured an printed, including variable-sized strings;
+  - for raw tracepoints (`-J rawtp:...`) arguments are captured and printed
+    with the same logic and behavior as for normal function arguments.
 
 Rendering captured arguments might be tricky due to a potentially large struct
 types, `retsnoop` supports three rendering modes, which can be selected using
@@ -504,6 +565,42 @@ FUNCTION CALLS    RESULT  DURATION
 ```
 
 It's truly verbose, but will render all captured data for easy inspection.
+
+Here's an another example of (multi-line formatted, in this case) output for
+all supported injected probes. Note how `bprm_execve()` kernel function is
+traced using normal retsnoop's function tracing capabilities (i.e., with `-a
+bprm_execve`) and its input arguments (`bprm`, below) are captured. But we
+also install `kprobe:bprm_execve+5` kprobe in the middle of the function (not
+at the entry point), so the concept of "function arguments" might not make any
+sense anymore (they could be clobbered). So for injected kprobes retsnoop only
+captures and emits the low-level state of CPU registers.
+
+```shell
+$ sudo ./retsnoop -e '*sys_execve' -a 'bprm_execve' -T -A -C args.fmt-mode=m -J 'kprobe:bprm_execve+5' -J 'kretprobe:bprm_execve' -J 'rawtp:task_newtask' -J 'tp:sched:sched_process_exec' -J 'rawtp:sched_process_exec'
+Receiving data...
+11:52:13.997527 -> 11:52:13.997965 TID/PID 4066/4066 (zsh/zsh):
+
+FUNCTION CALLS                          RESULT   DURATION
+-------------------------------------   ------  ---------
+→ __x64_sys_execve
+                                        › regs = &{.r15=0x7ffce71f44f0,.r13=0x559f84ae2d90,.r12=0x7ffce71f4570,.bp=0x7ffce71f4670,.bx=0x7f680bf01ac0,.r11=518,.r10=8,.r9…
+    → bprm_execve
+                                        › bprm = &{.vma=0xffff888126dd1ef0,.vma_pages=1,.argmin=0x7fffffdff128,.mm=0xffff8881032a1f80,.p=0x7fffffffe379,.file=0xffff8881…
+        ◎ kprobe:bprm_execve+0x5
+                                        › regs = {.r12=0x559f84ae2d90,.bp=0xffff888110323800,.bx=0xffff88810f433000,.r11=0x20363532204e454c,.r10=131064,.r9=0x8080808080…
+        ◎ tp:sched:sched_process_exec
+                                        › filename = '/usr/bin/date'
+                                        › pid = 4066
+                                        › old_pid = 4066
+        ◎ rawtp:sched_process_exec
+                                        › p = &{.thread_info={.flags=16384,.cpu=5},.stack=0xffffc90000b40000,.usage={.refs={.counter=1}},.flags=0x400000,.on_cpu=1,.w…
+                                        › old_pid = 4066
+                                        › bprm = &{.vma=0xffff888126dd1ef0,.argmin=0x7fffffdff128,.p=0x7fff898bc350,.point_of_no_return=1,.file=0xffff888101bdc000,.argc…
+        ◎ kretprobe:bprm_execve
+                                        › regs = {.r12=0x559f84ae2d90,.bp=0xffff888110323800,.bx=0xffff88810f433000,.r11=0x20363532204e454c,.r10=0x2053534543435553,.r9=…
+    ← bprm_execve                       [0]     339.341us
+← __x64_sys_execve                      [0]     425.778us
+```
 
 #### Data capture size limits
 
