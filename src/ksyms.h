@@ -23,7 +23,7 @@ void ksyms__free(struct ksyms *ksyms);
 const struct ksym *ksyms__map_addr(const struct ksyms *ksyms,
 				   unsigned long addr);
 const struct ksym *ksyms__get_symbol(const struct ksyms *ksyms,
-				     const char *module, const char *name,
+				     const char *name, const char *module,
 				     enum ksym_kind kind);
 const struct ksym * const *ksyms__get_symbol_iter(const struct ksyms *ksyms,
 						  const char *name, const char *module,

@@ -107,7 +107,7 @@ enum ctxarg_kind {
 	CTXARG_KIND_VALUE,
 	CTXARG_KIND_PTR_FIXED,
 	CTXARG_KIND_PTR_STR,
-	CTXARG_KIND_TP_STR,
+	CTXARG_KIND_TP_VARLEN,
 };
 
 enum ctxarg_flags {
