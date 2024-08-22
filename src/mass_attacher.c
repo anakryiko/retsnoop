@@ -419,13 +419,6 @@ int mass_attacher__prepare(struct mass_attacher *att)
 	int err, i, j, n, cpu_cnt, tmp_cnt;
 	const char *mod;
 
-	/* Load and cache /proc/kallsyms for IP <-> kfunc mapping */
-	att->ksyms = ksyms__load();
-	if (!att->ksyms) {
-		elog("Failed to load /proc/kallsyms\n");
-		return -EINVAL;
-	}
-
 	/* Bump RLIMIT_MEMLOCK to allow BPF sub-system to do anything */
 	err = bump_rlimit(RLIMIT_MEMLOCK, RLIM_INFINITY);
 	if (err) {

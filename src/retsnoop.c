@@ -749,11 +749,6 @@ int main(int argc, char **argv, char **envp)
 	signal(SIGINT, sig_handler);
 
 	env.ctx.att = att;
-	env.ctx.ksyms = ksyms__load();
-	if (!env.ctx.ksyms) {
-		fprintf(stderr, "Failed to load /proc/kallsyms for symbolization.\n");
-		goto cleanup;
-	}
 
 	/* Set up ring/perf buffer polling */
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, &env.ctx, NULL);
