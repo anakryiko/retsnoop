@@ -134,6 +134,7 @@ $(OUTPUT)/%.o: %.c $(wildcard *.h) $(LIBBPF_OBJ) | $(OUTPUT) $(OUTPUT)/tests
 $(OUTPUT)/retsnoop.skel.h: $(OUTPUT)/mass_attach.bpf.o
 $(OUTPUT)/retsnoop.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
 $(OUTPUT)/mass_attacher.o: $(OUTPUT)/retsnoop.skel.h $(OUTPUT)/calib_feat.skel.h
+$(OUTPUT)/fnargs.o: $(OUTPUT)/kmem_reader.skel.h
 
 $(DEFAULT_SIDECAR)::
 	$(call msg,CARGO,addr2line)

@@ -203,7 +203,7 @@ struct data_capture_ctx {
 	unsigned short *data_len;
 	short *arg_lens;
 	unsigned short *arg_ptrs;
-	bool is_ptr;
+	bool record_ptr;
 	bool is_str;
 };
 
@@ -269,7 +269,7 @@ static void capture_arg(struct data_capture_ctx *dctx, u32 arg_idx,
 
 	dst = dctx->data + data_off;
 
-	if (capture_raw_ptrs && (dctx->is_ptr || dctx->is_str)) {
+	if (capture_raw_ptrs && dctx->record_ptr) {
 		*(long *)dst = (long)src;
 		dst += 8;
 		*dctx->arg_ptrs |= (1 << arg_idx);
@@ -392,7 +392,7 @@ static __noinline void record_fnargs(void *ctx, struct session *sess, u32 func_i
 		if (kind == FNARGS_KIND_VARARG) {
 			capture_vararg(&dctx, i, data_ptr);
 		} else {
-			dctx.is_ptr = kind == FNARGS_KIND_PTR;
+			dctx.record_ptr = (kind == FNARGS_KIND_PTR) || (kind == FNARGS_KIND_STR);
 			dctx.is_str = kind == FNARGS_KIND_STR;
 			capture_arg(&dctx, i, data_ptr, len);
 		}
@@ -433,6 +433,7 @@ static __noinline void record_ctxargs(void *ctx, struct session *sess, u32 probe
 		u32 spec = ci->specs[i], off, kind;
 		u64 len = spec & CTXARG_LEN_MASK;
 		void *src_ptr = NULL;
+		u32 loc;
 		int err;
 
 		if (spec == 0)
@@ -448,23 +449,36 @@ static __noinline void record_ctxargs(void *ctx, struct session *sess, u32 probe
 
 		switch (kind) {
 		case CTXARG_KIND_VALUE:
-			dctx.is_ptr = false;
+			dctx.record_ptr = false;
 			dctx.is_str = false;
 			src_ptr = ctx + off;
 			break;
 		case CTXARG_KIND_PTR_FIXED:
 		case CTXARG_KIND_PTR_STR:
-			dctx.is_ptr = kind == CTXARG_KIND_PTR_FIXED;
+			dctx.record_ptr = true;
 			dctx.is_str = kind == CTXARG_KIND_PTR_STR;
-			err = bpf_probe_read_kernel(&src_ptr, 8, ctx + off);
+			err = bpf_probe_read_kernel(&src_ptr, sizeof(src_ptr), ctx + off);
 			if (err) {
 				r->lens[i] = err;
 				continue;
 			}
 			break;
-		case CTXARG_KIND_TP_STR:
-			r->lens[i] = -EOPNOTSUPP;
-			continue;
+		case CTXARG_KIND_TP_VARLEN:
+			dctx.record_ptr = false;
+			dctx.is_str = true; /* we assume string, we don't know any better */
+
+			/* first, read u32 identifying where and how much data we have */
+			err = bpf_probe_read_kernel(&loc, sizeof(loc), ctx + off);
+			if (err) {
+				r->lens[i] = err;
+				continue;
+			}
+
+			/* loc's lower 16 bits are offset, upper 16 bits are size */
+			src_ptr = ctx + (loc & 0xffff);
+			if ((loc >> 16) < len)
+				len = loc >> 16;
+			break;
 		default:
 			r->lens[i] = -EDOM;
 			continue;
@@ -1121,4 +1135,3 @@ __hidden int handle_inj_tp(void *ctx, u32 probe_id)
 	handle_inj_probe(ctx, probe_id, 0);
 	return 0;
 }
-

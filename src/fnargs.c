@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <bpf/btf.h>
+#include <bpf/bpf.h>
 #include <linux/ptrace.h>
 #include "env.h"
 #include "mass_attacher.h"
@@ -13,6 +14,8 @@
 #include "logic.h"
 #include "hashmap.h"
 #include "retsnoop.h"
+#include "kmem_reader.skel.h"
+#include "ksyms.h"
 
 static struct func_args_info *fn_infos;
 static int fn_info_cnt, fn_info_cap;
@@ -543,7 +546,7 @@ void emit_ctxargs_data(FILE *f, struct stack_item *s, int indent_shift,
 	const char *sep = env.args_fmt_mode == ARGS_FMT_COMPACT ? "" : " ";
 	const struct ctx_args_info *info = ctx_args_info(cci->probe_id);
 	void *data = cci->data;
-	int i, len;//, kind;
+	int i, len;
 
 	for (i = 0; i < info->spec_cnt; i++) {
 		const struct ctx_arg_spec *spec = &info->specs[i];
@@ -552,7 +555,6 @@ void emit_ctxargs_data(FILE *f, struct stack_item *s, int indent_shift,
 		bool has_ptr;
 
 		has_ptr = cci->ptrs_mask & (1 << i);
-		//kind = (spec->flags & CTXARG_KIND_MASK) >> CTXARG_KIND_SHIFT;
 
 		/* verbose args output mode doesn't have width limit */
 		if (env.args_fmt_mode == ARGS_FMT_VERBOSE)
@@ -703,7 +705,6 @@ static bool btf_is_func_fnproto(const struct btf *btf, int btf_id, int *fn_btf_i
 	return true;
 }
 
-
 static int prepare_rawtp_ctx_specs(int probe_id,
 				   const struct inj_probe_info *inj,
 				   struct ctx_args_info *info)
@@ -762,16 +763,17 @@ static int prepare_rawtp_ctx_specs(int probe_id,
 		ti = NULL;
 	ti = traceiter_btf_id > 0 ? btf__type_by_id(btf, traceiter_btf_id) : NULL;
 
+	/* we skip first `void *` param */
 	info->spec_cnt = 0;
-	for (i = 0; i < btf_vlen(tr) - 1; i++) {
-		struct ctx_arg_spec *spec = &info->specs[i];
+	for (i = 1; i < btf_vlen(tr) && info->spec_cnt < MAX_CTXARGS_SPEC_CNT; i++) {
+		struct ctx_arg_spec *spec = &info->specs[info->spec_cnt];
 
-		trp = btf_params(tr) + 1 + i; /* skip first `void *` param */
-		tip = ti ? btf_params(ti) + 1 + i : NULL;
+		trp = btf_params(tr) + i;
+		tip = ti ? btf_params(ti) + i : NULL;
 
 		spec->btf_id = trp->type;
 		spec->name = tip ? btf__str_by_offset(btf, tip->name_off) : "arg";
-		spec->flags = (i * 8) << CTXARG_OFF_SHIFT;
+		spec->flags = (info->spec_cnt * 8) << CTXARG_OFF_SHIFT;
 
 		t = btf_strip_mods_and_typedefs(btf, trp->type, NULL);
 		if (btf_is_ptr(t)) {
@@ -794,9 +796,196 @@ static int prepare_rawtp_ctx_specs(int probe_id,
 			spec->flags |= min(t->size, env.args_max_sized_arg_size);
 			spec->flags |= CTXARG_KIND_VALUE << CTXARG_KIND_SHIFT;
 		} else {
-			dlog("!!!UNKNOWN ARG #%d KIND %d!!!", i, btf_kind(t));
+			dlog("!!!UNKNOWN ARG #%d KIND %d!!!", info->spec_cnt, btf_kind(t));
 			spec->flags |= CTXARG_KIND_VALUE << CTXARG_OFF_SHIFT; /* no len, skip it */
 		}
+
+		info->spec_cnt++;
+	}
+
+	return 0;
+}
+
+static struct kmem_reader_bpf *kmem_skel;
+
+static int prepare_tp_ctx_specs(int probe_id,
+				const struct inj_probe_info *inj,
+				struct ctx_args_info *info)
+{
+	const struct btf *btf = info->btf;
+	const char trace_fn_pfx[] = "__bpf_trace_", data_loc_pfx[] = "__data_loc_";
+	const char *tp_name = inj->tp.name, *tp_class;
+	const struct btf_type *tp_t;
+	char buf[256];
+	int err, buf_sz = sizeof(buf), tp_btf_id, i;
+	struct ksyms *ksyms = env.ctx.ksyms;
+	const struct ksym *tp_map_sym, *trace_fn_sym;
+
+	/*
+	 * There are two (classic) tracepoint kinds:
+	 *   - either defined with TRACE_EVENT() macro;
+	 *   - or defined with DECLARE_EVENT_CLASS() + DEFINE_EVENT().
+	 *
+	 * TRACE_EVENT() is a simple case in which tracepoint name and
+	 * tracepoint *class* is the same, and there is always
+	 * `struct trace_event_raw_<name>` which describes memory layout of
+	 * tracepoint's collection of assigned parameters (as opposed to raw
+	 * tracepoint that just passes through original passed in arguments).
+	 *
+	 * The DEFINE_EVENT() case is much less convenient, because tracepoint
+	 * *name* is different from tracepoint *class*, and kernel only
+	 * defines `struct trace_event_raw_<class>` types. Also, there is no
+	 * easy way to figure out name -> class mapping *from BTF type info*.
+	 * So we need to do a bit more work to resolve tracepoint event to
+	 * its class.
+	 *
+	 * Not everything is lost, though. Note that within the BPF
+	 * subsystem's tracepoint plumbing we have this defined for each
+	 * tracepoint (see include/trace/bpf_probe.h):
+	 *
+	 * static union {
+	 * 	struct bpf_raw_event_map event;
+	 * 	btf_trace_##call handler;
+	 * } __bpf_trace_tp_map_##call __used __section("__bpf_raw_tp_map") = {
+	 * 	.event = {
+	 * 		.tp             = &__tracepoint_##call,
+	 * 		.bpf_func       = __bpf_trace_##template,
+	 * 		.num_args       = COUNT_ARGS(args),
+	 * 		.writable_size  = size,
+	 * 	},
+	 * };
+	 *
+	 * In the above, `call` is *tracepoint name*, while `template` is
+	 * *tracepoint class*. Above means that there is always
+	 * __bpf_trace_tp_map_<name> variable (and a corresponding kallsyms
+	 * symbol), effectively of type `struct bpf_raw_event_map` (we ignore
+	 * the union which is there just for btf_trace_##call type preservation),
+	 * which's .bpf_func field is set to an address of __bpf_trace_<class>
+	 * function.
+	 *
+	 * So the game plan here is:
+	 *   - find __bpf_trace_tp_map variable address from kallsyms;
+	 *   - fetch the address of its .bpf_func field using trivial BPF
+	 *     program that can read arbitrary kernel memory (kmem_reader.bpf.c);
+	 *   - map that address to __bpf_trace function name (again through kallsyms);
+	 *   - now we have *name* to *class* mapping, which now allows to find
+	 *     correct trace_event_raw type.
+	 *
+	 * Easy peasy lemon squeezy!
+	 */
+	if (!kmem_skel) {
+		kmem_skel = kmem_reader_bpf__open_and_load();
+		if (!kmem_skel) {
+			err = -errno;
+			elog("Failed to load kmem_reader helper skeleton: %d\n", err);
+			return err;
+		}
+	}
+
+	snprintf(buf, buf_sz, "__bpf_trace_tp_map_%s", tp_name);
+	tp_map_sym = ksyms__get_symbol(ksyms, buf, NULL, KSYM_DATA);
+	if (!tp_map_sym) {
+		elog("Failed to find '%s' kernel symbol for tracepoint '%s:%s'!\n",
+		     buf, inj->tp.category, inj->tp.name);
+		return -ESRCH;
+	}
+
+	/* We hard-code offsetof(struct bpf_raw_event_map, bpf_func), why would it change?
+	 * We can always use BTF for this, if it ever causes any problem.
+	 */
+	kmem_skel->bss->addr = tp_map_sym->addr + 8;
+	err = bpf_prog_test_run_opts(bpf_program__fd(kmem_skel->progs.kmem_read), NULL);
+	if (err || kmem_skel->bss->read_err) {
+		err = err ?: kmem_skel->bss->read_err;
+		elog("Failed to read `%s.bpf_func` value at 0x%lx: %d\n",
+		     buf, kmem_skel->bss->addr, err);
+		return err;
+	}
+
+	trace_fn_sym = ksyms__map_addr(ksyms, kmem_skel->bss->value);
+	if (!trace_fn_sym) {
+		elog("Failed to resolve 0x%lx to `__bpf_trace_<class>` symbol for tracepoint '%s:%s'!\n",
+		     kmem_skel->bss->value, inj->tp.category, inj->tp.name);
+		return -ESRCH;
+	}
+
+	if (strncmp(trace_fn_sym->name, trace_fn_pfx, sizeof(trace_fn_pfx) - 1) != 0) {
+		elog("Unexpected symbol '%s' (expected '%sxxx') found for tracepoint '%s:%s'!\n",
+		     trace_fn_sym->name, trace_fn_pfx, inj->tp.category, inj->tp.name);
+		return -ESRCH;
+	}
+
+	tp_class = trace_fn_sym->name + sizeof(trace_fn_pfx) - 1;
+	snprintf(buf, buf_sz, "trace_event_raw_%s", tp_class);
+	tp_btf_id = btf__find_by_name_kind(btf, buf, BTF_KIND_STRUCT);
+	if (tp_btf_id < 0) {
+		elog("Failed to find 'struct %s' for tracepoint '%s:%s'!\n",
+		     buf, inj->tp.category, inj->tp.name);
+		return tp_btf_id;
+	}
+	tp_t = btf__type_by_id(btf, tp_btf_id);
+
+	/* we skip the first field (`struct trace_entry ent;`) */
+	info->spec_cnt = 0;
+	for (i = 1; i < btf_vlen(tp_t) && info->spec_cnt < MAX_CTXARGS_SPEC_CNT; i++) {
+		struct ctx_arg_spec *spec = &info->specs[info->spec_cnt];
+		const struct btf_member *m;
+		const char *fname;
+		const struct btf_type *t;
+		int off, f_btf_id;
+
+		m = btf_members(tp_t) + i;
+		fname = btf__name_by_offset(btf, m->name_off);
+
+		if (strcmp(fname, "__data") == 0)
+			break;
+
+		/* We don't support bitfields in tracepoint struct */
+		if (btf_member_bitfield_size(tp_t, i)) {
+			dlog("Skipping bitfield '%s' for tracepoint '%s:%s'...\n",
+			     fname, inj->tp.category, inj->tp.name);
+			continue;
+		}
+
+		spec->btf_id = m->type;
+
+		off = btf_member_bit_offset(tp_t, i) / 8;
+		spec->flags = off << CTXARG_OFF_SHIFT;
+
+		t = btf_strip_mods_and_typedefs(btf, m->type, &f_btf_id);
+		if (strncmp(fname, data_loc_pfx, sizeof(data_loc_pfx) - 1) == 0) {
+			/* special varlen (usually string) "pointer" field */
+			fname = fname + sizeof(data_loc_pfx) - 1;
+			spec->flags |= env.args_max_str_arg_size;
+			spec->flags |= CTXARG_KIND_TP_VARLEN << CTXARG_KIND_SHIFT;
+			spec->pointee_btf_id = -1; /* special string marker */
+		} else if (btf_is_ptr(t)) {
+			/* NOTE: we fill out spec->pointee_btf_id here */
+			t = btf_strip_mods_and_typedefs(btf, t->type, &spec->pointee_btf_id);
+			if (btf_is_char(btf, t)) {
+				spec->flags |= env.args_max_str_arg_size;
+				spec->flags |= CTXARG_KIND_PTR_STR << CTXARG_KIND_SHIFT;
+				spec->pointee_btf_id = -1; /* special string marker */
+			} else if (btf_is_fixed_sized(btf, t)) {
+				spec->flags |= min(t->size, env.args_max_sized_arg_size);
+				spec->flags |= CTXARG_KIND_PTR_FIXED << CTXARG_KIND_SHIFT;
+			} else {
+				/* generic pointer, treat as u64 */
+				spec->flags |= 8;
+				spec->flags |= CTXARG_KIND_VALUE << CTXARG_KIND_SHIFT;
+				spec->pointee_btf_id = 0; /* raw pointer doesn't set pointee */
+			}
+		} else if (btf_is_fixed_sized(btf, t) || btf_is_array(t)) {
+			spec->flags |= min(btf__resolve_size(btf, f_btf_id),
+					   env.args_max_sized_arg_size);
+			spec->flags |= CTXARG_KIND_VALUE << CTXARG_KIND_SHIFT;
+		} else {
+			dlog("Skipping unknown field '%s' of BTF kind %d for tracepoint '%s:%s'...\n",
+			     fname, btf_kind(t), inj->tp.category, inj->tp.name);
+			continue;
+		}
+
+		spec->name = fname;
 
 		info->spec_cnt++;
 	}
@@ -839,7 +1028,7 @@ int prepare_ctx_args_specs(int probe_id, const struct inj_probe_info *inj)
 		err = prepare_rawtp_ctx_specs(probe_id, inj, ctx_args);
 		break;
 	case INJ_TP:
-		err = -EINVAL;
+		err = prepare_tp_ctx_specs(probe_id, inj, ctx_args);
 		break;
 	}
 
@@ -873,8 +1062,8 @@ int prepare_ctx_args_specs(int probe_id, const struct inj_probe_info *inj)
 		case CTXARG_KIND_PTR_STR:
 			dlog("->str,off=%d,len=str(%d)", off, len);
 			break;
-		case CTXARG_KIND_TP_STR:
-			dlog("->off=%d,len=tp_str(%d)", off, len);
+		case CTXARG_KIND_TP_VARLEN:
+			dlog("->varlen,off=%d,len=varlen(%d)", off, len);
 			break;
 		default:
 			dlog("???,off=%d,len=%d", off, len);
@@ -893,4 +1082,5 @@ __attribute__((destructor))
 static void fn_args_cleanup(void)
 {
 	free(fn_infos);
+	kmem_reader_bpf__destroy(kmem_skel);
 }
