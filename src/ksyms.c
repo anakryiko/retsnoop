@@ -83,8 +83,12 @@ static int ksym_by_addr_cmp(const void *p1, const void *p2)
 {
 	const struct ksym *s1 = p1, *s2 = p2;
 
+	if (s1->kind != s2->kind)
+		return s1->kind < s2->kind ? -1 : 1;
+
 	if (s1->addr == s2->addr)
 		return strcmp(s1->name, s2->name);
+
 	return s1->addr < s2->addr ? -1 : 1;
 }
 
@@ -210,24 +214,36 @@ void ksyms__free(struct ksyms *ksyms)
 }
 
 const struct ksym *ksyms__map_addr(const struct ksyms *ksyms,
-				   unsigned long addr)
+				   unsigned long addr,
+				   enum ksym_kind kind)
 {
 	int start = 0, end = ksyms->syms_sz - 1, mid;
+	const struct ksym *ksym;
 	unsigned long sym_addr;
+	enum ksym_kind sym_kind;
+
+	if (kind != KSYM_FUNC && kind != KSYM_DATA)
+		return NULL;
 
 	/* find largest sym_addr <= addr using binary search */
 	while (start < end) {
 		mid = start + (end - start + 1) / 2;
-		sym_addr = ksyms->syms_by_addr[mid].addr;
+		ksym = &ksyms->syms_by_addr[mid];
+		sym_addr = ksym->addr;
+		sym_kind = ksym->kind;
 
-		if (sym_addr <= addr)
+		if (sym_kind < kind || (sym_kind == kind && sym_addr <= addr))
 			start = mid;
 		else
 			end = mid - 1;
 	}
 
-	if (start == end && ksyms->syms_by_addr[start].addr <= addr)
-		return &ksyms->syms_by_addr[start];
+	if (start == end) {
+		ksym = &ksyms->syms_by_addr[start];
+		if (ksym->kind == kind && ksym->addr <= addr)
+			return ksym;
+	}
+
 	return NULL;
 }
 

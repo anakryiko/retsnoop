@@ -902,7 +902,7 @@ static int prepare_tp_ctx_specs(int probe_id,
 		return err;
 	}
 
-	trace_fn_sym = ksyms__map_addr(ksyms, kmem_skel->bss->value);
+	trace_fn_sym = ksyms__map_addr(ksyms, kmem_skel->bss->value, KSYM_FUNC);
 	if (!trace_fn_sym) {
 		elog("Failed to resolve 0x%lx to `__bpf_trace_<class>` symbol for tracepoint '%s:%s'!\n",
 		     kmem_skel->bss->value, inj->tp.category, inj->tp.name);
