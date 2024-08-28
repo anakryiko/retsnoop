@@ -1004,6 +1004,13 @@ skip_ft_exit:;
 	sess->stack.func_res[d] = res;
 	sess->stack.func_lat[d] = lat;
 
+	/* unmark stack as errored if any of return functions succeeded
+	 * (except for void functions, in which case just preserve original
+	 * error mark, if any
+	 */
+	if (!(flags & FUNC_CANT_FAIL) && !failed)
+		sess->stack.is_err = false;
+
 	if (failed && !sess->stack.is_err) {
 		sess->stack.is_err = true;
 		sess->stack.max_depth = d + 1;
