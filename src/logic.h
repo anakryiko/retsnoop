@@ -47,6 +47,7 @@ struct trace_item {
 };
 
 struct session {
+	int sess_id;
 	int pid;
 	int tgid;
 	uint64_t start_ts;

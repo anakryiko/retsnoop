@@ -64,11 +64,11 @@ static void free_sessions(void)
 	hashmap__clear(&sessions_hash);
 }
 
-static void purge_session(struct ctx *ctx, int pid)
+static void purge_session(struct ctx *ctx, int sess_id)
 {
 	struct session *sess;
 
-	if (hashmap__delete(&sessions_hash, (long)pid, NULL, &sess))
+	if (hashmap__delete(&sessions_hash, (long)sess_id, NULL, &sess))
 		free_session(sess);
 }
 
@@ -76,14 +76,15 @@ static int handle_session_start(struct ctx *ctx, const struct rec_session_start 
 {
 	struct session *sess;
 
-	purge_session(ctx, r->pid);
+	purge_session(ctx, r->sess_id);
 
 	sess = calloc(1, sizeof(*sess));
-	if (!sess || hashmap__add(&sessions_hash, (long)r->pid, sess)) {
-		fprintf(stderr, "Failed to allocate memory for session PID %d!\n", r->pid);
+	if (!sess || hashmap__add(&sessions_hash, (long)r->sess_id, sess)) {
+		elog("Failed to allocate memory for session %d (PID %d)!\n", r->sess_id, r->pid);
 		return -ENOMEM;
 	}
 
+	sess->sess_id = r->sess_id;
 	sess->pid = r->pid;
 	sess->tgid = r->tgid;
 	sess->start_ts = r->start_ts;
@@ -96,7 +97,7 @@ static int handle_session_start(struct ctx *ctx, const struct rec_session_start 
 static int handle_lbr_stack(struct ctx *dctx, struct session *sess, const struct rec_lbr_stack *r)
 {
 	if (sess->lbrs) {
-		fprintf(stderr, "BUG: PID %d session data contains LBR data already!\n", r->pid);
+		elog("BUG: SESSION %d data contains LBR data already!\n", r->sess_id);
 		return -EINVAL;
 	}
 
@@ -105,7 +106,7 @@ static int handle_lbr_stack(struct ctx *dctx, struct session *sess, const struct
 	if (sess->lbrs_sz > 0) {
 		sess->lbrs = malloc(sess->lbrs_sz);
 		if (!sess->lbrs) {
-			fprintf(stderr, "SESSION PID %d: failed to allocate LBR memory: %d\n", r->pid, -ENOMEM);
+			elog("SESSION %d: failed to allocate LBR memory: %d\n", r->sess_id, -ENOMEM);
 			return -ENOMEM;
 		}
 		memcpy(sess->lbrs, r->lbrs, sess->lbrs_sz);
@@ -669,7 +670,7 @@ static struct func_args_item *find_fnargs_item(const struct session *sess, int s
 }
 
 static void prepare_trace_items(struct ctx *ctx, struct stack_items_cache *cache,
-				int pid, int last_seq_id)
+				int sess_id, int last_seq_id)
 {
 	const struct mass_attacher_func_info *finfo;
 	const struct inj_probe_info *inj;
@@ -680,7 +681,7 @@ static void prepare_trace_items(struct ctx *ctx, struct stack_items_cache *cache
 	int i, d, prev_seq_id = -1, orig_seq_id;
 	int args_idx = 0, ctx_idx = 0;
 
-	if (!hashmap__find(&sessions_hash, (long)pid, &sess))
+	if (!hashmap__find(&sessions_hash, (long)sess_id, &sess))
 		return;
 
 	cache->cnt = 0;
@@ -1260,9 +1261,10 @@ static int handle_session_end(struct ctx *dctx, struct session *sess,
 		goto out_purge;
 
 	if (env.debug) {
-		printf("GOT %s STACK (depth %u):\n", s->is_err ? "ERROR" : "SUCCESS", s->max_depth);
+		printf("SESSION %d GOT %s STACK (depth %u):\n",
+		       sess->sess_id, s->is_err ? "ERROR" : "SUCCESS", s->max_depth);
 		printf("DEPTH %d MAX DEPTH %d SAVED DEPTH %d MAX SAVED DEPTH %d\n",
-				s->depth, s->max_depth, s->saved_depth, s->saved_max_depth);
+			s->depth, s->max_depth, s->saved_depth, s->saved_max_depth);
 	}
 
 	ts_to_str(ktime_to_ts(sess->start_ts), ts1, sizeof(ts1));
@@ -1279,7 +1281,7 @@ static int handle_session_end(struct ctx *dctx, struct session *sess,
 	 * call stack trace (depth == 0)
 	 */
 	if (env.emit_func_trace && s->depth == 0) {
-		prepare_trace_items(dctx, &stack_items1, sess->pid, r->last_seq_id);
+		prepare_trace_items(dctx, &stack_items1, sess->sess_id, r->last_seq_id);
 		print_trace_items(dctx, &stack_items1);
 	}
 
@@ -1336,7 +1338,7 @@ skip_call_stack:
 	printf("\n\n");
 
 out_purge:
-	purge_session(dctx, r->pid);
+	purge_session(dctx, r->sess_id);
 
 	return ret;
 }
@@ -1361,8 +1363,8 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	case REC_FUNC_TRACE_EXIT: {
 		const struct rec_func_trace_entry *r = data;
 
-		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
-			fprintf(stderr, "BUG: PID %d session data not found (%s)!\n", r->pid,
+		if (!hashmap__find(&sessions_hash, (long)r->sess_id, &sess)) {
+			fprintf(stderr, "BUG: Session %d data not found (%s)!\n", r->sess_id,
 				r->type == REC_FUNC_TRACE_ENTRY ? "FUNC_TRACE_ENTRY" : "FUNC_TRACE_EXIT");
 			return -EINVAL;
 		}
@@ -1371,8 +1373,8 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	case REC_FNARGS_CAPTURE: {
 		struct rec_fnargs_capture *r = data;
 
-		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
-			fprintf(stderr, "BUG: PID %d session data not found (FUNC_ARGS_CAPTURE)!\n", r->pid);
+		if (!hashmap__find(&sessions_hash, (long)r->sess_id, &sess)) {
+			fprintf(stderr, "BUG: SESSION %d session data not found (FUNC_ARGS_CAPTURE)!\n", r->sess_id);
 			return -EINVAL;
 		}
 		return handle_fnargs_capture(ctx, sess, r);
@@ -1380,8 +1382,8 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	case REC_LBR_STACK: {
 		const struct rec_lbr_stack *r = data;
 
-		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
-			fprintf(stderr, "BUG: PID %d session data not found (LBR_STACK)!\n", r->pid);
+		if (!hashmap__find(&sessions_hash, (long)r->sess_id, &sess)) {
+			fprintf(stderr, "BUG: SESSION %d session data not found (LBR_STACK)!\n", r->sess_id);
 			return -EINVAL;
 		}
 		return handle_lbr_stack(ctx, sess, r);
@@ -1389,8 +1391,8 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	case REC_INJ_PROBE: {
 		const struct rec_inj_probe *r = data;
 
-		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
-			fprintf(stderr, "BUG: PID %d session data not found (INJ_PROBE)!\n", r->pid);
+		if (!hashmap__find(&sessions_hash, (long)r->sess_id, &sess)) {
+			fprintf(stderr, "BUG: SESSION %d session data not found (INJ_PROBE)!\n", r->sess_id);
 			return -EINVAL;
 		}
 		return handle_inj_probe(ctx, sess, r);
@@ -1398,8 +1400,8 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	case REC_CTXARGS_CAPTURE: {
 		const struct rec_ctxargs_capture *r = data;
 
-		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
-			fprintf(stderr, "BUG: PID %d session data not found (CTX_CAPTURE)!\n", r->pid);
+		if (!hashmap__find(&sessions_hash, (long)r->sess_id, &sess)) {
+			fprintf(stderr, "BUG: SESSION %d session data not found (CTX_CAPTURE)!\n", r->sess_id);
 			return -EINVAL;
 		}
 		return handle_ctx_capture(ctx, sess, r);
@@ -1407,8 +1409,8 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	case REC_SESSION_END: {
 		const struct rec_session_end *r = data;
 
-		if (!hashmap__find(&sessions_hash, (long)r->pid, &sess)) {
-			fprintf(stderr, "BUG: PID %d session data not found (SESSION_END)!\n", r->pid);
+		if (!hashmap__find(&sessions_hash, (long)r->sess_id, &sess)) {
+			fprintf(stderr, "BUG: SESSION %d session data not found (SESSION_END)!\n", r->sess_id);
 			return -EINVAL;
 		}
 		return handle_session_end(ctx, sess, r);

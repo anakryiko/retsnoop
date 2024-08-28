@@ -997,7 +997,7 @@ int prepare_ctx_args_specs(int probe_id, const struct inj_probe_info *inj)
 {
 	struct ctx_args_info *ctx_args;
 	char desc[256];
-	int i, err;
+	int i, err = -EINVAL;
 
 	snprintf_inj_probe(desc, sizeof(desc), inj);
 
