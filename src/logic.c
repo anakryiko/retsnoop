@@ -317,7 +317,7 @@ static int filter_kstack(struct ctx *ctx, struct kstack_item *r, const struct ca
 
 		item->addr = s->kstack[i];
 		item->filtered = false;
-		item->ksym = ksyms__map_addr(ksyms, item->addr);
+		item->ksym = ksyms__map_addr(ksyms, item->addr, KSYM_FUNC);
 		if (!item->ksym)
 			continue;
 	}
@@ -978,6 +978,8 @@ static void prepare_stack_items(struct ctx *ctx, struct session *sess,
 	if (kitem && kitem->ksym) {
 		snappendf(s->sym, env.stack_dec_offs ? "+%lu" : "+0x%lx",
 			  kitem->addr - kitem->ksym->addr);
+	} else if (kitem) {
+		snappendf(s->sym, "0x%lx", kitem->addr);
 	}
 	if (symb_cnt) {
 		line_off = detect_linux_src_loc(resp->line);
@@ -1051,10 +1053,13 @@ static void prepare_lbr_items(struct ctx *ctx, long addr, struct stack_items_cac
 	if (env.stack_emit_addrs)
 		snappendf(s->sym, "%016lx ", addr);
 
-	ksym = ksyms__map_addr(ctx->ksyms, addr);
-	if (ksym)
+	ksym = ksyms__map_addr(ctx->ksyms, addr, KSYM_FUNC);
+	if (ksym) {
 		snappendf(s->sym, env.stack_dec_offs ? "%s+%lu" : "%s+0x%lx",
 			  ksym->name, addr - ksym->addr);
+	} else {
+		snappendf(s->sym, "0x%lx", addr);
+	}
 
 	if (!ctx->a2l || env.symb_mode == SYMB_NONE)
 		return;
