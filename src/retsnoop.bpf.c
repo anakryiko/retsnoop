@@ -40,6 +40,7 @@ static inline void atomic_add(long *value, long n)
 }
 
 struct session {
+	int sess_id;
 	int pid, tgid;
 	long start_ts;
 	char task_comm[16], proc_comm[16];
@@ -321,7 +322,7 @@ static __noinline void record_fnargs(void *ctx, struct session *sess, u32 func_i
 	}
 
 	r->type = REC_FNARGS_CAPTURE;
-	r->pid = sess->pid;
+	r->sess_id = sess->sess_id;
 	r->seq_id = seq_id;
 	r->func_id = func_id;
 	r->arg_ptrs = 0;
@@ -417,7 +418,7 @@ static __noinline void record_ctxargs(void *ctx, struct session *sess, u32 probe
 	}
 
 	r->type = REC_CTXARGS_CAPTURE;
-	r->pid = sess->pid;
+	r->sess_id = sess->sess_id;
 	r->seq_id = seq_id;
 	r->probe_id = probe_id;
 	r->ptrs_mask = 0;
@@ -542,6 +543,7 @@ static bool emit_session_start(struct session *sess)
 	}
 
 	r->type = REC_SESSION_START;
+	r->sess_id = sess->sess_id;
 	r->pid = sess->pid;
 	r->tgid = sess->tgid;
 	r->start_ts = sess->start_ts;
@@ -553,28 +555,35 @@ static bool emit_session_start(struct session *sess)
 	return true;
 }
 
+static __always_inline int session_id(int pid)
+{
+	return pid ?: -(1 + bpf_get_smp_processor_id());
+}
+
 static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 {
 	u64 pid_tgid = bpf_get_current_pid_tgid();
 	u32 pid = (u32)pid_tgid;
 	struct session *sess;
-	int seq_id;
+	int seq_id, sess_id;
 	u64 d;
 
-	sess = bpf_map_lookup_elem(&sessions, &pid);
+	sess_id = session_id(pid);
+	sess = bpf_map_lookup_elem(&sessions, &sess_id);
 	if (!sess) {
 		struct task_struct *tsk;
 
 		if (!(func_info(id)->flags & FUNC_IS_ENTRY))
 			return false;
 
-		bpf_map_update_elem(&sessions, &pid, &empty_session, BPF_ANY);
-		sess = bpf_map_lookup_elem(&sessions, &pid);
+		bpf_map_update_elem(&sessions, &sess_id, &empty_session, BPF_ANY);
+		sess = bpf_map_lookup_elem(&sessions, &sess_id);
 		if (!sess) {
 			atomic_inc(&stats.dropped_sessions);
 			return false;
 		}
 
+		sess->sess_id = sess_id;
 		sess->pid = pid;
 		sess->tgid = (u32)(pid_tgid >> 32);
 		sess->start_ts = bpf_ktime_get_ns();
@@ -584,8 +593,8 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 
 		if (emit_func_trace || capture_args) {
 			if (!emit_session_start(sess)) {
-				vlog("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION_START record!\n",
-				     sess->pid, sess->tgid);
+				vlog("DEFUNCT SESSION %d TID/PID %d/%d: failed to send SESSION_START record!\n",
+				     sess->sess_id, sess->pid, sess->tgid);
 				sess->defunct = true;
 				goto out_defunct;
 			} else {
@@ -630,7 +639,7 @@ out_defunct:
 
 		fe->type = REC_FUNC_TRACE_ENTRY;
 		fe->ts = bpf_ktime_get_ns();
-		fe->pid = pid;
+		fe->sess_id = sess_id;
 		fe->seq_id = seq_id;
 		fe->depth = d + 1;
 		fe->func_id = id;
@@ -649,13 +658,13 @@ skip_ft_entry:;
 
 		if (printk_is_sane) {
 			if (d == 0)
-				log("=== STARTING TRACING %s [COMM %s PID %d] ===",
-				    func_name, sess->task_comm, pid);
+				log("=== STARTING TRACING %s [COMM %s SESS %d] ===",
+				    func_name, sess->task_comm, sess_id);
 			log("    ENTER %s%s [...]", spaces + 2 * ((255 - d) & 0xFF), func_name);
 		} else {
 			if (d == 0) {
-				log("=== STARTING TRACING %s [PID %d] ===", func_name, pid);
-				log("=== ...      TRACING [PID %d COMM %s] ===", pid, sess->task_comm);
+				log("=== STARTING TRACING %s [SESS %d] ===", func_name, sess_id);
+				log("=== ...      TRACING [SESS %d COMM %s] ===", sess_id, sess->task_comm);
 			}
 			log("    ENTER [%d] %s [...]", d + 1, func_name);
 		}
@@ -826,8 +835,8 @@ static int submit_session(void *ctx, struct session *sess)
 
 	if (emit_session && !sess->start_emitted) {
 		if (!emit_session_start(sess)) {
-			vlog("DEFUNCT SESSION TID/PID %d/%d: failed to send SESSION data!\n",
-			     sess->pid, sess->tgid);
+			vlog("DEFUNCT SESSION %d TID/PID %d/%d: failed to send SESSION data!\n",
+			     sess->sess_id, sess->pid, sess->tgid);
 			sess->defunct = true;
 			return -EINVAL;
 		}
@@ -849,7 +858,7 @@ static int submit_session(void *ctx, struct session *sess)
 		}
 
 		r->type = REC_LBR_STACK;
-		r->pid = sess->pid;
+		r->sess_id = sess->sess_id;
 		r->lbrs_sz = sess->lbrs_sz;
 		__memcpy(r->lbrs, sess->lbrs, sizeof(sess->lbrs));
 
@@ -867,7 +876,7 @@ skip_lbrs:;
 		}
 
 		r->type = REC_SESSION_END;
-		r->pid = sess->pid;
+		r->sess_id = sess->sess_id;
 		r->emit_ts = emit_ts;
 		r->ignored = !emit_session;
 		r->is_err = sess->stack.is_err;
@@ -894,10 +903,11 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	const char *fmt;
 	bool failed;
 	u64 d, lat;
-	int seq_id;
+	int seq_id, sess_id;
 
 	pid = (u32)bpf_get_current_pid_tgid();
-	sess = bpf_map_lookup_elem(&sessions, &pid);
+	sess_id = session_id(pid);
+	sess = bpf_map_lookup_elem(&sessions, &sess_id);
 	if (!sess)
 		return false;
 
@@ -906,9 +916,9 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 		sess->stack.depth--;
 		if (sess->stack.depth == 0) {
 			reset_session(sess);
-			bpf_map_delete_elem(&sessions, &pid);
-			vlog("DEFUNCT SESSION TID/PID %d/%d: SESSION_END, no data was collected!\n",
-			     pid, sess->tgid);
+			bpf_map_delete_elem(&sessions, &sess_id);
+			vlog("DEFUNCT SESSION %d TID/PID %d/%d: SESSION_END, no data was collected!\n",
+			     sess_id, pid, sess->tgid);
 		}
 		return false;
 	}
@@ -960,7 +970,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 
 		fe->type = REC_FUNC_TRACE_EXIT;
 		fe->ts = bpf_ktime_get_ns();
-		fe->pid = pid;
+		fe->sess_id = sess_id;
 		fe->seq_id = seq_id;
 		fe->depth = d + 1;
 		fe->func_id = id;
@@ -986,7 +996,7 @@ skip_ft_exit:;
 
 		atomic_inc(&stats.dropped_sessions);
 		reset_session(sess);
-		bpf_map_delete_elem(&sessions, &pid);
+		bpf_map_delete_elem(&sessions, &sess_id);
 
 		return false;
 	}
@@ -1011,7 +1021,7 @@ skip_ft_exit:;
 		submit_session(ctx, sess);
 
 		reset_session(sess);
-		bpf_map_delete_elem(&sessions, &pid);
+		bpf_map_delete_elem(&sessions, &sess_id);
 	}
 
 	return true;
@@ -1020,11 +1030,12 @@ skip_ft_exit:;
 static void handle_inj_probe(void *ctx, u32 id)
 {
 	struct session *sess;
-	int seq_id, err;
+	int seq_id, sess_id, err;
 	u32 pid;
 
 	pid = (u32)bpf_get_current_pid_tgid();
-	sess = bpf_map_lookup_elem(&sessions, &pid);
+	sess_id = session_id(pid);
+	sess = bpf_map_lookup_elem(&sessions, &sess_id);
 	if (!sess || sess->defunct)
 		return;
 
@@ -1042,7 +1053,7 @@ static void handle_inj_probe(void *ctx, u32 id)
 
 		r->type = REC_INJ_PROBE;
 		r->ts = bpf_ktime_get_ns();
-		r->pid = pid;
+		r->sess_id = sess_id;
 		r->seq_id = seq_id;
 		r->probe_id = id;
 		r->depth = sess->stack.depth + 1;

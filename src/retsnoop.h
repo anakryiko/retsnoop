@@ -130,6 +130,7 @@ struct ctxargs_info {
 struct rec_session_start {
 	/* REC_SESSION_START */
 	enum rec_type type;
+	int sess_id;
 	int pid;
 	int tgid;
 	long start_ts;
@@ -140,7 +141,7 @@ struct rec_func_trace_entry {
 	/* REC_FUNC_TRACE_ENTRY or REC_FUNC_TRACE_EXIT */
 	enum rec_type type;
 
-	int pid;
+	int sess_id;
 	long ts;
 
 	int seq_id;
@@ -154,7 +155,7 @@ struct rec_func_trace_entry {
 struct rec_fnargs_capture {
 	/* REC_FNARGS_CAPTURE */
 	enum rec_type type;
-	int pid;
+	int sess_id;
 	int seq_id;
 	unsigned short func_id;
 	unsigned short data_len;
@@ -166,7 +167,7 @@ struct rec_fnargs_capture {
 struct rec_ctxargs_capture {
 	/* REC_CTXARGS_CAPTURE */
 	enum rec_type type;
-	int pid;
+	int sess_id;
 	int seq_id;
 	unsigned short probe_id;
 	unsigned short data_len;
@@ -178,7 +179,7 @@ struct rec_ctxargs_capture {
 struct rec_lbr_stack {
 	/* REC_LBR_STACK */
 	enum rec_type type;
-	int pid;
+	int sess_id;
 
 	int lbrs_sz;
 	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
@@ -187,7 +188,7 @@ struct rec_lbr_stack {
 struct rec_inj_probe {
 	/* REC_INJ_PROBE */
 	enum rec_type type;
-	int pid;
+	int sess_id;
 	long ts;
 
 	int seq_id;
@@ -224,7 +225,7 @@ struct call_stack {
 struct rec_session_end {
 	/* REC_SESSION_END */
 	enum rec_type type;
-	int pid;
+	int sess_id;
 	long emit_ts;
 	bool ignored;
 	bool is_err;
