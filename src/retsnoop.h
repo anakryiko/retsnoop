@@ -6,7 +6,7 @@
 #define MAX_FUNC_NAME_LEN 40
 
 #define MAX_FSTACK_DEPTH 64
-#define MAX_KSTACK_DEPTH 128
+#define MAX_KSTACK_DEPTH 96
 
 #define MAX_LBR_ENTRIES 32
 
@@ -209,20 +209,10 @@ struct call_stack {
 	long func_lat[MAX_FSTACK_DEPTH];
 	unsigned depth;
 	unsigned max_depth;
-	bool is_err;
-
-	unsigned short saved_ids[MAX_FSTACK_DEPTH];
-	int saved_seq_ids[MAX_FSTACK_DEPTH];
-	long saved_res[MAX_FSTACK_DEPTH];
-	long saved_lat[MAX_FSTACK_DEPTH];
-	unsigned saved_depth;
-	unsigned saved_max_depth;
+	unsigned stitch_pos;
 
 	long kstack[MAX_KSTACK_DEPTH];
 	long kstack_sz;
-
-	long saved_kstack[MAX_KSTACK_DEPTH];
-	long saved_kstack_sz;
 };
 
 struct rec_session_end {

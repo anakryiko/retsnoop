@@ -163,40 +163,7 @@ static bool should_report_stack(struct ctx *ctx, const struct call_stack *s)
 			allowed = true;
 	}
 
-	/* no stitched together stack */
-	if (s->max_depth + 1 != s->saved_depth)
-		return allowed;
-
-	for (i = s->saved_depth - 1; i < s->saved_max_depth; i++) {
-		id = s->saved_ids[i];
-		flags = func_info(ctx, id)->flags;
-
-		if (flags & FUNC_CANT_FAIL)
-			continue;
-
-		res = s->func_res[i];
-		if (flags & FUNC_NEEDS_SIGN_EXT)
-			res = (long)(int)res;
-
-		if (res == 0 && !(flags & FUNC_RET_PTR))
-			continue;
-
-		/* if error is blacklisted, reject immediately */
-		if (is_err_in_mask(env.deny_error_mask, res))
-			return false;
-		/* if error is whitelisted, mark as allowed; but we need to
-		 * still see if any other errors in the stack are blacklisted
-		 */
-		if (is_err_in_mask(env.allow_error_mask, res))
-			allowed = true;
-	}
-
 	return allowed;
-}
-
-static bool is_call_stack_stitched(const struct call_stack *s)
-{
-	return s->max_depth + 1 == s->saved_depth;
 }
 
 static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct call_stack *s)
@@ -218,7 +185,7 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 		fitem->finfo = finfo;
 		fitem->flags = flags;
 		fitem->name = fname;
-		fitem->stitched = false;
+		fitem->stitched = s->stitch_pos && i >= s->stitch_pos;
 		fitem->seq_id = seq_id;
 		if (i >= s->depth) {
 			fitem->finished = true;
@@ -232,31 +199,6 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 		else
 			fitem->res = s->func_res[i];
 		fitem->lat = s->func_lat[i];
-	}
-
-	/* no stitched together stack */
-	if (!is_call_stack_stitched(s))
-		return cnt;
-
-	for (i = s->saved_depth - 1; i < s->saved_max_depth; i++, cnt++) {
-		id = s->saved_ids[i];
-		seq_id = s->saved_seq_ids[i];
-		flags = func_info(ctx, id)->flags;
-		finfo = mass_attacher__func(att, id);
-		fname = finfo->name;
-
-		fitem = &r[cnt];
-		fitem->finfo = finfo;
-		fitem->flags = flags;
-		fitem->name = fname;
-		fitem->stitched = true;
-		fitem->finished = true;
-		fitem->seq_id = seq_id;
-		fitem->lat = s->saved_lat[i];
-		if (flags & FUNC_NEEDS_SIGN_EXT)
-			fitem->res = (long)(int)s->saved_res[i];
-		else
-			fitem->res = s->saved_res[i];
 	}
 
 	return cnt;
@@ -313,18 +255,14 @@ static bool is_bpf_prog(const struct kstack_item *item)
 static int filter_kstack(struct ctx *ctx, struct kstack_item *r, const struct call_stack *s)
 {
 	struct ksyms *ksyms = ctx->ksyms;
-	const long *kstack;
-	long kstack_sz;
 	int i, n, p;
 
 	/* lookup ksyms and reverse stack trace to match natural call order */
-	kstack_sz = is_call_stack_stitched(s) ? s->saved_kstack_sz : s->kstack_sz;
-	kstack = is_call_stack_stitched(s) ? s->saved_kstack : s->kstack;
-	n = kstack_sz / 8;
+	n = s->kstack_sz / 8;
 	for (i = 0; i < n; i++) {
 		struct kstack_item *item = &r[n - i - 1];
 
-		item->addr = kstack[i];
+		item->addr = s->kstack[i];
 		item->filtered = false;
 		item->ksym = ksyms__map_addr(ksyms, item->addr, KSYM_FUNC);
 		if (!item->ksym)
@@ -1270,17 +1208,17 @@ static int handle_session_end(struct ctx *dctx, struct session *sess,
 	if (r->ignored)
 		goto out_purge;
 
-	if (!s->is_err && !env.emit_success_stacks)
+	if (!r->is_err && !env.emit_success_stacks)
 		goto out_purge;
 
-	if (s->is_err && !should_report_stack(dctx, s))
+	if (r->is_err && !should_report_stack(dctx, s))
 		goto out_purge;
 
 	if (env.debug) {
 		printf("SESSION %d GOT %s STACK (depth %u):\n",
-		       sess->sess_id, s->is_err ? "ERROR" : "SUCCESS", s->max_depth);
-		printf("DEPTH %d MAX DEPTH %d SAVED DEPTH %d MAX SAVED DEPTH %d\n",
-			s->depth, s->max_depth, s->saved_depth, s->saved_max_depth);
+		       sess->sess_id, r->is_err ? "ERROR" : "SUCCESS", s->max_depth);
+		printf("DEPTH %d MAX DEPTH %d STITCH POS %d\n",
+			s->depth, s->max_depth, s->stitch_pos);
 	}
 
 	ts_to_str(ktime_to_ts(sess->start_ts), ts1, sizeof(ts1));

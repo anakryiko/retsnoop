@@ -49,6 +49,7 @@ struct session {
 
 	bool defunct;
 	bool start_emitted;
+	bool is_err;
 
 	int next_seq_id;
 
@@ -60,7 +61,25 @@ struct session {
 	struct perf_branch_entry saved_lbrs[MAX_LBR_ENTRIES];
 	long saved_lbrs_sz;
 
-	struct call_stack stack;
+	unsigned short func_ids[MAX_FSTACK_DEPTH];
+	int seq_ids[MAX_FSTACK_DEPTH];
+	long func_res[MAX_FSTACK_DEPTH];
+	long func_lat[MAX_FSTACK_DEPTH];
+	unsigned depth;
+	unsigned max_depth;
+
+	unsigned short saved_ids[MAX_FSTACK_DEPTH];
+	int saved_seq_ids[MAX_FSTACK_DEPTH];
+	long saved_res[MAX_FSTACK_DEPTH];
+	long saved_lat[MAX_FSTACK_DEPTH];
+	unsigned saved_depth;
+	unsigned saved_max_depth;
+
+	long kstack[MAX_KSTACK_DEPTH];
+	long kstack_sz;
+
+	long saved_kstack[MAX_KSTACK_DEPTH];
+	long saved_kstack_sz;
 };
 
 struct {
@@ -494,15 +513,15 @@ static __noinline void record_ctxargs(void *ctx, struct session *sess, u32 probe
 	bpf_ringbuf_submit(r, 0);
 }
 
-static bool is_call_stack_stitched(const struct call_stack *s)
+static bool is_call_stack_stitched(const struct session *sess)
 {
-	return s->max_depth + 1 == s->saved_depth;
+	return sess->max_depth + 1 == sess->saved_depth;
 }
 
-static __noinline void save_stitch_stack(void *ctx, struct session *sess, struct call_stack *stack)
+static __noinline void save_stitch_stack(void *ctx, struct session *sess)
 {
-	u64 d = stack->depth;
-	u64 len = stack->max_depth - d;
+	u64 d = sess->depth;
+	u64 len = sess->max_depth - d;
 	u64 kstack_sz, lbrs_sz;
 
 	if (d >= MAX_FSTACK_DEPTH || len >= MAX_FSTACK_DEPTH) {
@@ -510,38 +529,35 @@ static __noinline void save_stitch_stack(void *ctx, struct session *sess, struct
 		return;
 	}
 
-	dlog("CURRENT DEPTH %d..%d", stack->depth + 1, stack->max_depth);
-	dlog("SAVED DEPTH %d..%d", stack->saved_depth, stack->saved_max_depth);
+	dlog("CURRENT DEPTH %d..%d", sess->depth + 1, sess->max_depth);
+	dlog("SAVED DEPTH %d..%d", sess->saved_depth, sess->saved_max_depth);
 
 	/* we can stitch together stack subsections */
-	if (stack->saved_depth && stack->max_depth + 1 == stack->saved_depth) {
-		__memcpy(stack->saved_ids + d, stack->func_ids + d, len * sizeof(stack->saved_ids[0]));
-		__memcpy(stack->saved_res + d, stack->func_res + d, len * sizeof(stack->saved_res[0]));
-		__memcpy(stack->saved_lat + d, stack->func_lat + d, len * sizeof(stack->saved_lat[0]));
+	if (sess->saved_depth && sess->max_depth + 1 == sess->saved_depth) {
+		__memcpy(sess->saved_ids + d, sess->func_ids + d, len * sizeof(sess->saved_ids[0]));
+		__memcpy(sess->saved_res + d, sess->func_res + d, len * sizeof(sess->saved_res[0]));
+		__memcpy(sess->saved_lat + d, sess->func_lat + d, len * sizeof(sess->saved_lat[0]));
+		__memcpy(sess->saved_seq_ids + d, sess->seq_ids + d, len * sizeof(sess->saved_seq_ids[0]));
 
-		if (capture_args)
-			__memcpy(stack->saved_seq_ids + d, stack->seq_ids + d, len * sizeof(stack->saved_seq_ids[0]));
 		/* keep previously saved (deeper) kstack and lbrs */
 
-		stack->saved_depth = stack->depth + 1;
+		sess->saved_depth = sess->depth + 1;
 		dlog("STITCHED STACK %d..%d to ..%d",
-		     stack->depth + 1, stack->max_depth, stack->saved_max_depth);
+		     sess->depth + 1, sess->max_depth, sess->saved_max_depth);
 		return;
 	}
 
 	dlog("RESETTING SAVED ERR STACK %d..%d to %d..",
-	     stack->saved_depth, stack->saved_max_depth, stack->depth + 1);
+	     sess->saved_depth, sess->saved_max_depth, sess->depth + 1);
 
-	__memcpy(stack->saved_ids + d, stack->func_ids + d, len * sizeof(stack->saved_ids[0]));
-	__memcpy(stack->saved_res + d, stack->func_res + d, len * sizeof(stack->saved_res[0]));
-	__memcpy(stack->saved_lat + d, stack->func_lat + d, len * sizeof(stack->saved_lat[0]));
+	__memcpy(sess->saved_ids + d, sess->func_ids + d, len * sizeof(sess->saved_ids[0]));
+	__memcpy(sess->saved_res + d, sess->func_res + d, len * sizeof(sess->saved_res[0]));
+	__memcpy(sess->saved_lat + d, sess->func_lat + d, len * sizeof(sess->saved_lat[0]));
+	__memcpy(sess->saved_seq_ids + d, sess->seq_ids + d, len * sizeof(sess->saved_seq_ids[0]));
 
-	if (capture_args)
-		__memcpy(stack->saved_seq_ids + d, stack->seq_ids + d, len * sizeof(stack->saved_seq_ids[0]));
-
-	kstack_sz = stack->saved_kstack_sz = stack->kstack_sz;
-	if (kstack_sz <= sizeof(stack->saved_kstack))
-		__memcpy(stack->saved_kstack, stack->kstack, kstack_sz);
+	kstack_sz = sess->saved_kstack_sz = sess->kstack_sz;
+	if (kstack_sz <= sizeof(sess->saved_kstack))
+		__memcpy(sess->saved_kstack, sess->kstack, kstack_sz);
 
 	if (use_lbr) {
 		lbrs_sz = sess->saved_lbrs_sz = sess->lbrs_sz;
@@ -549,8 +565,8 @@ static __noinline void save_stitch_stack(void *ctx, struct session *sess, struct
 			__memcpy(sess->saved_lbrs, sess->lbrs, lbrs_sz);
 	}
 
-	stack->saved_depth = stack->depth + 1;
-	stack->saved_max_depth = stack->max_depth;
+	sess->saved_depth = sess->depth + 1;
+	sess->saved_max_depth = sess->max_depth;
 }
 
 static const struct session empty_session;
@@ -629,27 +645,27 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 out_defunct:
 	/* if we failed to send out REC_SESSION_START, update depth and bail */
 	if (sess->defunct) {
-		sess->stack.depth++;
+		sess->depth++;
 		return false;
 	}
 
-	d = sess->stack.depth;
+	d = sess->depth;
 	barrier_var(d);
 	if (d >= MAX_FSTACK_DEPTH)
 		return false;
 
-	if (sess->stack.depth != sess->stack.max_depth && sess->stack.is_err)
-		save_stitch_stack(ctx, sess, &sess->stack);
+	if (sess->depth != sess->max_depth && sess->is_err)
+		save_stitch_stack(ctx, sess);
 
 	seq_id = sess->next_seq_id;
 	sess->next_seq_id++;
 
-	sess->stack.func_ids[d] = id;
-	sess->stack.seq_ids[d] = seq_id;
-	sess->stack.is_err = false;
-	sess->stack.depth = d + 1;
-	sess->stack.max_depth = d + 1;
-	sess->stack.func_lat[d] = bpf_ktime_get_ns();
+	sess->func_ids[d] = id;
+	sess->seq_ids[d] = seq_id;
+	sess->is_err = false;
+	sess->depth = d + 1;
+	sess->max_depth = d + 1;
+	sess->func_lat[d] = bpf_ktime_get_ns();
 
 	if (emit_func_trace) {
 		struct rec_func_trace_entry *fe;
@@ -830,15 +846,65 @@ static void reset_session(struct session *sess)
 	sess->defunct = false;
 	sess->start_emitted = false;
 
-	sess->stack.is_err = false;
-	sess->stack.saved_depth = 0;
-	sess->stack.saved_max_depth = 0;
-	sess->stack.depth = 0;
-	sess->stack.max_depth = 0;
-	sess->stack.kstack_sz = 0;
+	sess->is_err = false;
+	sess->saved_depth = 0;
+	sess->saved_max_depth = 0;
+	sess->depth = 0;
+	sess->max_depth = 0;
+	sess->kstack_sz = 0;
 	sess->next_seq_id = 0;
 
 	sess->lbrs_sz = 0;
+}
+
+static __noinline void copy_call_stack(struct rec_session_end *r, struct session *sess)
+{
+	u64 d, len;
+	u64 kstack_sz;
+	long *kstack;
+
+	len = sess->max_depth;
+	if (len >= MAX_FSTACK_DEPTH)
+		return; /* can't happen */
+
+	r->stack.depth = sess->depth;
+	r->stack.max_depth = sess->max_depth;
+	r->stack.stitch_pos = 0;
+
+	__memcpy(r->stack.func_ids, &sess->func_ids, len * sizeof(sess->func_ids[0]));
+	__memcpy(r->stack.seq_ids, &sess->seq_ids, len * sizeof(sess->seq_ids[0]));
+	__memcpy(r->stack.func_res, &sess->func_res, len * sizeof(sess->func_res[0]));
+	__memcpy(r->stack.func_lat, &sess->func_lat, len * sizeof(sess->func_lat[0]));
+
+	/* copy kernel stack trace */
+	if (is_call_stack_stitched(sess)) {
+		kstack_sz = sess->saved_kstack_sz;
+		kstack = sess->saved_kstack;
+	} else {
+		kstack_sz = sess->kstack_sz;
+		kstack = sess->kstack;
+	}
+	r->stack.kstack_sz = kstack_sz;
+	if (kstack_sz <= sizeof(r->stack.kstack))
+		__memcpy(r->stack.kstack, kstack, kstack_sz);
+
+	if (is_call_stack_stitched(sess)) {
+		d = sess->max_depth;
+		len = sess->saved_max_depth - sess->max_depth;
+
+		if (d >= MAX_FSTACK_DEPTH || len >= MAX_FSTACK_DEPTH) {
+			log("SHOULDN'T HAPPEN DEPTH %ld LEN %ld", d, len);
+			return;
+		}
+
+		r->stack.max_depth = sess->saved_max_depth;
+		r->stack.stitch_pos = d;
+
+		__memcpy(r->stack.func_ids + d, sess->saved_ids + d, len * sizeof(sess->func_ids[0]));
+		__memcpy(r->stack.seq_ids + d, sess->saved_seq_ids + d, len * sizeof(sess->seq_ids[0]));
+		__memcpy(r->stack.func_res + d, sess->saved_res + d, len * sizeof(sess->func_res[0]));
+		__memcpy(r->stack.func_lat + d, sess->saved_lat + d, len * sizeof(sess->func_lat[0]));
+	}
 }
 
 static int submit_session(void *ctx, struct session *sess)
@@ -846,14 +912,14 @@ static int submit_session(void *ctx, struct session *sess)
 	bool emit_session;
 	u64 emit_ts = bpf_ktime_get_ns();
 
-	emit_session = sess->stack.is_err || emit_success_stacks;
-	if (duration_ns && emit_ts - sess->stack.func_lat[0] < duration_ns)
+	emit_session = sess->is_err || emit_success_stacks;
+	if (duration_ns && emit_ts - sess->func_lat[0] < duration_ns)
 		emit_session = false;
 
 	if (emit_session) {
 		dlog("EMIT %s STACK DEPTH %d (SAVED ..%d)",
-		     sess->stack.is_err ? "ERROR" : "SUCCESS",
-		     sess->stack.max_depth, sess->stack.saved_max_depth);
+		     sess->is_err ? "ERROR" : "SUCCESS",
+		     sess->max_depth, sess->saved_max_depth);
 	}
 
 	if (emit_session && !sess->start_emitted) {
@@ -882,7 +948,7 @@ static int submit_session(void *ctx, struct session *sess)
 
 		r->type = REC_LBR_STACK;
 		r->sess_id = sess->sess_id;
-		if (is_call_stack_stitched(&sess->stack)) {
+		if (is_call_stack_stitched(sess)) {
 			r->lbrs_sz = sess->saved_lbrs_sz;
 			__memcpy(r->lbrs, sess->saved_lbrs, sizeof(sess->saved_lbrs));
 		} else {
@@ -907,14 +973,14 @@ skip_lbrs:;
 		r->sess_id = sess->sess_id;
 		r->emit_ts = emit_ts;
 		r->ignored = !emit_session;
-		r->is_err = sess->stack.is_err;
+		r->is_err = sess->is_err;
 		r->last_seq_id = sess->next_seq_id - 1;
 		r->lbrs_sz = sess->lbrs_sz;
 		r->dropped_records = sess->dropped_records;
 
 		/* copy over STACK_TRACE "record", if required */
 		if (emit_session)
-			__memcpy(&r->stack, &sess->stack, sizeof(sess->stack));
+			copy_call_stack(r, sess);
 
 		bpf_ringbuf_submit(r, 0);
 	}
@@ -941,8 +1007,8 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 
 	/* if we failed to send out REC_SESSION_START, clean up and send nothing else */
 	if (sess->defunct) {
-		sess->stack.depth--;
-		if (sess->stack.depth == 0) {
+		sess->depth--;
+		if (sess->depth == 0) {
 			reset_session(sess);
 			bpf_map_delete_elem(&sessions, &sess_id);
 			vlog("DEFUNCT SESSION %d TID/PID %d/%d: SESSION_END, no data was collected!",
@@ -954,7 +1020,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	seq_id = sess->next_seq_id;
 	sess->next_seq_id++;
 
-	d = sess->stack.depth;
+	d = sess->depth;
 	if (d == 0)
 		return false;
 
@@ -985,7 +1051,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 	else
 		failed = IS_ERR_VALUE(res);
 
-	lat = bpf_ktime_get_ns() - sess->stack.func_lat[d];
+	lat = bpf_ktime_get_ns() - sess->func_lat[d];
 
 	if (emit_func_trace) {
 		struct rec_func_trace_entry *fe;
@@ -1011,12 +1077,12 @@ skip_ft_exit:;
 	if (verbose)
 		print_exit(ctx, d, id, res);
 
-	exp_id = sess->stack.func_ids[d];
+	exp_id = sess->func_ids[d];
 	if (exp_id != id) {
 		const struct func_info *exp_fi = func_info(exp_id);
 
 		vlog("POP(0) UNEXPECTED PID %d DEPTH %d MAX DEPTH %d",
-		     pid, sess->stack.depth, sess->stack.max_depth);
+		     pid, sess->depth, sess->max_depth);
 		vlog("POP(1) UNEXPECTED GOT  ID %d ADDR %lx NAME %s",
 		     id, ip, func_name);
 		vlog("POP(2) UNEXPECTED WANT ID %u ADDR %lx NAME %s",
@@ -1029,26 +1095,26 @@ skip_ft_exit:;
 		return false;
 	}
 
-	sess->stack.func_res[d] = res;
-	sess->stack.func_lat[d] = lat;
+	sess->func_res[d] = res;
+	sess->func_lat[d] = lat;
 
 	/* unmark stack as errored if any of return functions succeeded
 	 * (except for void functions, in which case just preserve original
 	 * error mark, if any
 	 */
 	if (!(flags & FUNC_CANT_FAIL) && !failed)
-		sess->stack.is_err = false;
+		sess->is_err = false;
 
-	if (failed && !sess->stack.is_err) {
-		sess->stack.is_err = true;
-		sess->stack.max_depth = d + 1;
-		sess->stack.kstack_sz = bpf_get_stack(ctx, &sess->stack.kstack, sizeof(sess->stack.kstack), 0);
+	if (failed && !sess->is_err) {
+		sess->is_err = true;
+		sess->max_depth = d + 1;
+		sess->kstack_sz = bpf_get_stack(ctx, &sess->kstack, sizeof(sess->kstack), 0);
 		sess->lbrs_sz = copy_lbrs(&sess->lbrs, sizeof(sess->lbrs));
-	} else if (emit_success_stacks && d + 1 == sess->stack.max_depth) {
-		sess->stack.kstack_sz = bpf_get_stack(ctx, &sess->stack.kstack, sizeof(sess->stack.kstack), 0);
+	} else if (emit_success_stacks && d + 1 == sess->max_depth) {
+		sess->kstack_sz = bpf_get_stack(ctx, &sess->kstack, sizeof(sess->kstack), 0);
 		sess->lbrs_sz = copy_lbrs(&sess->lbrs, sizeof(sess->lbrs));
 	}
-	sess->stack.depth = d;
+	sess->depth = d;
 
 	/* emit last complete stack trace */
 	if (d == 0) {
@@ -1091,7 +1157,7 @@ static void handle_inj_probe(void *ctx, u32 id)
 		r->sess_id = sess_id;
 		r->seq_id = seq_id;
 		r->probe_id = id;
-		r->depth = sess->stack.depth + 1;
+		r->depth = sess->depth + 1;
 
 		bpf_ringbuf_submit(r, 0);
 	}
