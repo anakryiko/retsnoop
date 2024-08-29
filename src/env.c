@@ -119,6 +119,7 @@ static const struct argp_option opts[] = {
 	  "Only emit stacks that took at least a given amount of milliseconds" },
 	{ "success-stacks", 'S', "VALUE", OPTION_ARG_OPTIONAL,
 	  "Specify whether emitting non-erroring (successful) call stacks is allowed" },
+	{ "interim-stacks", 'I', NULL, 0, "Emit incomplete interim call stacks" },
 	{ "allow-errors", 'x', "ERROR", 0,
 	  "Record stacks only with specified errors (e.g., EINVAL, EFAULT, etc.; also accepts special 'any' value)" },
 	{ "deny-errors", 'X', "ERROR", 0, "Ignore stacks that have specified errors" },
@@ -613,6 +614,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return -EINVAL;
 		}
 		env.emit_success_stacks = val;
+		break;
+	case 'I':
+		env.emit_interim_stacks = true;
 		break;
 	case 'M':
 		if (env.attach_mode != ATTACH_DEFAULT) {

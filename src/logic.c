@@ -96,15 +96,11 @@ static int handle_session_start(struct ctx *ctx, const struct rec_session_start 
 
 static int handle_lbr_stack(struct ctx *dctx, struct session *sess, const struct rec_lbr_stack *r)
 {
-	if (sess->lbrs) {
-		elog("BUG: SESSION %d data contains LBR data already!\n", r->sess_id);
-		return -EINVAL;
-	}
-
 	sess->lbrs_sz = r->lbrs_sz;
 
 	if (sess->lbrs_sz > 0) {
-		sess->lbrs = malloc(sess->lbrs_sz);
+		if (!sess->lbrs)
+			sess->lbrs = malloc(sess->lbrs_sz);
 		if (!sess->lbrs) {
 			elog("SESSION %d: failed to allocate LBR memory: %d\n", r->sess_id, -ENOMEM);
 			return -ENOMEM;
@@ -635,6 +631,11 @@ static void prepare_trace_items(struct ctx *ctx, struct stack_items_cache *cache
 
 	for (i = 0; i < sess->ft_cnt; prev_seq_id = t->seq_id, i++) {
 		t = &sess->trace_entries[i];
+
+		/* for interim sessions we can have extra records accumulated */
+		if (t->seq_id > last_seq_id)
+			break;
+
 		d = t->depth > 0 ? t->depth : -t->depth;
 		sp = spaces + sizeof(spaces) - 1 - 4 * min(d - 1, 20);
 
@@ -1196,7 +1197,7 @@ static int output_call_stack(struct ctx *dctx, struct session *sess,
 }
 
 static int handle_session_end(struct ctx *dctx, struct session *sess,
-			      const struct rec_session_end *r)
+			      const struct rec_session_end *r, bool final)
 {
 	static struct fstack_item fstack[MAX_FSTACK_DEPTH];
 	static struct kstack_item kstack[MAX_KSTACK_DEPTH];
@@ -1208,7 +1209,7 @@ static int handle_session_end(struct ctx *dctx, struct session *sess,
 	if (r->ignored)
 		goto out_purge;
 
-	if (!r->is_err && !env.emit_success_stacks)
+	if (!r->is_err && env.emit_success_stacks <= 0)
 		goto out_purge;
 
 	if (r->is_err && !should_report_stack(dctx, s))
@@ -1231,10 +1232,8 @@ static int handle_session_end(struct ctx *dctx, struct session *sess,
 	 * conditional on being enabled to be collected and output
 	 */
 
-	/* Emit detailed function calls trace, but only if we have completed
-	 * call stack trace (depth == 0)
-	 */
-	if (env.emit_func_trace && s->depth == 0) {
+	/* Emit detailed function calls trace */
+	if (env.emit_func_trace) {
 		prepare_trace_items(dctx, &stack_items1, sess->sess_id, r->last_seq_id);
 		print_trace_items(dctx, &stack_items1);
 	}
@@ -1288,7 +1287,8 @@ skip_call_stack:
 	printf("\n\n");
 
 out_purge:
-	purge_session(dctx, r->sess_id);
+	if (final)
+		purge_session(dctx, r->sess_id);
 
 	return ret;
 }
@@ -1356,14 +1356,16 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 		}
 		return handle_ctx_capture(ctx, sess, r);
 	}
+	case REC_SESSION_INTERIM:
 	case REC_SESSION_END: {
 		const struct rec_session_end *r = data;
 
 		if (!hashmap__find(&sessions_hash, (long)r->sess_id, &sess)) {
-			fprintf(stderr, "BUG: SESSION %d session data not found (SESSION_END)!\n", r->sess_id);
+			elog("BUG: SESSION %d session data not found (%s)!\n", r->sess_id,
+			     type == REC_SESSION_END ? "SESSION_END" : "SESSION_INTERIM");
 			return -EINVAL;
 		}
-		return handle_session_end(ctx, sess, r);
+		return handle_session_end(ctx, sess, r, type == REC_SESSION_END);
 	}
 	default:
 		fprintf(stderr, "Unrecognized record type %d\n", type);

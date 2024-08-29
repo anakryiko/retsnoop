@@ -413,6 +413,7 @@ int main(int argc, char **argv, char **envp)
 	skel->rodata->verbose = env.debug_feats & DEBUG_BPF;
 	skel->rodata->extra_verbose = (env.debug_feats & DEBUG_BPF) && env.debug_extra;
 	skel->rodata->emit_success_stacks = env.emit_success_stacks > 0;
+	skel->rodata->emit_interim_stacks = env.emit_interim_stacks;
 	skel->rodata->duration_ns = env.longer_than_ms * 1000000ULL;
 	skel->rodata->use_kprobes = env.attach_mode != ATTACH_FENTRY;
 	memset(skel->rodata->spaces, ' ', sizeof(skel->rodata->spaces) - 1);
