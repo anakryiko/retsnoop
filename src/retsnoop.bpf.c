@@ -57,6 +57,9 @@ struct session {
 	struct perf_branch_entry lbrs[MAX_LBR_ENTRIES];
 	long lbrs_sz;
 
+	struct perf_branch_entry saved_lbrs[MAX_LBR_ENTRIES];
+	long saved_lbrs_sz;
+
 	struct call_stack stack;
 };
 
@@ -491,11 +494,16 @@ static __noinline void record_ctxargs(void *ctx, struct session *sess, u32 probe
 	bpf_ringbuf_submit(r, 0);
 }
 
-static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
+static bool is_call_stack_stitched(const struct call_stack *s)
+{
+	return s->max_depth + 1 == s->saved_depth;
+}
+
+static __noinline void save_stitch_stack(void *ctx, struct session *sess, struct call_stack *stack)
 {
 	u64 d = stack->depth;
 	u64 len = stack->max_depth - d;
-	u64 kstack_sz;
+	u64 kstack_sz, lbrs_sz;
 
 	if (d >= MAX_FSTACK_DEPTH || len >= MAX_FSTACK_DEPTH) {
 		log("SHOULDN'T HAPPEN DEPTH %ld LEN %ld", d, len);
@@ -513,7 +521,7 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 
 		if (capture_args)
 			__memcpy(stack->saved_seq_ids + d, stack->seq_ids + d, len * sizeof(stack->saved_seq_ids[0]));
-		/* keep previously saved deeper kstack */
+		/* keep previously saved (deeper) kstack and lbrs */
 
 		stack->saved_depth = stack->depth + 1;
 		dlog("STITCHED STACK %d..%d to ..%d",
@@ -531,10 +539,15 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 	if (capture_args)
 		__memcpy(stack->saved_seq_ids + d, stack->seq_ids + d, len * sizeof(stack->saved_seq_ids[0]));
 
-	kstack_sz = stack->kstack_sz;
-	stack->saved_kstack_sz = kstack_sz;
+	kstack_sz = stack->saved_kstack_sz = stack->kstack_sz;
 	if (kstack_sz <= sizeof(stack->saved_kstack))
 		__memcpy(stack->saved_kstack, stack->kstack, kstack_sz);
+
+	if (use_lbr) {
+		lbrs_sz = sess->saved_lbrs_sz = sess->lbrs_sz;
+		if (lbrs_sz <= sizeof(sess->saved_lbrs))
+			__memcpy(sess->saved_lbrs, sess->lbrs, lbrs_sz);
+	}
 
 	stack->saved_depth = stack->depth + 1;
 	stack->saved_max_depth = stack->max_depth;
@@ -626,7 +639,7 @@ out_defunct:
 		return false;
 
 	if (sess->stack.depth != sess->stack.max_depth && sess->stack.is_err)
-		save_stitch_stack(ctx, &sess->stack);
+		save_stitch_stack(ctx, sess, &sess->stack);
 
 	seq_id = sess->next_seq_id;
 	sess->next_seq_id++;
@@ -869,8 +882,13 @@ static int submit_session(void *ctx, struct session *sess)
 
 		r->type = REC_LBR_STACK;
 		r->sess_id = sess->sess_id;
-		r->lbrs_sz = sess->lbrs_sz;
-		__memcpy(r->lbrs, sess->lbrs, sizeof(sess->lbrs));
+		if (is_call_stack_stitched(&sess->stack)) {
+			r->lbrs_sz = sess->saved_lbrs_sz;
+			__memcpy(r->lbrs, sess->saved_lbrs, sizeof(sess->saved_lbrs));
+		} else {
+			r->lbrs_sz = sess->lbrs_sz;
+			__memcpy(r->lbrs, sess->lbrs, sizeof(sess->lbrs));
+		}
 
 		bpf_ringbuf_submit(r, 0);
 skip_lbrs:;
