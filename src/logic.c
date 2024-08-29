@@ -1307,10 +1307,6 @@ static int handle_session_end(struct ctx *dctx, struct session *sess,
 		ret = -EINVAL;
 		goto out_purge;
 	}
-	if (env.debug) {
-		printf("FSTACK (%d items):\n", fstack_n);
-		printf("KSTACK (%d items out of original %ld):\n", kstack_n, s->kstack_sz / 8);
-	}
 
 	/* Determine address range of deepest nested function */
 	if (fstack_n > 0) {

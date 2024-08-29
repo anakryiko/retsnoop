@@ -497,7 +497,7 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 	u64 len = stack->max_depth - d;
 
 	if (d >= MAX_FSTACK_DEPTH || len >= MAX_FSTACK_DEPTH) {
-		log("SHOULDN'T HAPPEN DEPTH %ld LEN %ld\n", d, len);
+		log("SHOULDN'T HAPPEN DEPTH %ld LEN %ld", d, len);
 		return;
 	}
 
@@ -512,12 +512,12 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 		if (capture_args)
 			__memcpy(stack->saved_seq_ids + d, stack->seq_ids + d, len * sizeof(stack->saved_seq_ids[0]));
 		stack->saved_depth = stack->depth + 1;
-		dlog("STITCHED STACK %d..%d to ..%d\n",
+		dlog("STITCHED STACK %d..%d to ..%d",
 		     stack->depth + 1, stack->max_depth, stack->saved_max_depth);
 		return;
 	}
 
-	dlog("RESETTING SAVED ERR STACK %d..%d to %d..\n",
+	dlog("RESETTING SAVED ERR STACK %d..%d to %d..",
 	     stack->saved_depth, stack->saved_max_depth, stack->depth + 1);
 
 	__memcpy(stack->saved_ids + d, stack->func_ids + d, len * sizeof(stack->saved_ids[0]));
@@ -593,7 +593,7 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 
 		if (emit_func_trace || capture_args) {
 			if (!emit_session_start(sess)) {
-				vlog("DEFUNCT SESSION %d TID/PID %d/%d: failed to send SESSION_START record!\n",
+				vlog("DEFUNCT SESSION %d TID/PID %d/%d: failed to send SESSION_START record!",
 				     sess->sess_id, sess->pid, sess->tgid);
 				sess->defunct = true;
 				goto out_defunct;
@@ -828,14 +828,14 @@ static int submit_session(void *ctx, struct session *sess)
 		emit_session = false;
 
 	if (emit_session) {
-		dlog("EMIT %s STACK DEPTH %d (SAVED ..%d)\n",
+		dlog("EMIT %s STACK DEPTH %d (SAVED ..%d)",
 		     sess->stack.is_err ? "ERROR" : "SUCCESS",
 		     sess->stack.max_depth, sess->stack.saved_max_depth);
 	}
 
 	if (emit_session && !sess->start_emitted) {
 		if (!emit_session_start(sess)) {
-			vlog("DEFUNCT SESSION %d TID/PID %d/%d: failed to send SESSION data!\n",
+			vlog("DEFUNCT SESSION %d TID/PID %d/%d: failed to send SESSION data!",
 			     sess->sess_id, sess->pid, sess->tgid);
 			sess->defunct = true;
 			return -EINVAL;
@@ -917,7 +917,7 @@ static __noinline bool pop_call_stack(void *ctx, u32 id, u64 ip, long res)
 		if (sess->stack.depth == 0) {
 			reset_session(sess);
 			bpf_map_delete_elem(&sessions, &sess_id);
-			vlog("DEFUNCT SESSION %d TID/PID %d/%d: SESSION_END, no data was collected!\n",
+			vlog("DEFUNCT SESSION %d TID/PID %d/%d: SESSION_END, no data was collected!",
 			     sess_id, pid, sess->tgid);
 		}
 		return false;
