@@ -119,6 +119,7 @@ struct env {
 	 * -1 forces unsuccessful stacks only capture;
 	 */
 	int emit_success_stacks;
+	bool emit_interim_stacks;
 
 	int allow_error_cnt;
 	bool has_allow_error_filter;
