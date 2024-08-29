@@ -194,6 +194,11 @@ static bool should_report_stack(struct ctx *ctx, const struct call_stack *s)
 	return allowed;
 }
 
+static bool is_call_stack_stitched(const struct call_stack *s)
+{
+	return s->max_depth + 1 == s->saved_depth;
+}
+
 static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct call_stack *s)
 {
 	const struct mass_attacher_func_info *finfo;
@@ -230,7 +235,7 @@ static int filter_fstack(struct ctx *ctx, struct fstack_item *r, const struct ca
 	}
 
 	/* no stitched together stack */
-	if (s->max_depth + 1 != s->saved_depth)
+	if (!is_call_stack_stitched(s))
 		return cnt;
 
 	for (i = s->saved_depth - 1; i < s->saved_max_depth; i++, cnt++) {
@@ -308,14 +313,18 @@ static bool is_bpf_prog(const struct kstack_item *item)
 static int filter_kstack(struct ctx *ctx, struct kstack_item *r, const struct call_stack *s)
 {
 	struct ksyms *ksyms = ctx->ksyms;
+	const long *kstack;
+	long kstack_sz;
 	int i, n, p;
 
 	/* lookup ksyms and reverse stack trace to match natural call order */
-	n = s->kstack_sz / 8;
+	kstack_sz = is_call_stack_stitched(s) ? s->saved_kstack_sz : s->kstack_sz;
+	kstack = is_call_stack_stitched(s) ? s->saved_kstack : s->kstack;
+	n = kstack_sz / 8;
 	for (i = 0; i < n; i++) {
 		struct kstack_item *item = &r[n - i - 1];
 
-		item->addr = s->kstack[i];
+		item->addr = kstack[i];
 		item->filtered = false;
 		item->ksym = ksyms__map_addr(ksyms, item->addr, KSYM_FUNC);
 		if (!item->ksym)
