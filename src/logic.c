@@ -461,7 +461,7 @@ static struct stack_item *get_stack_item(struct stack_items_cache *cache)
 
 	s->dur_len = s->err_len = s->sym_len = s->src_len = 0;
 	s->dur[0] = s->err[0] = s->sym[0] = s->src[0] = 0;
-	s->marks[0] = s->marks[1] = ' ';
+	s->marks[0] = s->marks[1] = ' '; s->marks[2] = '\0';
 	s->extra = NULL;
 
 	return s;
@@ -637,8 +637,8 @@ static void add_missing_records_msg(struct stack_items_cache *cache, int miss_cn
 		return;
 	}
 
-	snappendf(s->src, "\u203C ... missing %d record%s ...",
-		  miss_cnt, miss_cnt == 1 ? "" : "s");
+	snappendf(s->src, "%s ... missing %d record%s ...",
+		  UNICODE_DBLEXCLMARK, miss_cnt, miss_cnt == 1 ? "" : "s");
 	snappendf(s->dur, "...");
 	snappendf(s->err, "...");
 }
@@ -712,19 +712,19 @@ static void prepare_trace_items(struct ctx *ctx, struct stack_items_cache *cache
 			i += 1; /* skip exit entry */
 		}
 
-		if (t == tn)		  /* collapsed leaf */
-			mark = "\u2194 "; /* unicode '<->' character */
-		else if (t->kind == TRACE_ITEM_PROBE) /* injected probe */
-			mark = "\u25CE "; /* unicode 'bullseye' character */
-		else if (t->depth > 0)	  /* entry */
-			mark = "\u2192 "; /* unicode '->' character */
-		else			  /* exit */
-			mark = "\u2190 "; /* unicode '<-' character */
+		if (t == tn)				/* collapsed leaf */
+			mark = UNICODE_LRARROW;		/* unicode '<->' character */
+		else if (t->kind == TRACE_ITEM_PROBE)	/* injected probe */
+			mark = UNICODE_BULLSEYE;	/* unicode 'bullseye' character */
+		else if (t->depth > 0)			/* entry */
+			mark = UNICODE_RARROW;		/* unicode '->' character */
+		else					/* exit */
+			mark = UNICODE_LARROW;		/* unicode '<-' character */
 
 		/* store function name and space indentation in sym, it should
 		 * be enough even with deep nestedness levels (we cap them)
 		 */
-		snappendf(s->sym, "%s%s", sp, mark);
+		snappendf(s->sym, "%s%s ", sp, mark);
 		switch (t->kind) {
 		case TRACE_ITEM_FUNC:
 			finfo = mass_attacher__func(ctx->att, t->id);
@@ -950,8 +950,10 @@ static void prepare_stack_items(struct ctx *ctx, struct session *sess,
 		s->extra = find_fnargs_item(sess, fitem->seq_id) ?: FNARGS_MISSING_RECORD;
 
 	/* kitem == NULL should be rare, either a bug or we couldn't get valid kernel stack trace */
-	s->marks[0] = kitem ? ' ' : '!';
-	s->marks[1] = (fitem && fitem->stitched) ? '*' : ' ';
+	snprintf(s->marks, sizeof(s->marks),
+		 "%c%s",
+		 kitem ? ' ' : '!',
+		 (fitem && fitem->stitched) ? UNICODE_WAVYLINE : " ");
 
 	if (fitem && !fitem->finished) {
 		snappendf(s->dur, "...");
@@ -1024,8 +1026,8 @@ static void print_stack_items(struct stack_items_cache *cache)
 
 	/* emit line by line taking into account calculated lengths of each column */
 	for (i = 0, s = cache->items; i < cache->cnt; i++, s++) {
-		printf("%c%c %*s %-*s  %-*s  %-*s",
-		       s->marks[0], s->marks[1],
+		printf("%s %*s %-*s  %-*s  %-*s",
+		       s->marks,
 		       dur_len, s->dur, err_len, s->err,
 		       sym_len, s->sym, src_len, s->src);
 

@@ -100,7 +100,7 @@ struct ctx_args_info {
  *
  */
 struct stack_item {
-	char marks[2]; /* spaces or '!' and/or '*' */
+	char marks[5]; /* spaces or '!' and/or '*' */
 
 	char dur[20];  /* duration, e.g. '11us' or '...' for incomplete stack */
 	int dur_len;   /* number of characters used for duration output */
