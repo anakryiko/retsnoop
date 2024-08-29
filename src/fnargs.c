@@ -405,7 +405,7 @@ static void fmt_capture_item(struct fmt_buf *b, const struct btf *btf,
 			    btf_data_dump_printf, b, &opts);
 	if (err == -E2BIG) {
 		/* truncated data */
-		bnappendf(b, "\u2026");
+		bnappendf(b, UNICODE_HELLIP);
 	} else if (err < 0) {
 		/* unexpected error */
 		const char *errstr = err_to_str(err);
@@ -456,7 +456,7 @@ void emit_fnargs_data(FILE *f, struct stack_item *s,
 		if (env.args_fmt_mode == ARGS_FMT_COMPACT)
 			fprintf(f, "%s", i == 0 ? "" : " ");
 		else /* emit Unicode's slightly smaller-sized '>' as a marker of an argument */
-			fprintf(f, "\n%*.s\u203A ", indent_shift, "");
+			fprintf(f, "\n%*.s%s ", indent_shift, "", UNICODE_RANGLEQUOT);
 		if (fn_args->btf) {
 			if (is_vararg)
 				fprintf(f, "vararg%d%s=%s", i - vararg_start_idx, sep, sep);
@@ -564,7 +564,7 @@ void emit_ctxargs_data(FILE *f, struct stack_item *s, int indent_shift,
 		if (env.args_fmt_mode == ARGS_FMT_COMPACT)
 			fprintf(f, "%s", i == 0 ? "" : " ");
 		else /* emit Unicode's slightly smaller-sized '>' as a marker of an argument */
-			fprintf(f, "\n%*.s\u203A ", indent_shift, "");
+			fprintf(f, "\n%*.s%s ", indent_shift, "", UNICODE_RANGLEQUOT);
 
 		if (info->btf) {
 			fprintf(f, "%s%s=%s", spec->name, sep, sep);

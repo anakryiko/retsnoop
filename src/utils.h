@@ -47,7 +47,14 @@
 #define NAME_MOD(name, mod) name, mod ? " [" : "", mod ?: "", mod ? "]" : ""
 
 /* horizontal ellipsis (single-character Unicode triple dots) */
-#define UNICODE_HELLIP "\u2026"
+#define UNICODE_RARROW "\u2192"		/* right arrow (->) */
+#define UNICODE_LARROW "\u2190"		/* left arrow (<-) */
+#define UNICODE_LRARROW "\u2194"	/* left-right arrow (<->) */
+#define UNICODE_HELLIP "\u2026"		/* horizontal ellipsis (...) */
+#define UNICODE_DBLEXCLMARK "\u203C"	/* double exclamation mark (!!) */
+#define UNICODE_RANGLEQUOT "\u203A"	/* right angle quote (>) */
+#define UNICODE_BULLSEYE "\u25CE"	/* bullseye */
+#define UNICODE_WAVYLINE "\u2307"	/* vertical wavy line */
 
 struct fmt_buf {
 	FILE *f;
