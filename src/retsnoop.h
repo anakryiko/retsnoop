@@ -220,6 +220,9 @@ struct call_stack {
 
 	long kstack[MAX_KSTACK_DEPTH];
 	long kstack_sz;
+
+	long saved_kstack[MAX_KSTACK_DEPTH];
+	long saved_kstack_sz;
 };
 
 struct rec_session_end {

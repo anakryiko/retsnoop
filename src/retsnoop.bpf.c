@@ -495,6 +495,7 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 {
 	u64 d = stack->depth;
 	u64 len = stack->max_depth - d;
+	u64 kstack_sz;
 
 	if (d >= MAX_FSTACK_DEPTH || len >= MAX_FSTACK_DEPTH) {
 		log("SHOULDN'T HAPPEN DEPTH %ld LEN %ld", d, len);
@@ -509,8 +510,11 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 		__memcpy(stack->saved_ids + d, stack->func_ids + d, len * sizeof(stack->saved_ids[0]));
 		__memcpy(stack->saved_res + d, stack->func_res + d, len * sizeof(stack->saved_res[0]));
 		__memcpy(stack->saved_lat + d, stack->func_lat + d, len * sizeof(stack->saved_lat[0]));
+
 		if (capture_args)
 			__memcpy(stack->saved_seq_ids + d, stack->seq_ids + d, len * sizeof(stack->saved_seq_ids[0]));
+		/* keep previously saved deeper kstack */
+
 		stack->saved_depth = stack->depth + 1;
 		dlog("STITCHED STACK %d..%d to ..%d",
 		     stack->depth + 1, stack->max_depth, stack->saved_max_depth);
@@ -523,8 +527,14 @@ static __noinline void save_stitch_stack(void *ctx, struct call_stack *stack)
 	__memcpy(stack->saved_ids + d, stack->func_ids + d, len * sizeof(stack->saved_ids[0]));
 	__memcpy(stack->saved_res + d, stack->func_res + d, len * sizeof(stack->saved_res[0]));
 	__memcpy(stack->saved_lat + d, stack->func_lat + d, len * sizeof(stack->saved_lat[0]));
+
 	if (capture_args)
 		__memcpy(stack->saved_seq_ids + d, stack->seq_ids + d, len * sizeof(stack->saved_seq_ids[0]));
+
+	kstack_sz = stack->kstack_sz;
+	stack->saved_kstack_sz = kstack_sz;
+	if (kstack_sz <= sizeof(stack->saved_kstack))
+		__memcpy(stack->saved_kstack, stack->kstack, kstack_sz);
 
 	stack->saved_depth = stack->depth + 1;
 	stack->saved_max_depth = stack->max_depth;
