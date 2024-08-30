@@ -975,8 +975,18 @@ static int submit_session(void *ctx, struct session *sess, enum session_type ses
 	final_session = sess_type == SESSION_FINAL;
 	emit_session = sess->is_err || emit_success_stacks || sess_type == SESSION_PROBE;
 
-	if (final_session && duration_ns && emit_ts - sess->func_lat[0] < duration_ns)
-		emit_session = false;
+	if (duration_ns) {
+		/* In final session, func_lat[0] is finalized already and
+		 * represents overall session duration.
+		 * But for interim sessions, func_lat[0] is a timestamp of
+		 * session start, so we can calculate session duration
+		 * *so far* using (emit_ts - sess->func_lat[0]) difference.
+		 */
+		if (final_session && sess->func_lat[0] < duration_ns)
+			emit_session = false;
+		else if (!final_session && emit_ts - sess->func_lat[0] < duration_ns)
+			emit_session = false;
+	}
 
 	if (emit_session) {
 		dlog("EMIT %s STACK DEPTH %d (SAVED ..%d)",
