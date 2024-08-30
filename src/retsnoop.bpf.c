@@ -1032,7 +1032,7 @@ static int submit_session(void *ctx, struct session *sess, enum session_type ses
 skip_lbrs:;
 	}
 
-	if (emit_session || (final_session && !sess->start_emitted)) {
+	if (emit_session || (final_session && sess->start_emitted)) {
 		struct rec_session_end *r;
 
 		r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
