@@ -20,7 +20,7 @@ const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
 "retsnoop tool shows kernel call stacks based on specified function filters.\n"
 "\n"
-"Usage: retsnoop [-v] [-B] [-T] [-A] [-e GLOB]* [-a GLOB]* [-d GLOB]*\n\n"
+"Usage: retsnoop [-v] [-e GLOB]* [-a GLOB]* [-T] [-B] [-A] [-J PROBE]*\n\n"
 "Use `retsnoop --help` for detailed help about supported arguments.\n"
 "Also check `retsnoop --config-help` for detailed information about\n"
 "more advanced configuration options.\n";
@@ -87,8 +87,8 @@ static const struct argp_option opts[] = {
 	{ "trace", 'T', NULL, 0, "Capture and emit function call traces" },
 	{ "capture-args", 'A', NULL, 0, "Capture and emit function arguments" },
 	{ "inject-probe", 'J', "PROBE", 0,
-	  "Inject extra probe to capture extra information (LBR, registers, etc.). "
-	  "Supported forms: 'kprobe:<name>[+<offset>]', 'rawtp:<name>', 'tp:<category>:<name>'" },
+	  "Inject extra probes for extra information (LBR, registers, etc.). "
+	  "Supported: 'kprobe:<name>[+<offset>]', 'rawtp:<name>', 'tp:<category>:<name>'" },
 	{ "lbr", 'B', "SPEC", OPTION_ARG_OPTIONAL,
 	  "Capture and print LBR (Last Branch Record) entries (defaults to any_return). "
 	  "Exact set of captured LBR records can be specified using "
@@ -121,26 +121,24 @@ static const struct argp_option opts[] = {
 	  "Specify whether emitting non-erroring (successful) call stacks is allowed" },
 	{ "interim-stacks", 'I', NULL, 0, "Emit incomplete interim call stacks" },
 	{ "allow-errors", 'x', "ERROR", 0,
-	  "Record stacks only with specified errors (e.g., EINVAL, EFAULT, etc.; also accepts special 'any' value)" },
+	  "Record stacks only with specified errors (e.g., EINVAL or EFAULT, also accepts special 'any' value)" },
 	{ "deny-errors", 'X', "ERROR", 0, "Ignore stacks that have specified errors" },
 
 	/* Misc more rarely used/advanced settings */
 	{ .flags = OPTION_DOC, "ADVANCED\n=========================" },
 	{ "kernel", 'k', "PATH", 0, "Path to vmlinux image with DWARF information embedded" },
 	{ "symbolize", 's', "LEVEL", OPTION_ARG_OPTIONAL,
-	  "Set stack symbolization mode:\n"
-	  "\t-s for line info,\n"
-	  "\t-ss for also inline functions,\n"
-	  "\t-sn to disable extra symbolization.\n"
-	  "If extra symbolization is requested, retsnoop relies on having\n"
+	  "Set stack symbolization mode: -s for line info, "
+	  "-ss for also inline functions, -sn to disable extra symbolization. "
+	  "If extra symbolization is requested, retsnoop relies on having"
 	  "vmlinux with DWARF available" },
 	{ "debug", OPT_DEBUG_FEAT, "FEATURE", 0,
-	  "Enable selected debug features.\nSupported: multi-kprobe, full-lbr, bpf" },
+	  "Enable selected debug features (multi-kprobe, full-lbr, bpf)" },
 
 	/* Extra config settings */
 	{ .flags = OPTION_DOC, "EXTRA CONFIGURATION\n=========================" },
-	{ "config", 'C', "CONFIG", 0, "Specify extra configuration parameters:" },
-	{ "config-help", OPT_CONFIG_HELP, NULL, 0, "Output support full config parameters help" },
+	{ "config", 'C', "CONFIG", 0, "Extra configuration parameters (use --config-help for details)" },
+	{ "config-help", OPT_CONFIG_HELP, NULL, 0, "Emit full extra configuration help" },
 
 	/* Help, version, logging, dry-run, etc */
 	{ .flags = OPTION_DOC, "USAGE, HELP, VERSION\n=========================" },
@@ -148,8 +146,7 @@ static const struct argp_option opts[] = {
 	{ "usage", OPT_USAGE, NULL, 0, "Show the usage help" },
 	{ "verbose", 'v', NULL, 0,
 	  "Verbose output (use -vv for debug-level verbosity, -vvv for extra debug log)" },
-	{ "version", 'V', NULL, 0,
-	  "Print out retsnoop version" },
+	{ "version", 'V', NULL, 0, "Print out retsnoop version" },
 	{},
 };
 
@@ -776,6 +773,7 @@ void print_config_help_message(void)
 
 static char *help_filter(int key, const char *text, void *input)
 {
+	/*
 	if (key == 'C') {
 		char *msg = NULL;
 		FILE *f;
@@ -794,6 +792,7 @@ static char *help_filter(int key, const char *text, void *input)
 		fclose(f);
 		return msg;
 	}
+	*/
 	return (char *)text;
 }
 
