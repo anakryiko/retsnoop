@@ -1197,7 +1197,7 @@ static int output_call_stack(struct ctx *dctx, struct session *sess,
 }
 
 static int handle_session_end(struct ctx *dctx, struct session *sess,
-			      const struct rec_session_end *r, bool final)
+			      const struct rec_session_end *r)
 {
 	static struct fstack_item fstack[MAX_FSTACK_DEPTH];
 	static struct kstack_item kstack[MAX_KSTACK_DEPTH];
@@ -1209,12 +1209,16 @@ static int handle_session_end(struct ctx *dctx, struct session *sess,
 	if (r->ignored)
 		goto out_purge;
 
+	if (r->type == REC_SESSION_PROBE)
+		goto skip_ignore_filter;
+
 	if (!r->is_err && env.emit_success_stacks <= 0)
 		goto out_purge;
 
 	if (r->is_err && !should_report_stack(dctx, s))
 		goto out_purge;
 
+skip_ignore_filter:
 	if (env.debug) {
 		printf("SESSION %d GOT %s STACK (depth %u):\n",
 		       sess->sess_id, r->is_err ? "ERROR" : "SUCCESS", s->max_depth);
@@ -1287,7 +1291,7 @@ skip_call_stack:
 	printf("\n\n");
 
 out_purge:
-	if (final)
+	if (r->type == REC_SESSION_END)
 		purge_session(dctx, r->sess_id);
 
 	return ret;
@@ -1356,16 +1360,26 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 		}
 		return handle_ctx_capture(ctx, sess, r);
 	}
-	case REC_SESSION_INTERIM:
+	case REC_SESSION_PROBE:
+	case REC_SESSION_STITCH:
 	case REC_SESSION_END: {
 		const struct rec_session_end *r = data;
 
 		if (!hashmap__find(&sessions_hash, (long)r->sess_id, &sess)) {
-			elog("BUG: SESSION %d session data not found (%s)!\n", r->sess_id,
-			     type == REC_SESSION_END ? "SESSION_END" : "SESSION_INTERIM");
+			const char *rec_desc;
+
+			switch (type) {
+			case REC_SESSION_PROBE: rec_desc = "SESSION_PROBE"; break;
+			case REC_SESSION_STITCH: rec_desc = "SESSION_STITCH"; break;
+			case REC_SESSION_END: rec_desc = "SESSION_END"; break;
+			default: rec_desc = "<UNKNOWN!!!>"; break;
+			}
+
+			elog("BUG: SESSION %d session data not found (%s)!\n",
+			     r->sess_id, rec_desc);
 			return -EINVAL;
 		}
-		return handle_session_end(ctx, sess, r, type == REC_SESSION_END);
+		return handle_session_end(ctx, sess, r);
 	}
 	default:
 		fprintf(stderr, "Unrecognized record type %d\n", type);

@@ -29,7 +29,8 @@ enum rec_type {
 	REC_CTXARGS_CAPTURE,
 	REC_LBR_STACK,
 	REC_INJ_PROBE,
-	REC_SESSION_INTERIM,
+	REC_SESSION_PROBE,
+	REC_SESSION_STITCH,
 	REC_SESSION_END,
 };
 
@@ -217,7 +218,7 @@ struct call_stack {
 };
 
 struct rec_session_end {
-	/* REC_SESSION_END or REC_SESSION_INTERIM */
+	/* REC_SESSION_END or REC_SESSION_STITCH or REC_SESSION_PROBE */
 	enum rec_type type;
 	int sess_id;
 	long emit_ts;

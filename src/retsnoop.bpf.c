@@ -39,6 +39,12 @@ static inline void atomic_add(long *value, long n)
 	(void)__atomic_add_fetch(value, n, __ATOMIC_RELAXED);
 }
 
+enum session_type {
+	SESSION_FINAL,
+	SESSION_STITCH,
+	SESSION_PROBE,
+};
+
 struct session {
 	int sess_id;
 	int pid, tgid;
@@ -609,7 +615,7 @@ static __always_inline int session_id(int pid)
 	return pid ?: -(1 + bpf_get_smp_processor_id());
 }
 
-static int submit_session(void *ctx, struct session *sess, bool final);
+static int submit_session(void *ctx, struct session *sess, enum session_type sess_type);
 
 static bool should_submit_interim_stack(const struct session *sess)
 {
@@ -689,7 +695,7 @@ out_defunct:
 		 * given we preserve all the relevant information.
 		 */
 		if (emit_interim_stacks && should_submit_interim_stack(sess))
-			submit_session(ctx, sess, false /* !final */);
+			submit_session(ctx, sess, SESSION_STITCH);
 		if (sess->defunct)
 			goto out_defunct;
 		if (sess->is_err)
@@ -896,11 +902,34 @@ static void reset_session(struct session *sess)
 	sess->lbrs_sz = 0;
 }
 
-static __noinline void copy_call_stack(struct rec_session_end *r, struct session *sess, bool final)
+static void copy_stack_trace(void *ctx, struct rec_session_end *r,
+			     const struct session *sess, enum session_type sess_type)
+{
+	u64 kstack_sz;
+	const long *kstack;
+
+	if (sess_type == SESSION_PROBE) {
+		r->stack.kstack_sz = bpf_get_stack(ctx, r->stack.kstack, sizeof(r->stack.kstack), 0);
+		return;
+	}
+
+	if (sess_type == SESSION_STITCH || is_call_stack_stitched(sess)) {
+		kstack_sz = sess->saved_kstack_sz;
+		kstack = sess->saved_kstack;
+	} else {
+		kstack_sz = sess->kstack_sz;
+		kstack = sess->kstack;
+	}
+
+	r->stack.kstack_sz = kstack_sz;
+	if (kstack_sz <= sizeof(r->stack.kstack))
+		__memcpy(r->stack.kstack, kstack, kstack_sz);
+}
+
+static void copy_call_stack(struct rec_session_end *r, const struct session *sess,
+			    enum session_type sess_type)
 {
 	u64 d, len;
-	u64 kstack_sz;
-	long *kstack;
 
 	len = sess->max_depth;
 	if (len >= MAX_FSTACK_DEPTH)
@@ -915,19 +944,11 @@ static __noinline void copy_call_stack(struct rec_session_end *r, struct session
 	__memcpy(r->stack.func_res, &sess->func_res, len * sizeof(sess->func_res[0]));
 	__memcpy(r->stack.func_lat, &sess->func_lat, len * sizeof(sess->func_lat[0]));
 
-	/* copy kernel stack trace */
-	if (!final || is_call_stack_stitched(sess)) {
-		kstack_sz = sess->saved_kstack_sz;
-		kstack = sess->saved_kstack;
-	} else {
-		kstack_sz = sess->kstack_sz;
-		kstack = sess->kstack;
-	}
-	r->stack.kstack_sz = kstack_sz;
-	if (kstack_sz <= sizeof(r->stack.kstack))
-		__memcpy(r->stack.kstack, kstack, kstack_sz);
+	/* don't stitch anything for inject probe interim stack */
+	if (sess_type == SESSION_PROBE)
+		return;
 
-	if (!final || is_call_stack_stitched(sess)) {
+	if (sess_type == SESSION_STITCH || is_call_stack_stitched(sess)) {
 		d = sess->saved_depth - 1;
 		len = sess->saved_max_depth - d;
 
@@ -946,13 +967,15 @@ static __noinline void copy_call_stack(struct rec_session_end *r, struct session
 	}
 }
 
-static int submit_session(void *ctx, struct session *sess, bool final)
+static int submit_session(void *ctx, struct session *sess, enum session_type sess_type)
 {
-	bool emit_session;
+	bool emit_session, final_session;
 	u64 emit_ts = bpf_ktime_get_ns();
 
-	emit_session = sess->is_err || emit_success_stacks;
-	if (final && duration_ns && emit_ts - sess->func_lat[0] < duration_ns)
+	final_session = sess_type == SESSION_FINAL;
+	emit_session = sess->is_err || emit_success_stacks || sess_type == SESSION_PROBE;
+
+	if (final_session && duration_ns && emit_ts - sess->func_lat[0] < duration_ns)
 		emit_session = false;
 
 	if (emit_session) {
@@ -974,9 +997,6 @@ static int submit_session(void *ctx, struct session *sess, bool final)
 	if (emit_session && use_lbr) {
 		struct rec_lbr_stack *r;
 
-		if (sess->lbrs_sz <= 0)
-			goto skip_lbrs;
-
 		r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
 		if (!r) {
 			/* record that we failed to submit LBR data */
@@ -987,19 +1007,32 @@ static int submit_session(void *ctx, struct session *sess, bool final)
 
 		r->type = REC_LBR_STACK;
 		r->sess_id = sess->sess_id;
-		if (!final || is_call_stack_stitched(sess)) {
+		switch (sess_type) {
+		case SESSION_PROBE:
+			/* for injected probe, take current LBR */
+			r->lbrs_sz = copy_lbrs(r->lbrs, sizeof(r->lbrs));
+			break;
+		case SESSION_STITCH:
+			/* for stitched stack, we already saved earlier LBR */
 			r->lbrs_sz = sess->saved_lbrs_sz;
 			__memcpy(r->lbrs, sess->saved_lbrs, sizeof(sess->saved_lbrs));
-		} else {
-			r->lbrs_sz = sess->lbrs_sz;
-			__memcpy(r->lbrs, sess->lbrs, sizeof(sess->lbrs));
+			break;
+		case SESSION_FINAL:
+		default:
+			if (is_call_stack_stitched(sess)) {
+				r->lbrs_sz = sess->saved_lbrs_sz;
+				__memcpy(r->lbrs, sess->saved_lbrs, sizeof(sess->saved_lbrs));
+			} else {
+				r->lbrs_sz = sess->lbrs_sz;
+				__memcpy(r->lbrs, sess->lbrs, sizeof(sess->lbrs));
+			}
 		}
 
 		bpf_ringbuf_submit(r, 0);
 skip_lbrs:;
 	}
 
-	if (emit_session || (final && !sess->start_emitted)) {
+	if (emit_session || (final_session && !sess->start_emitted)) {
 		struct rec_session_end *r;
 
 		r = bpf_ringbuf_reserve(&rb, sizeof(*r), 0);
@@ -1008,18 +1041,33 @@ skip_lbrs:;
 			return -EINVAL;
 		}
 
-		r->type = final ? REC_SESSION_END : REC_SESSION_INTERIM;
+		switch (sess_type) {
+		case SESSION_PROBE:
+			r->type = REC_SESSION_PROBE;
+			r->last_seq_id = sess->next_seq_id - 1;
+			break;
+		case SESSION_STITCH:
+			r->type = REC_SESSION_STITCH;
+			r->last_seq_id = sess->saved_last_seq_id;
+			break;
+		case SESSION_FINAL:
+		default:
+			r->type = REC_SESSION_END;
+			r->last_seq_id = sess->next_seq_id - 1;
+			break;
+		}
 		r->sess_id = sess->sess_id;
 		r->emit_ts = emit_ts;
 		r->ignored = !emit_session;
 		r->is_err = sess->is_err;
-		r->last_seq_id = final ? sess->next_seq_id - 1 : sess->saved_last_seq_id;
 		r->lbrs_sz = sess->lbrs_sz;
 		r->dropped_records = sess->dropped_records;
 
 		/* copy over STACK_TRACE "record", if required */
-		if (emit_session)
-			copy_call_stack(r, sess, final);
+		if (emit_session) {
+			copy_stack_trace(ctx, r, sess, sess_type);
+			copy_call_stack(r, sess, sess_type);
+		}
 
 		bpf_ringbuf_submit(r, 0);
 	}
@@ -1148,17 +1196,17 @@ skip_ft_exit:;
 		sess->is_err = true;
 		sess->max_depth = d + 1;
 		sess->kstack_sz = bpf_get_stack(ctx, &sess->kstack, sizeof(sess->kstack), 0);
-		sess->lbrs_sz = copy_lbrs(&sess->lbrs, sizeof(sess->lbrs));
+		sess->lbrs_sz = copy_lbrs(sess->lbrs, sizeof(sess->lbrs));
 	} else if (emit_success_stacks && d + 1 == sess->max_depth) {
 		sess->kstack_sz = bpf_get_stack(ctx, &sess->kstack, sizeof(sess->kstack), 0);
-		sess->lbrs_sz = copy_lbrs(&sess->lbrs, sizeof(sess->lbrs));
+		sess->lbrs_sz = copy_lbrs(sess->lbrs, sizeof(sess->lbrs));
 	}
 	sess->depth = d;
 
 	/* emit last complete stack trace */
 	if (d == 0) {
 		/* can fail or do nothing for current session */
-		submit_session(ctx, sess, true /* final */);
+		submit_session(ctx, sess, SESSION_FINAL);
 
 		reset_session(sess);
 		bpf_map_delete_elem(&sessions, &sess_id);
@@ -1203,6 +1251,14 @@ static void handle_inj_probe(void *ctx, u32 id)
 
 	if (emit_func_trace && capture_args)
 		record_ctxargs(ctx, sess, id, seq_id);
+
+	/* for now, in --interim-stacks (-I) mode we'll emit interim stacks
+	 * for each injected probe; we may want to revisit this behavior
+	 * later, but for now that's the most straightforward way to actually
+	 * see LBR with each kprobe/tracepoint of interest, if necessary
+	 */
+	if (emit_interim_stacks)
+		submit_session(ctx, sess, SESSION_PROBE);
 }
 
 static __always_inline bool tgid_allowed(void)
