@@ -25,6 +25,12 @@ bool has_bpf_cookie = false;
 bool has_kprobe_multi = false;
 bool has_rawtp_cookie = false;
 
+union bpf_attr___local {
+	struct {
+		__u64 cookie;
+	} raw_tracepoint;
+};
+
 SEC("ksyscall/nanosleep")
 int calib_entry(struct pt_regs *ctx)
 {
@@ -83,7 +89,7 @@ int calib_entry(struct pt_regs *ctx)
 	/* Detect if BPF cookie is supported for *raw tracepoints*.
 	 * Added in: 68ca5d4eebb8 ("bpf: support BPF cookie in raw tracepoint (raw_tp, tp_btf) programs")
 	 */
-	has_rawtp_cookie = bpf_core_field_exists(union bpf_attr, raw_tracepoint.cookie);
+	has_rawtp_cookie = bpf_core_field_exists(union bpf_attr___local, raw_tracepoint.cookie);
 
 	/* Detect if multi-attach kprobes are supported.
 	 * Added in: 0dcac2725406 ("bpf: Add multi kprobe link")
