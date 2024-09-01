@@ -47,6 +47,7 @@ build_arch(){
 		     ARCH=$arch_slug CROSS_COMPILE=$arch-linux-gnu-	\
 		     tinyconfig &> "$kernel_log"
 		cat >> "$build_dir_abs/.config" <<- EOF
+			CONFIG_64BIT=y
 			CONFIG_DEBUG_INFO=y
 			CONFIG_DEBUG_INFO_DWARF4=y
 			CONFIG_DEBUG_INFO_BTF=y
