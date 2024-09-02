@@ -1,3 +1,6 @@
+[![License](https://img.shields.io/badge/License-BSD_2--Clause-orange.svg)](LICENSE)
+[![Build](https://github.com/anakryiko/retsnoop/actions/workflows/build.yml/badge.svg)](https://github.com/anakryiko/retsnoop/actions/workflows/build.yml)
+
 # What is retsnoop?
 
 Retsnoop is a BPF-based tool for non-intrusive mass-tracing of Linux
