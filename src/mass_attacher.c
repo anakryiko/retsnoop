@@ -1272,11 +1272,13 @@ int mass_attacher__attach(struct mass_attacher *att)
 				goto skip_attach;
 			}
 
+			/* always specify resolved kprobe address to avoid ambiguity in the kernel */
+			kprobe_opts.offset = func_addr;
 			kprobe_opts.retprobe = false;
 			if (att->has_bpf_cookie)
 				kprobe_opts.bpf_cookie = i;
 			finfo->kentry_link = bpf_program__attach_kprobe_opts(att->skel->progs.retsn_kentry,
-									     func_name, &kprobe_opts);
+									     NULL, &kprobe_opts);
 			err = libbpf_get_error(finfo->kentry_link);
 			if (err) {
 				elog("Failed to attach KPROBE prog for func #%d (%s%s%s%s) at addr %lx: %d\n",
@@ -1284,11 +1286,12 @@ int mass_attacher__attach(struct mass_attacher *att)
 				goto err_out;
 			}
 
+			kprobe_opts.offset = func_addr;
 			kprobe_opts.retprobe = true;
 			if (att->has_bpf_cookie)
 				kprobe_opts.bpf_cookie = i;
 			finfo->kexit_link = bpf_program__attach_kprobe_opts(att->skel->progs.retsn_kexit,
-									    func_name, &kprobe_opts);
+									    NULL, &kprobe_opts);
 			err = libbpf_get_error(finfo->kexit_link);
 			if (err) {
 				elog("Failed to attach KRETPROBE prog for func #%d (%s%s%s%s) at addr %lx: %d\n",
