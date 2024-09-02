@@ -58,7 +58,7 @@ static void child_driver(int fd1[2], int fd2[2], const char *vmlinux, bool inlin
 	size_t a2l_sz = __binary_sidecar_end - __binary_sidecar_start;
 	char *argv[] = {
 		"addr2line", "-f", "--llvm", "-e", (char *)vmlinux,
-		inlines ? "-i" : NULL, NULL,
+		inlines ? "-i" : NULL, env.debug ? "-v" : NULL,  NULL,
 	};
 	int a2l_rwfd, a2l_rofd, ppid;
 	FILE *a2l_bin;

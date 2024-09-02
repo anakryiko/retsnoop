@@ -7,6 +7,7 @@ extern crate object;
 extern crate typed_arena;
 
 use std::borrow::Cow;
+use std::env;
 use std::fs::File;
 use std::io::{BufRead, Lines, StdinLock, Write};
 use std::path::Path;
@@ -87,6 +88,7 @@ impl<'a> Iterator for Addrs<'a> {
 }
 
 struct Config {
+    verbose: bool,
     do_functions: bool,
     do_inlines: bool,
     pretty: bool,
@@ -99,6 +101,7 @@ struct Config {
 impl Config {
     fn load(matches: &ArgMatches) -> Config {
         Config {
+            verbose: matches.is_present("verbose"),
             do_functions: matches.is_present("functions"),
             do_inlines: matches.is_present("inlines"),
             pretty: matches.is_present("pretty"),
@@ -142,19 +145,46 @@ fn print_function(name: &str, language: Option<gimli::DwLang>, demangle: bool) {
     }
 }
 
+fn print_finish(config: &Config) {
+    if config.llvm {
+        println!();
+    }
+    std::io::stdout().flush().unwrap();
+}
+
+fn print_no_dwarf_results(addr: u64, symbols: &SymbolMap<SymbolMapName>, config: &Config) {
+    if config.do_functions {
+        if let Some(name) = symbols.get(addr).map(|x| x.name()) {
+            print_function(name, None, config.demangle);
+        } else {
+            print!("??");
+        }
+
+        if config.pretty {
+            print!(" at ");
+        } else {
+            println!();
+        }
+    }
+
+    if config.llvm {
+        println!("??:0:0");
+    } else {
+        println!("??:?");
+    }
+}
+
 fn query_address<T: gimli::Endianity>(
     addr: u64,
     ctx: &Context<gimli::EndianSlice<T>>,
     symbols: &SymbolMap<SymbolMapName>,
     config: &Config,
 ) {
-    let probe = addr;
-
     if config.print_addrs {
         if config.llvm {
-            print!("0x{:x}", probe);
+            print!("0x{:x}", addr);
         } else {
-            print!("0x{:016x}", probe);
+            print!("0x{:016x}", addr);
         }
         if config.pretty {
             print!(": ");
@@ -165,7 +195,24 @@ fn query_address<T: gimli::Endianity>(
 
     if config.do_functions || config.do_inlines {
         let mut printed_anything = false;
-        let mut frames = ctx.find_frames(probe).skip_all_loads().unwrap().enumerate();
+        let frames = match ctx.find_frames(addr).skip_all_loads() {
+            Ok(iter) => iter,
+            Err(e) => {
+                if config.verbose {
+                    eprintln!(
+                        "Error querying DWARF for {:#x} ({}): {:?}",
+                        addr,
+                        symbols.get(addr).map(|x| x.name()).unwrap_or("<unknown>"),
+                        e
+                    );
+                }
+
+                print_no_dwarf_results(addr, symbols, config);
+                print_finish(config);
+                return;
+            }
+        };
+        let mut frames = frames.enumerate();
         while let Some((i, frame)) = frames.next().unwrap() {
             if config.pretty && i != 0 {
                 print!(" (inlined by) ");
@@ -174,7 +221,7 @@ fn query_address<T: gimli::Endianity>(
             if config.do_functions {
                 if let Some(func) = frame.function {
                     print_function(&func.raw_name().unwrap(), func.language, config.demangle);
-                } else if let Some(name) = symbols.get(probe).map(|x| x.name()) {
+                } else if let Some(name) = symbols.get(addr).map(|x| x.name()) {
                     print_function(name, None, config.demangle);
                 } else {
                     print!("??");
@@ -197,35 +244,14 @@ fn query_address<T: gimli::Endianity>(
         }
 
         if !printed_anything {
-            if config.do_functions {
-                if let Some(name) = symbols.get(probe).map(|x| x.name()) {
-                    print_function(name, None, config.demangle);
-                } else {
-                    print!("??");
-                }
-
-                if config.pretty {
-                    print!(" at ");
-                } else {
-                    println!();
-                }
-            }
-
-            if config.llvm {
-                println!("??:0:0");
-            } else {
-                println!("??:?");
-            }
+            print_no_dwarf_results(addr, symbols, config);
         }
     } else {
-        let loc = ctx.find_location(probe).unwrap();
+        let loc = ctx.find_location(addr).unwrap();
         print_loc(&loc, config.basenames, config.llvm);
     }
 
-    if config.llvm {
-        println!();
-    }
-    std::io::stdout().flush().unwrap();
+    print_finish(config);
 }
 
 // List functions defined in compile unit(s) with vi sense.  For every
@@ -328,9 +354,17 @@ fn load_file_section<'input, 'arena, Endian: gimli::Endianity>(
 }
 
 fn main() {
-    let matches = App::new("hardliner")
+    env::set_var("RUST_BACKTRACE", "full");
+
+    let matches = App::new("retsnoop-sidecar")
         .version("0.1")
-        .about("A fast addr2line clone")
+        .about("retsnoop sidecar")
+        .arg(
+            Arg::with_name("verbose")
+                .short("v")
+                .long("verbose")
+                .help("Verbose mode."),
+        )
         .arg(
             Arg::with_name("exe")
                 .short("e")
