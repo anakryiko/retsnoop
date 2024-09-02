@@ -33,6 +33,9 @@
 #ifndef dlog
 #define dlog(fmt, ...) do { if (env.debug) { printf(fmt, ##__VA_ARGS__); } } while (0)
 #endif
+#ifndef ddlog
+#define ddlog(fmt, ...) do { if (env.debug_extra) { printf(fmt, ##__VA_ARGS__); } } while (0)
+#endif
 
 /*
  * Formatting helpers

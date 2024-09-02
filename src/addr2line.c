@@ -14,6 +14,8 @@
 #include <libelf.h>
 #include <gelf.h>
 
+#include "env.h"
+#include "utils.h"
 #include "addr2line.h"
  
 extern char __binary_sidecar_start[];
@@ -274,12 +276,14 @@ err_out:
 int addr2line__symbolize(const struct addr2line *a2l, long addr, struct a2l_resp *resp)
 {
 	int err, cnt = 0;
+	long off = addr - a2l->kaslr_offset;
 
-	err = fprintf(a2l->write_pipe, "symbolize %lx\n", addr - a2l->kaslr_offset);
+	ddlog("A2L: symbolizing 0x%lx...\n", off);
+
+	err = fprintf(a2l->write_pipe, "symbolize %lx\n", off);
 	if (err <= 0) {
 		err = -errno;
-		fprintf(stderr, "Failed to symbolize %lx (%lx): %d\n",
-			addr, addr - a2l->kaslr_offset, err);
+		elog("Failed to symbolize %lx (%lx): %d\n", addr, off, err);
 		return err;
 	}
 	fflush(a2l->write_pipe);
@@ -292,6 +296,8 @@ int addr2line__symbolize(const struct addr2line *a2l, long addr, struct a2l_resp
 		}
 		resp->fname[strlen(resp->fname) - 1] = '\0';
 
+		ddlog("A2L: (0x%lx) func name  '%s'\n", off, resp->fname);
+
 		/* empty line denotes end of response */
 		if (resp->fname[0] == '\0')
 			break;
@@ -303,6 +309,7 @@ int addr2line__symbolize(const struct addr2line *a2l, long addr, struct a2l_resp
 		}
 
 		resp->line[strlen(resp->line) - 1] = '\0';
+		ddlog("A2L: (0x%lx) source loc '%s'\n", off, resp->line);
 
 		if (strcmp(resp->line, "??:0:0") == 0)
 			continue;
