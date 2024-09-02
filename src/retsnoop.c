@@ -367,13 +367,6 @@ int main(int argc, char **argv, char **envp)
 		err = -EOPNOTSUPP;
 		goto cleanup_silent;
 	}
-#ifndef __x86_64__
-	if (env.capture_args) {
-		elog("Function arguments capture is only supported on x86-64 architecture!\n");
-		err = -EOPNOTSUPP;
-		goto cleanup_silent;
-	}
-#endif
 	if (!env.emit_func_trace)
 		env.emit_call_stack = true;
 	 /* default setting for success stacks, resolve based on call stack vs func trace modes */
@@ -418,7 +411,12 @@ int main(int argc, char **argv, char **envp)
 	skel->rodata->use_kprobes = env.attach_mode != ATTACH_FENTRY;
 	memset(skel->rodata->spaces, ' ', sizeof(skel->rodata->spaces) - 1);
 
-	skel->rodata->capture_args = env.capture_args;
+#ifdef __x86_64__
+	skel->rodata->capture_fn_args = env.capture_args;
+#else
+	skel->rodata->capture_fn_args = false;
+#endif
+	skel->rodata->capture_ctx_args = env.capture_args;
 	skel->rodata->capture_raw_ptrs = env.args_capture_raw_ptrs;
 	skel->rodata->args_max_total_args_sz = env.args_max_total_args_size;
 	skel->rodata->args_max_sized_arg_sz = env.args_max_sized_arg_size;
@@ -529,6 +527,7 @@ int main(int argc, char **argv, char **envp)
 	}
 
 	if (env.capture_args) {
+#ifdef __x86_64__
 		for (i = 0; i < func_cnt; i++) {
 			const struct mass_attacher_func_info *finfo;
 
@@ -539,6 +538,9 @@ int main(int argc, char **argv, char **envp)
 				goto cleanup_silent;
 			}
 		}
+#else
+		vlog("Function arguments capture is only supported on x86-64 architecture!\n");
+#endif
 	}
 
 	if (env.capture_args && env.inject_probe_cnt) {
@@ -641,6 +643,7 @@ int main(int argc, char **argv, char **envp)
 		fi->ip = finfo->addr;
 		fi->flags = flags;
 
+#ifdef __x86_64__
 		if (env.capture_args) {
 			const struct func_args_info *fn_args = func_args_info(i);
 
@@ -648,6 +651,7 @@ int main(int argc, char **argv, char **envp)
 				fi->arg_specs[j] = fn_args->arg_specs[j].arg_flags;
 			}
 		}
+#endif /* __x86_64__ */
 	}
 
 	for (i = 0; i < env.entry_glob_cnt; i++) {

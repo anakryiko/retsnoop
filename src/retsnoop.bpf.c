@@ -106,7 +106,8 @@ const volatile bool emit_call_stack = true;
 const volatile bool emit_func_trace = true;
 const volatile bool emit_success_stacks = true;
 const volatile bool emit_interim_stacks = true;
-const volatile bool capture_args = true;
+const volatile bool capture_fn_args = true;
+const volatile bool capture_ctx_args = true;
 const volatile bool capture_raw_ptrs = true;
 const volatile bool use_lbr = true;
 const volatile bool use_kprobes = true;
@@ -662,7 +663,7 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 		tsk = (void *)bpf_get_current_task();
 		BPF_CORE_READ_INTO(&sess->proc_comm, tsk, group_leader, comm);
 
-		if (emit_func_trace || capture_args) {
+		if (emit_func_trace || capture_fn_args || capture_ctx_args) {
 			if (!emit_session_start(sess)) {
 				vlog("DEFUNCT SESSION %d TID/PID %d/%d: failed to send SESSION_START record!",
 				     sess->sess_id, sess->pid, sess->tgid);
@@ -734,7 +735,7 @@ out_defunct:
 skip_ft_entry:;
 	}
 
-	if (capture_args)
+	if (capture_fn_args)
 		record_fnargs(ctx, sess, id, seq_id);
 
 	if (verbose) {
@@ -1259,7 +1260,7 @@ static void handle_inj_probe(void *ctx, u32 id)
 		bpf_ringbuf_submit(r, 0);
 	}
 
-	if (emit_func_trace && capture_args)
+	if (emit_func_trace && capture_ctx_args)
 		record_ctxargs(ctx, sess, id, seq_id);
 
 	/* for now, in --interim-stacks (-I) mode we'll emit interim stacks
