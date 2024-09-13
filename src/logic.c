@@ -728,7 +728,7 @@ static void prepare_trace_items(struct ctx *ctx, struct stack_items_cache *cache
 
 				if (found)
 					t->fai = fai;
-				else if (t->depth > 0) /* func entry */
+				else if (t == tn || t->depth > 0) /* func entry */
 					t->fai = FNARGS_MISSING_RECORD;
 				else
 					t->fai = NULL;
@@ -846,7 +846,7 @@ static void print_trace_items(struct ctx *ctx, const struct stack_items_cache *c
 		       res_len, s->err,
 		       dur_len, s->dur);
 
-		if (env.capture_args) {
+		if (env.capture_args && s->extra) {
 			struct trace_item *ti = s->extra;
 			const struct inj_probe_info *inj;
 
