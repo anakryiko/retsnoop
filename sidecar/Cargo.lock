@@ -6,12 +6,12 @@ version = 3
 name = "addr2line"
 version = "0.1.0"
 dependencies = [
- "addr2line 0.24.1",
+ "addr2line 0.24.2",
  "backtrace",
  "clap",
  "fallible-iterator",
  "findshlibs",
- "gimli 0.31.0",
+ "gimli 0.31.1",
  "glob",
  "memmap",
  "object",
@@ -29,13 +29,13 @@ dependencies = [
 
 [[package]]
 name = "addr2line"
-version = "0.24.1"
+version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5fb1d8e4442bd405fdfd1dacb42792696b0cf9cb15882e5d097b742a676d375"
+checksum = "dfbe277e56a376000877090da837660b4427aad530e3028d44e0bffe4f89a1c1"
 dependencies = [
  "cpp_demangle",
  "fallible-iterator",
- "gimli 0.31.0",
+ "gimli 0.31.1",
  "memmap2",
  "object",
  "rustc-demangle",
@@ -186,9 +186,9 @@ checksum = "40ecd4077b5ae9fd2e9e169b102c6c330d0605168eb0e8bf79952b256dbefffd"
 
 [[package]]
 name = "gimli"
-version = "0.31.0"
+version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32085ea23f3234fc7846555e85283ba4de91e21016dc0455a16286d87a292d64"
+checksum = "07e28edb80900c19c28f1072f2e8aeca7fa06b23cd4169cefe1af5aa3260783f"
 dependencies = [
  "fallible-iterator",
  "stable_deref_trait",

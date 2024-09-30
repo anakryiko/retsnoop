@@ -11,6 +11,7 @@ use std::env;
 use std::fs::File;
 use std::io::{BufRead, Lines, StdinLock, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::addr2line::fallible_iterator::FallibleIterator;
 use clap::{App, Arg, ArgMatches, Values};
@@ -471,7 +472,8 @@ fn main() {
         dwarf.load_sup(&mut load_sup_section).unwrap();
     }
 
-    let ctx = Context::from_dwarf(dwarf.borrow(|b| *b)).unwrap();
+    let dwarf = Arc::new(dwarf);
+    let ctx = Context::from_arc_dwarf(Arc::clone(&dwarf)).unwrap();
 
     let stdin = std::io::stdin();
     let queries = matches
