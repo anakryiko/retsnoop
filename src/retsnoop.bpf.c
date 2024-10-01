@@ -675,9 +675,9 @@ static __noinline bool push_call_stack(void *ctx, u32 id, u64 ip)
 		}
 	}
 
-out_defunct:
 	/* if we failed to send out REC_SESSION_START, update depth and bail */
 	if (sess->defunct) {
+out_defunct:
 		sess->depth++;
 		return false;
 	}
