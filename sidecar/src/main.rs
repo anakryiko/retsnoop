@@ -38,7 +38,7 @@ fn parse_query_line(string: &str) -> QueryType {
 }
 
 enum Addrs<'a> {
-    Args(std::vec::IntoIter<String>),
+    Args(&'a mut dyn Iterator<Item = &'a str>),
     Stdin(Lines<StdinLock<'a>>),
 }
 
@@ -102,8 +102,8 @@ struct Config {
     exe: String,
 
     #[arg(name = "ADDRESSES",
-    num_args = 0..,
-    help = "Addresses to use instead of reading from stdin.")]
+          num_args = 0..,
+          help = "Addresses to use instead of reading from stdin.")]
     addrs: Vec<String>,
 
     #[arg(long = "sup", name = "SUP_PATH",
@@ -131,7 +131,7 @@ struct Config {
 
     #[arg(short = 'C', long = "demangle",
           help = "Demangle function names. \
-                  Specifying a specific demangling style (like GNU addr2line)is not supported.")]
+                  Specifying a specific demangling style (like GNU addr2line) is not supported.")]
     demangle: bool,
 
     #[arg(long = "llvm",
@@ -139,8 +139,8 @@ struct Config {
     llvm: bool,
 
     #[arg(short = 'p', long = "pretty-print",
-    help = "Make the output more human friendly: each location are printed on one line.")]
-pretty: bool,
+          help = "Make the output more human friendly: each location is printed on one line.")]
+    pretty: bool,
 
     #[arg(short = 'v', long = "verbose",
           help = "Verbose mode.")]
@@ -388,16 +388,12 @@ fn load_file_section<'input, 'arena, Endian: gimli::Endianity>(
 }
 
 fn main() {
-    use std::mem::take;
-
     env::set_var("RUST_BACKTRACE", "full");
 
     let arena_data = Arena::new();
-    let mut config = Config::parse();
+    let config = Config::parse();
 
-    let path = take(&mut config.exe);
-
-    let file = File::open(path).unwrap();
+    let file = File::open(&config.exe).unwrap();
     let map = unsafe { memmap::Mmap::map(&file).unwrap() };
     let object = &object::File::parse(&*map).unwrap();
 
@@ -432,11 +428,13 @@ fn main() {
     let dwarf = Arc::new(dwarf);
     let ctx = Context::from_arc_dwarf(Arc::clone(&dwarf)).unwrap();
 
+    let mut addrs;
     let stdin = std::io::stdin();
     let queries = if config.addrs.is_empty() {
         Addrs::Stdin(stdin.lock().lines())
     } else {
-        Addrs::Args(take(&mut config.addrs).into_iter())
+        addrs = config.addrs.iter().map(String::as_ref);
+        Addrs::Args(&mut addrs)
     };
 
     for addr_or_cunit in queries {
