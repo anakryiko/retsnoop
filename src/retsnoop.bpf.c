@@ -131,8 +131,8 @@ const volatile __u32 tgid_deny_cnt = -1;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, int);
-	__type(value, char[TASK_COMM_LEN]);
+	__type(key, char[TASK_COMM_LEN]);
+	__type(value, bool);
 	__uint(max_entries, 1); /* could be overriden from user-space */
 } comms_filter SEC(".maps");
 
