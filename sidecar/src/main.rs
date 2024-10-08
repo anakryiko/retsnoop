@@ -95,10 +95,13 @@ impl<'a> Iterator for Addrs<'a> {
     long_about = None
 )]
 struct Config {
-
-    #[arg(short = 'e', long = "exe", required = true,
-          name = "EXE_PATH",
-          help = "The executable for which addresses should be translated.")]
+    #[arg(
+        short = 'e',
+        long = "exe",
+        required = true,
+        name = "EXE_PATH",
+        help = "The executable for which addresses should be translated."
+    )]
     exe: String,
 
     #[arg(name = "ADDRESSES",
@@ -106,44 +109,66 @@ struct Config {
           help = "Addresses to use instead of reading from stdin.")]
     addrs: Vec<String>,
 
-    #[arg(long = "sup", name = "SUP_PATH",
-          help = "Path to supplementary object file.")]
+    #[arg(
+        long = "sup",
+        name = "SUP_PATH",
+        help = "Path to supplementary object file."
+    )]
     sup: Option<String>,
 
-    #[arg(short = 'f', long = "functions",
-          help = "Display function names as well as file and line number information.")]
+    #[arg(
+        short = 'f',
+        long = "functions",
+        help = "Display function names as well as file and line number information."
+    )]
     do_functions: bool,
 
-    #[arg(short = 'i', long = "inlines",
-          help = "If the address belongs to a function that was inlined, the source \
+    #[arg(
+        short = 'i',
+        long = "inlines",
+        help = "If the address belongs to a function that was inlined, the source \
                   information for all enclosing scopes back to the first non-inlined \
-                  function will also be printed.")]
+                  function will also be printed."
+    )]
     do_inlines: bool,
 
-    #[arg(short = 'a', long = "addresses",
-          help = "Display the address before the function name, file and line number \
-                  information.")]
+    #[arg(
+        short = 'a',
+        long = "addresses",
+        help = "Display the address before the function name, file and line number \
+                  information."
+    )]
     print_addrs: bool,
 
-    #[arg(short = 's', long = "basenames",
-          help = "Display only the base of each file name.")]
+    #[arg(
+        short = 's',
+        long = "basenames",
+        help = "Display only the base of each file name."
+    )]
     basenames: bool,
 
-    #[arg(short = 'C', long = "demangle",
-          help = "Demangle function names. \
-                  Specifying a specific demangling style (like GNU addr2line) is not supported.")]
+    #[arg(
+        short = 'C',
+        long = "demangle",
+        help = "Demangle function names. \
+                  Specifying a specific demangling style (like GNU addr2line) is not supported."
+    )]
     demangle: bool,
 
-    #[arg(long = "llvm",
-          help = "Display output in the same format as llvm-symbolizer.")]
+    #[arg(
+        long = "llvm",
+        help = "Display output in the same format as llvm-symbolizer."
+    )]
     llvm: bool,
 
-    #[arg(short = 'p', long = "pretty-print",
-          help = "Make the output more human friendly: each location is printed on one line.")]
+    #[arg(
+        short = 'p',
+        long = "pretty-print",
+        help = "Make the output more human friendly: each location is printed on one line."
+    )]
     pretty: bool,
 
-    #[arg(short = 'v', long = "verbose",
-          help = "Verbose mode.")]
+    #[arg(short = 'v', long = "verbose", help = "Verbose mode.")]
     verbose: bool,
 }
 
