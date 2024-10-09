@@ -110,7 +110,7 @@ $(BPFTOOL): $(LIBBPF_OBJ) | $(BPFTOOL_OUTPUT)
 
 .PHONY: bpftool
 bpftool: $(BPFTOOL)
-	$(Q)ln -s $(BPFTOOL) bpftool
+	$(Q)ln -sf $(BPFTOOL) bpftool
 
 # Build BPF object files
 $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard *.h) $(ARCH)/vmlinux.h    \
