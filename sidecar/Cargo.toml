@@ -10,7 +10,7 @@ addr2line = "0.24.2"
 gimli = { version = "0.31", default-features = false, features = ["read"] }
 glob = "0.3"
 fallible-iterator = { version = "0.3", default-features = false }
-memmap = "0.7"
+memmap2 = "0.9"
 clap = { version = "4", features = ["derive"] }
 backtrace = "0.3"
 findshlibs = "0.10"
