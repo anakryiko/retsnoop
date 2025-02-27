@@ -411,7 +411,7 @@ int main(int argc, char **argv, char **envp)
 	skel->rodata->use_kprobes = env.attach_mode != ATTACH_FENTRY;
 	memset(skel->rodata->spaces, ' ', sizeof(skel->rodata->spaces) - 1);
 
-#ifdef __x86_64__
+#ifdef RETSNOOP_SUPPORTS_ARG_CAPTURE
 	skel->rodata->capture_fn_args = env.capture_args;
 #else
 	skel->rodata->capture_fn_args = false;
@@ -527,7 +527,7 @@ int main(int argc, char **argv, char **envp)
 	}
 
 	if (env.capture_args) {
-#ifdef __x86_64__
+#ifdef RETSNOOP_SUPPORTS_ARG_CAPTURE
 		for (i = 0; i < func_cnt; i++) {
 			const struct mass_attacher_func_info *finfo;
 
@@ -643,7 +643,7 @@ int main(int argc, char **argv, char **envp)
 		fi->ip = finfo->addr;
 		fi->flags = flags;
 
-#ifdef __x86_64__
+#ifdef RETSNOOP_SUPPORTS_ARG_CAPTURE
 		if (env.capture_args) {
 			const struct func_args_info *fn_args = func_args_info(i);
 
@@ -651,7 +651,7 @@ int main(int argc, char **argv, char **envp)
 				fi->arg_specs[j] = fn_args->arg_specs[j].arg_flags;
 			}
 		}
-#endif /* __x86_64__ */
+#endif /* RETSNOOP_SUPPORTS_ARG_CAPTURE */
 	}
 
 	for (i = 0; i < env.entry_glob_cnt; i++) {

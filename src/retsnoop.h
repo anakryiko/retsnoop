@@ -44,6 +44,37 @@ enum func_flags {
 };
 
 #define MAX_FNARGS_ARG_SPEC_CNT 12
+/*
+ * Function argument capture is supported on:
+ * - x86-64: 6 arguments in rdi, rsi, rdx, rcx, r8, r9 registers
+ * - ARM64: 8 arguments in x0-x7 registers
+ */
+
+#ifdef __x86_64__
+#define RETSNOOP_SUPPORTS_ARG_CAPTURE 1
+#define MAX_FNARGS_IN_REGS 6
+#define FNARGS_STACK_OFFSET 8 /* 8 bytes for return address */
+#define FNARGS_STACK_ALIGNMENT_MASK 7
+static const char *const REG_NAMES[MAX_FNARGS_IN_REGS] = {
+	"rdi", "rsi", "rdx", "rcx", "r8", "r9"
+};
+#elif defined(__aarch64__)
+#define RETSNOOP_SUPPORTS_ARG_CAPTURE 1
+#define MAX_FNARGS_IN_REGS 8
+/* From the AArch64 ABI Function Call Standard: "The next stacked argument
+ * address (NSAA) is set to the current stack-pointer value (SP)."
+ */
+#define FNARGS_STACK_OFFSET 0
+#define FNARGS_STACK_ALIGNMENT_MASK 15
+static const char *const REG_NAMES[MAX_FNARGS_IN_REGS] = {
+	"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"
+};
+#else
+#define MAX_FNARGS_IN_REGS 0
+#define FNARGS_STACK_OFFSET 0
+#define FNARGS_STACK_ALIGNMENT_MASK 0
+#endif
+
 #define MAX_FNARGS_TOTAL_ARGS_SZ (64 * 1024)	/* maximum total captured args data size */
 #define MAX_FNARGS_SIZED_ARG_SZ (16 * 1024)	/* maximum capture size for a single fixed-sized arg */
 #define MAX_FNARGS_STR_ARG_SZ (16 * 1024)	/* maximum capture size for a signel string arg */
