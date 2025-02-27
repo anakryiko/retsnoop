@@ -114,6 +114,21 @@ static bool is_arg_in_reg(int arg_idx, const char **reg_name)
 	default: return *reg_name = "<inval>", false;
 	}
 }
+#elif defined(__aarch64__)
+static bool is_arg_in_reg(int arg_idx, const char **reg_name)
+{
+	switch (arg_idx) {
+	case 0: return *reg_name = "x0", true;
+	case 1: return *reg_name = "x1", true;
+	case 2: return *reg_name = "x2", true;
+	case 3: return *reg_name = "x3", true;
+	case 4: return *reg_name = "x4", true;
+	case 5: return *reg_name = "x5", true;
+	case 6: return *reg_name = "x6", true;
+	case 7: return *reg_name = "x7", true;
+	default: return *reg_name = "<inval>", false;
+	}
+}
 #else
 static bool is_arg_in_reg(int arg_idx, const char **reg_name)
 {
@@ -124,7 +139,15 @@ static bool is_arg_in_reg(int arg_idx, const char **reg_name)
 
 static int realign_stack_off(int stack_off)
 {
-	return (stack_off + 7) / 8 * 8;
+#if defined(__x86_64__)
+	/* x86-64 stack is 8-byte aligned */
+	return (stack_off + 7) & ~7;
+#elif defined(__aarch64__)
+	/* ARM64 stack is 16-byte aligned */
+	return (stack_off + 15) & ~15;
+#else
+	return stack_off;
+#endif
 }
 
 /* Prepare specifications of function arguments capture (happening on BPF side)
@@ -136,7 +159,13 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 	struct func_arg_spec *spec;
 	const struct btf_type *fn_t, *t;
 	int i, n, reg_idx = 0;
+#if defined(__x86_64__)
 	int stack_off = 8; /* 8 bytes for return address */
+#elif defined(__aarch64__)
+	int stack_off = 0; /* ARM64 uses x0-x7 for first 8 args */
+#else
+	int stack_off = 0;
+#endif
 	bool is_printf_like = false;
 
 	if (func_id >= fn_info_cnt) {
@@ -221,6 +250,31 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 			true_len = (is_vararg || btf_is_ptr(t)) ? 8 : t->size;
 			data_len = min(true_len, env.args_max_sized_arg_size);
 
+#ifdef __aarch64__
+			/* Special handling for structs in ARM64 */
+			if (btf_is_struct(t) && t->size <= 16) {
+				if (t->size <= 8 && is_arg_in_reg(reg_idx, &reg1_name)) {
+					/* Fits in one register */
+					spec->arg_flags |= data_len;
+					spec->arg_flags |= FNARGS_REG << FNARGS_LOC_SHIFT;
+					spec->arg_flags |= reg_idx << FNARGS_REGIDX_SHIFT;
+					dlog("%s", reg1_name);
+					reg_idx += 1;
+				} else if (t->size <= 16 && 
+						is_arg_in_reg(reg_idx, &reg1_name) && 
+						is_arg_in_reg(reg_idx + 1, &reg2_name)) {
+					/* Passed in a pair of registers */
+					spec->arg_flags |= data_len;
+					spec->arg_flags |= FNARGS_REG_PAIR << FNARGS_LOC_SHIFT;
+					spec->arg_flags |= reg_idx << FNARGS_REGIDX_SHIFT;
+					reg_idx += 2;
+					dlog("%s:%s", reg1_name, reg2_name);
+				} else {
+					/* Fallback to stack */
+					goto use_stack;
+				}
+			} else
+#endif
 			if (true_len <= 8 && is_arg_in_reg(reg_idx, &reg1_name)) {
 				/* fits in one register */
 				spec->arg_flags |= data_len;
@@ -239,6 +293,7 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 				dlog("%s:%s", reg1_name, reg2_name);
 			} else {
 				/* passed on the stack */
+use_stack:
 				if (stack_off > FNARGS_STACKOFF_MAX) {
 					dlog("fp+%d(TOO LARGE!!!)", stack_off);
 					stack_off = realign_stack_off(stack_off + true_len);

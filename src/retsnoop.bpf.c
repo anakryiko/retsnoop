@@ -215,7 +215,50 @@ static __always_inline u64 get_stack_pointer(void *ctx)
 
 	return sp;
 }
-#else /* !__TARGET_ARCH_x86 */
+#elif defined(__TARGET_ARCH_arm64)
+static u64 get_arg_reg_value(void *ctx, u32 arg_idx)
+{
+	if (use_kprobes) {
+		struct pt_regs *regs = ctx;
+
+		switch (arg_idx) {
+			case 0: return PT_REGS_PARM1(regs);
+			case 1: return PT_REGS_PARM2(regs);
+			case 2: return PT_REGS_PARM3(regs);
+			case 3: return PT_REGS_PARM4(regs);
+			case 4: return PT_REGS_PARM5(regs);
+			case 5: return PT_REGS_PARM6(regs);
+			case 6: return PT_REGS_PARM7(regs);
+			case 7: return PT_REGS_PARM8(regs);
+			default: return 0;
+		}
+	} else {
+		u64 *args = ctx, val;
+
+		bpf_probe_read_kernel(&val, sizeof(val), &args[arg_idx]);
+		return val;
+	}
+}
+
+static __always_inline u64 get_stack_pointer(void *ctx)
+{
+	u64 sp;
+
+	if (use_kprobes) {
+		sp = PT_REGS_SP((struct pt_regs *)ctx);
+		barrier_var(sp);
+	} else {
+		/* current FENTRY doesn't support attaching to functions that
+		 * pass arguments on the stack, so we don't really need to
+		 * implement this
+		 */
+		sp = 0;
+		barrier_var(sp);
+	}
+
+	return sp;
+}
+#else /* !__TARGET_ARCH_x86 && !__TARGET_ARCH_arm64 */
 static u64 get_arg_reg_value(void *ctx, u32 arg_idx) { return 0; }
 static u64 get_stack_pointer(void *ctx) { return 0; }
 #endif

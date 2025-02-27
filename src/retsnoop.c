@@ -411,7 +411,7 @@ int main(int argc, char **argv, char **envp)
 	skel->rodata->use_kprobes = env.attach_mode != ATTACH_FENTRY;
 	memset(skel->rodata->spaces, ' ', sizeof(skel->rodata->spaces) - 1);
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
 	skel->rodata->capture_fn_args = env.capture_args;
 #else
 	skel->rodata->capture_fn_args = false;
@@ -527,7 +527,7 @@ int main(int argc, char **argv, char **envp)
 	}
 
 	if (env.capture_args) {
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
 		for (i = 0; i < func_cnt; i++) {
 			const struct mass_attacher_func_info *finfo;
 
@@ -539,7 +539,7 @@ int main(int argc, char **argv, char **envp)
 			}
 		}
 #else
-		vlog("Function arguments capture is only supported on x86-64 architecture!\n");
+		vlog("Function arguments capture is only supported on x86-64 and ARM64 architectures!\n");
 #endif
 	}
 
@@ -643,7 +643,7 @@ int main(int argc, char **argv, char **envp)
 		fi->ip = finfo->addr;
 		fi->flags = flags;
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
 		if (env.capture_args) {
 			const struct func_args_info *fn_args = func_args_info(i);
 
@@ -651,7 +651,7 @@ int main(int argc, char **argv, char **envp)
 				fi->arg_specs[j] = fn_args->arg_specs[j].arg_flags;
 			}
 		}
-#endif /* __x86_64__ */
+#endif /* __x86_64__ || __aarch64__ */
 	}
 
 	for (i = 0; i < env.entry_glob_cnt; i++) {

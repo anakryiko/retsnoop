@@ -44,6 +44,11 @@ enum func_flags {
 };
 
 #define MAX_FNARGS_ARG_SPEC_CNT 12
+/* 
+ * Function argument capture is supported on:
+ * - x86-64: arguments in rdi, rsi, rdx, rcx, r8, r9 registers
+ * - ARM64: arguments in x0-x7 registers
+ */
 #define MAX_FNARGS_TOTAL_ARGS_SZ (64 * 1024)	/* maximum total captured args data size */
 #define MAX_FNARGS_SIZED_ARG_SZ (16 * 1024)	/* maximum capture size for a single fixed-sized arg */
 #define MAX_FNARGS_STR_ARG_SZ (16 * 1024)	/* maximum capture size for a signel string arg */
