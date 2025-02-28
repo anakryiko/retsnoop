@@ -162,7 +162,11 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 #if defined(__x86_64__)
 	int stack_off = 8; /* 8 bytes for return address */
 #elif defined(__aarch64__)
-	int stack_off = 0; /* ARM64 uses x0-x7 for first 8 args */
+	/* From the AArch64 ABI Function Call Standard: "The next stacked argument
+	 * address (NSAA) is set to the current stack-pointer value (SP)."
+	 */
+	int stack_off = 0; 
+						
 #else
 	int stack_off = 0;
 #endif
@@ -250,31 +254,6 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 			true_len = (is_vararg || btf_is_ptr(t)) ? 8 : t->size;
 			data_len = min(true_len, env.args_max_sized_arg_size);
 
-#ifdef __aarch64__
-			/* Special handling for structs in ARM64 */
-			if (btf_is_struct(t) && t->size <= 16) {
-				if (t->size <= 8 && is_arg_in_reg(reg_idx, &reg1_name)) {
-					/* Fits in one register */
-					spec->arg_flags |= data_len;
-					spec->arg_flags |= FNARGS_REG << FNARGS_LOC_SHIFT;
-					spec->arg_flags |= reg_idx << FNARGS_REGIDX_SHIFT;
-					dlog("%s", reg1_name);
-					reg_idx += 1;
-				} else if (t->size <= 16 && 
-						is_arg_in_reg(reg_idx, &reg1_name) && 
-						is_arg_in_reg(reg_idx + 1, &reg2_name)) {
-					/* Passed in a pair of registers */
-					spec->arg_flags |= data_len;
-					spec->arg_flags |= FNARGS_REG_PAIR << FNARGS_LOC_SHIFT;
-					spec->arg_flags |= reg_idx << FNARGS_REGIDX_SHIFT;
-					reg_idx += 2;
-					dlog("%s:%s", reg1_name, reg2_name);
-				} else {
-					/* Fallback to stack */
-					goto use_stack;
-				}
-			} else
-#endif
 			if (true_len <= 8 && is_arg_in_reg(reg_idx, &reg1_name)) {
 				/* fits in one register */
 				spec->arg_flags |= data_len;
@@ -293,7 +272,6 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 				dlog("%s:%s", reg1_name, reg2_name);
 			} else {
 				/* passed on the stack */
-use_stack:
 				if (stack_off > FNARGS_STACKOFF_MAX) {
 					dlog("fp+%d(TOO LARGE!!!)", stack_off);
 					stack_off = realign_stack_off(stack_off + true_len);
