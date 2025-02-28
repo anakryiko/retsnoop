@@ -174,6 +174,26 @@ static __always_inline const struct ctxargs_info *ctxargs_info(u32 id)
 	return &ctxargs_infos[id & ctxargs_info_mask];
 }
 
+#if defined(__TARGET_ARCH_arm64) || defined(__TARGET_ARCH_x86)
+static __always_inline u64 get_stack_pointer(void *ctx)
+{
+	u64 sp;
+
+	if (use_kprobes) {
+		sp = PT_REGS_SP((struct pt_regs *)ctx);
+		barrier_var(sp);
+	} else {
+		/* current FENTRY doesn't support attaching to functions that
+		 * pass arguments on the stack, so we don't really need to
+		 * implement this
+		 */
+		sp = 0;
+		barrier_var(sp);
+	}
+
+	return sp;
+}
+
 #ifdef __TARGET_ARCH_x86
 static u64 get_arg_reg_value(void *ctx, u32 arg_idx)
 {
@@ -197,24 +217,7 @@ static u64 get_arg_reg_value(void *ctx, u32 arg_idx)
 	}
 }
 
-static __always_inline u64 get_stack_pointer(void *ctx)
-{
-	u64 sp;
 
-	if (use_kprobes) {
-		sp = PT_REGS_SP((struct pt_regs *)ctx);
-		barrier_var(sp);
-	} else {
-		/* current FENTRY doesn't support attaching to functions that
-		 * pass arguments on the stack, so we don't really need to
-		 * implement this
-		 */
-		sp = 0;
-		barrier_var(sp);
-	}
-
-	return sp;
-}
 #elif defined(__TARGET_ARCH_arm64)
 static u64 get_arg_reg_value(void *ctx, u32 arg_idx)
 {
@@ -239,25 +242,7 @@ static u64 get_arg_reg_value(void *ctx, u32 arg_idx)
 		return val;
 	}
 }
-
-static __always_inline u64 get_stack_pointer(void *ctx)
-{
-	u64 sp;
-
-	if (use_kprobes) {
-		sp = PT_REGS_SP((struct pt_regs *)ctx);
-		barrier_var(sp);
-	} else {
-		/* current FENTRY doesn't support attaching to functions that
-		 * pass arguments on the stack, so we don't really need to
-		 * implement this
-		 */
-		sp = 0;
-		barrier_var(sp);
-	}
-
-	return sp;
-}
+#endif
 #else /* !__TARGET_ARCH_x86 && !__TARGET_ARCH_arm64 */
 static u64 get_arg_reg_value(void *ctx, u32 arg_idx) { return 0; }
 static u64 get_stack_pointer(void *ctx) { return 0; }
