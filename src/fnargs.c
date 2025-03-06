@@ -101,33 +101,13 @@ static int calc_printf_fmt_arg_cnt(const struct func_args_item *fai,
 	return n;
 }
 
-#ifdef __x86_64__
+#ifdef RETSNOOP_SUPPORTS_ARG_CAPTURE
 static bool is_arg_in_reg(int arg_idx, const char **reg_name)
 {
-	switch (arg_idx) {
-	case 0: return *reg_name = "rdi", true;
-	case 1: return *reg_name = "rsi", true;
-	case 2: return *reg_name = "rdx", true;
-	case 3: return *reg_name = "rcx", true;
-	case 4: return *reg_name = "r8", true;
-	case 5: return *reg_name = "r9", true;
-	default: return *reg_name = "<inval>", false;
+	if (arg_idx >= MAX_FNARGS_IN_REGS) {
+		return *reg_name = "<inval>", false;
 	}
-}
-#elif defined(__aarch64__)
-static bool is_arg_in_reg(int arg_idx, const char **reg_name)
-{
-	switch (arg_idx) {
-	case 0: return *reg_name = "x0", true;
-	case 1: return *reg_name = "x1", true;
-	case 2: return *reg_name = "x2", true;
-	case 3: return *reg_name = "x3", true;
-	case 4: return *reg_name = "x4", true;
-	case 5: return *reg_name = "x5", true;
-	case 6: return *reg_name = "x6", true;
-	case 7: return *reg_name = "x7", true;
-	default: return *reg_name = "<inval>", false;
-	}
+	return *reg_name = REG_NAMES[arg_idx], true;
 }
 #else
 static bool is_arg_in_reg(int arg_idx, const char **reg_name)
@@ -139,15 +119,7 @@ static bool is_arg_in_reg(int arg_idx, const char **reg_name)
 
 static int realign_stack_off(int stack_off)
 {
-#if defined(__x86_64__)
-	/* x86-64 stack is 8-byte aligned */
-	return (stack_off + 7) & ~7;
-#elif defined(__aarch64__)
-	/* ARM64 stack is 16-byte aligned */
-	return (stack_off + 15) & ~15;
-#else
-	return stack_off;
-#endif
+	return (stack_off+FNARGS_STACK_ALIGNMENT_MASK) & ~FNARGS_STACK_ALIGNMENT_MASK;
 }
 
 /* Prepare specifications of function arguments capture (happening on BPF side)
@@ -159,17 +131,7 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 	struct func_arg_spec *spec;
 	const struct btf_type *fn_t, *t;
 	int i, n, reg_idx = 0;
-#if defined(__x86_64__)
-	int stack_off = 8; /* 8 bytes for return address */
-#elif defined(__aarch64__)
-	/* From the AArch64 ABI Function Call Standard: "The next stacked argument
-	 * address (NSAA) is set to the current stack-pointer value (SP)."
-	 */
-	int stack_off = 0; 
-						
-#else
-	int stack_off = 0;
-#endif
+	int stack_off = FNARGS_STACK_OFFSET;
 	bool is_printf_like = false;
 
 	if (func_id >= fn_info_cnt) {
@@ -194,7 +156,7 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 		const char *reg_name;
 
 		/* no BTF information, fallback to generic arch convention */
-		fn_args->arg_spec_cnt = 6;
+		fn_args->arg_spec_cnt = MAX_FNARGS_IN_REGS;
 		for (i = 0; is_arg_in_reg(i, &reg_name); i++) {
 			spec = &fn_args->arg_specs[i];
 
