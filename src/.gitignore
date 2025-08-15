@@ -1,5 +1,7 @@
+compile_commands.json
 /.output
 /bpftool
 /retsnoop
 /simfail
 /.gdb_history
+/.cache
