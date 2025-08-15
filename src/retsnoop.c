@@ -539,7 +539,7 @@ int main(int argc, char **argv, char **envp)
 			}
 		}
 #else
-		vlog("Function arguments capture is only supported on x86-64 architecture!\n");
+		log("NOTE: Function arguments capture is not supported!\n");
 #endif
 	}
 
