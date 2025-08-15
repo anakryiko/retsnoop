@@ -51,28 +51,29 @@ enum func_flags {
  */
 
 #ifdef __x86_64__
-#define RETSNOOP_SUPPORTS_ARG_CAPTURE 1
-#define MAX_FNARGS_IN_REGS 6
-#define FNARGS_STACK_OFFSET 8 /* 8 bytes for return address */
-#define FNARGS_STACK_ALIGNMENT_MASK 7
-static const char *const REG_NAMES[MAX_FNARGS_IN_REGS] = {
-	"rdi", "rsi", "rdx", "rcx", "r8", "r9"
-};
+
+#define FNARGS_SUPPORT 1
+#define FNARGS_MAX_ARG_REGS 6
+#define FNARGS_STACK_OFF 8 /* 8 bytes for return address */
+#define FNARGS_STACK_ALIGN 8
+
 #elif defined(__aarch64__)
-#define RETSNOOP_SUPPORTS_ARG_CAPTURE 1
-#define MAX_FNARGS_IN_REGS 8
-/* From the AArch64 ABI Function Call Standard: "The next stacked argument
- * address (NSAA) is set to the current stack-pointer value (SP)."
+
+#define FNARGS_SUPPORT 1
+#define FNARGS_MAX_ARG_REGS 8
+/*
+ * From the AArch64 ABI Function Call Standard:
+ * "The next stacked argument address (NSAA) is set to the current stack-pointer value (SP)."
  */
-#define FNARGS_STACK_OFFSET 0
-#define FNARGS_STACK_ALIGNMENT_MASK 15
-static const char *const REG_NAMES[MAX_FNARGS_IN_REGS] = {
-	"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"
-};
+#define FNARGS_STACK_OFF 0
+#define FNARGS_STACK_ALIGN 16
+
 #else
-#define MAX_FNARGS_IN_REGS 0
-#define FNARGS_STACK_OFFSET 0
-#define FNARGS_STACK_ALIGNMENT_MASK 0
+
+#define FNARGS_MAX_ARG_REGS 0
+#define FNARGS_STACK_OFF 0
+#define FNARGS_STACK_ALIGN 0
+
 #endif
 
 #define MAX_FNARGS_TOTAL_ARGS_SZ (64 * 1024)	/* maximum total captured args data size */

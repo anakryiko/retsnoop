@@ -101,25 +101,39 @@ static int calc_printf_fmt_arg_cnt(const struct func_args_item *fai,
 	return n;
 }
 
-#ifdef RETSNOOP_SUPPORTS_ARG_CAPTURE
 static bool is_arg_in_reg(int arg_idx, const char **reg_name)
 {
-	if (arg_idx >= MAX_FNARGS_IN_REGS) {
-		return *reg_name = "<inval>", false;
+#if defined(__x86_64__)
+	switch (arg_idx) {
+		case 0: return *reg_name = "rdi", true;
+		case 1: return *reg_name = "rsi", true;
+		case 2: return *reg_name = "rdx", true;
+		case 3: return *reg_name = "rcx", true;
+		case 4: return *reg_name = "r8", true;
+		case 5: return *reg_name = "r9", true;
+		default: return *reg_name = "<inval>", false;
 	}
-	return *reg_name = REG_NAMES[arg_idx], true;
-}
+#elif defined(__aarch64__)
+	switch (arg_idx) {
+		case 0: return *reg_name = "x0", true;
+		case 1: return *reg_name = "x1", true;
+		case 2: return *reg_name = "x2", true;
+		case 3: return *reg_name = "x3", true;
+		case 4: return *reg_name = "x4", true;
+		case 5: return *reg_name = "x5", true;
+		case 6: return *reg_name = "x6", true;
+		case 7: return *reg_name = "x7", true;
+		default: return *reg_name = "<inval>", false;
+	}
 #else
-static bool is_arg_in_reg(int arg_idx, const char **reg_name)
-{
 	*reg_name = "<unsupported>";
 	return false;
-}
 #endif
+}
 
 static int realign_stack_off(int stack_off)
 {
-	return (stack_off+FNARGS_STACK_ALIGNMENT_MASK) & ~FNARGS_STACK_ALIGNMENT_MASK;
+	return (stack_off + FNARGS_STACK_ALIGN - 1) / FNARGS_STACK_ALIGN * FNARGS_STACK_ALIGN;
 }
 
 /* Prepare specifications of function arguments capture (happening on BPF side)
@@ -131,7 +145,7 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 	struct func_arg_spec *spec;
 	const struct btf_type *fn_t, *t;
 	int i, n, reg_idx = 0;
-	int stack_off = FNARGS_STACK_OFFSET;
+	int stack_off = FNARGS_STACK_OFF;
 	bool is_printf_like = false;
 
 	if (func_id >= fn_info_cnt) {
@@ -156,7 +170,7 @@ int prepare_fn_args_specs(int func_id, const struct mass_attacher_func_info *fin
 		const char *reg_name;
 
 		/* no BTF information, fallback to generic arch convention */
-		fn_args->arg_spec_cnt = MAX_FNARGS_IN_REGS;
+		fn_args->arg_spec_cnt = FNARGS_MAX_ARG_REGS;
 		for (i = 0; is_arg_in_reg(i, &reg_name); i++) {
 			spec = &fn_args->arg_specs[i];
 

@@ -174,7 +174,6 @@ static __always_inline const struct ctxargs_info *ctxargs_info(u32 id)
 	return &ctxargs_infos[id & ctxargs_info_mask];
 }
 
-#if defined(__TARGET_ARCH_arm64) || defined(__TARGET_ARCH_x86)
 static __always_inline u64 get_stack_pointer(void *ctx)
 {
 	u64 sp;
@@ -194,7 +193,7 @@ static __always_inline u64 get_stack_pointer(void *ctx)
 	return sp;
 }
 
-#ifdef __TARGET_ARCH_x86
+#if defined(__TARGET_ARCH_x86)
 static u64 get_arg_reg_value(void *ctx, u32 arg_idx)
 {
 	if (use_kprobes) {
@@ -216,8 +215,6 @@ static u64 get_arg_reg_value(void *ctx, u32 arg_idx)
 		return val;
 	}
 }
-
-
 #elif defined(__TARGET_ARCH_arm64)
 static u64 get_arg_reg_value(void *ctx, u32 arg_idx)
 {
@@ -242,10 +239,8 @@ static u64 get_arg_reg_value(void *ctx, u32 arg_idx)
 		return val;
 	}
 }
-#endif
 #else /* !__TARGET_ARCH_x86 && !__TARGET_ARCH_arm64 */
 static u64 get_arg_reg_value(void *ctx, u32 arg_idx) { return 0; }
-static u64 get_stack_pointer(void *ctx) { return 0; }
 #endif
 
 static __always_inline u64 coerce_size(u64 val, int sz)
