@@ -73,6 +73,8 @@ static const char *enforced_deny_globs[] = {
 	"update_prog_stats",
 	"inc_misses_counter",
 	"bpf_prog_start_time",
+	"arch_cpu_idle",
+	"default_idle",
 };
 
 /* For older kernels with fexit crashing on long-sleeping functions,
