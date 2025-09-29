@@ -64,6 +64,8 @@ static const char *enforced_deny_globs[] = {
 	"migrate_disable",
 	"rcu_read_lock*",
 	"rcu_read_unlock*",
+	"__rcu_read_lock*",
+	"__rcu_read_unlock*",
 	"bpf_spin_lock",
 	"bpf_spin_unlock",
 	"__bpf_prog_enter*",
@@ -75,6 +77,8 @@ static const char *enforced_deny_globs[] = {
 	"bpf_prog_start_time",
 	"arch_cpu_idle",
 	"default_idle",
+	"preempt_count_add",
+	"preempt_count_sub",
 };
 
 /* For older kernels with fexit crashing on long-sleeping functions,
