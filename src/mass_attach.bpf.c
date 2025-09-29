@@ -5,9 +5,6 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-#define likely(x) __builtin_expect(!!(x), 1)
-#define unlikely(x) __builtin_expect(!!(x), 0)
-
 /* these are defined by custom BPF code outside of mass_attacher */
 extern int handle_func_entry(void *ctx, u32 func_id, u64 func_ip);
 extern int handle_func_exit(void *ctx, u32 func_id, u64 func_ip, u64 ret);
