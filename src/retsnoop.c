@@ -634,6 +634,11 @@ int main(int argc, char **argv, char **envp)
 				       NAME_MOD(finfo->name, finfo->module));
 			}
 
+			if (env.emit_success_stacks != 1 && (flags & FUNC_CANT_FAIL)) {
+				fprintf(stderr, "WARNING: entry function '%s%s%s%s' is non-failing and will not trigger error recording condition!\n",
+				        NAME_MOD(finfo->name, finfo->module));
+			}
+
 			break;
 		}
 
