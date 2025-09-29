@@ -111,8 +111,12 @@ struct mass_attacher {
 	struct ksyms *ksyms;
 	struct btf *vmlinux_btf;
 	struct SKEL_NAME *skel;
-	struct bpf_link *kentry_multi_link;
-	struct bpf_link *kexit_multi_link;
+
+	/* see comments in mass_attacher__attach() for why we might need many */
+	struct bpf_link **kentry_multi_links;
+	struct bpf_link **kexit_multi_links;
+	int kentry_multi_link_cnt;
+	int kexit_multi_link_cnt;
 
 	struct btf **mod_btfs;
 	int mod_btf_cnt;
@@ -229,8 +233,12 @@ void mass_attacher__free(struct mass_attacher *att)
 		btf__free(att->mod_btfs[i]);
 	free(att->mod_btfs);
 
-	bpf_link__destroy(att->kentry_multi_link);
-	bpf_link__destroy(att->kexit_multi_link);
+	for (i = 0; i < att->kentry_multi_link_cnt; i++)
+		bpf_link__destroy(att->kentry_multi_links[i]);
+	free(att->kentry_multi_links);
+	for (i = 0; i < att->kexit_multi_link_cnt; i++)
+		bpf_link__destroy(att->kexit_multi_links[i]);
+	free(att->kexit_multi_links);
 	for (i = 0; i < att->func_cnt; i++) {
 		struct mass_attacher_func_info *fi = &att->func_infos[i];
 
@@ -1324,12 +1332,31 @@ skip_attach:
 	}
 
 	if (!att->dry_run && att->use_kprobe_multi) {
-		LIBBPF_OPTS(bpf_kprobe_multi_opts, multi_opts,
-			.addrs = addrs,
-			.cookies = cookies,
-			.cnt = att->func_cnt,
-		);
+		LIBBPF_OPTS(bpf_kprobe_multi_opts, multi_opts);
 		struct bpf_link *multi_link;
+		int batch_sz = att->func_cnt;
+		int batch_off = 0;
+		const char **batch_syms;
+		const unsigned long *batch_addrs;
+		const __u64 *batch_cookies;
+		void *tmp;
+
+		/* Linux kernels v6.7 through v6.11 are affected by
+		 * unfortunate objpool bug that was finally fixed in v6.12 by
+		 * aff1871bfc81 ("objpool: fix choosing allocation for percpu slots").
+		 * This can result in -ENOMEM returned when trying to attach
+		 * multi-kprobe because kernel fails to allocate memory with
+		 * kmalloc() and (erroneously) doesn't fallback to vmalloc().
+		 *
+		 * However silly, this is causing retsnoop to fail to attach
+		 * to more than a few hundred functions at a time. Instead of
+		 * failing and confusing users, try to lower the size of
+		 * multi-attachment batch and keep going
+		 */
+again:
+		batch_addrs = addrs + batch_off;
+		batch_cookies = cookies + batch_off;
+		batch_syms = syms + batch_off;
 
 		/* retsnoop can't currently filter out notrace function as
 		 * kernel doesn't report them and doesn't list them in kprobe
@@ -1340,14 +1367,22 @@ skip_attach:
 		 * attachment, which is still much faster than one-by-one
 		 * kprobe.
 		 */
-		multi_opts.retprobe = false;
-		multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.retsn_kentry,
+		multi_opts.addrs = batch_addrs;
+		multi_opts.cookies = batch_cookies;
+		multi_opts.syms = NULL;
+		multi_opts.cnt = batch_sz;
+		multi_opts.retprobe = true;
+		multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.retsn_kexit,
 								   NULL, &multi_opts);
+		if (!multi_link && errno == ENOMEM && batch_sz > 1) { /* see above, objpool bug */
+			batch_sz = (batch_sz + 1) / 2;
+			goto again;
+		}
 		if (!multi_link && att->debug_multi_kprobe) {
 			libbpf_print_fn_t old_print_fn;
 
 			err = -errno;
-			elog("Going to debug failing KPROBE.MULTI attachment to %d functions with error: %d...\n",
+			elog("Going to debug failing KRETPROBE.MULTI attachment to %d functions with error: %d...\n",
 			     att->func_cnt, err);
 
 			old_print_fn = libbpf_set_print(libbpf_noop_print_fn);
@@ -1358,28 +1393,56 @@ skip_attach:
 		}
 		if (!multi_link) {
 			multi_opts.addrs = NULL;
-			multi_opts.syms = syms;
-			multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.retsn_kentry,
+			multi_opts.syms = batch_syms;
+			multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.retsn_kexit,
 									   NULL, &multi_opts);
 		}
-		if (!multi_link) {
-			err = -errno;
-			elog("Failed to multi-attach KPROBE.MULTI prog to %d functions: %d\n",
-			     att->func_cnt, err);
-			goto err_out;
-		}
-		att->kentry_multi_link = multi_link;
-
-		multi_opts.retprobe = true;
-		multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.retsn_kexit,
-								   NULL, &multi_opts);
 		if (!multi_link) {
 			err = -errno;
 			elog("Failed to multi-attach KRETPROBE.MULTI prog to %d functions: %d\n",
 			     att->func_cnt, err);
 			goto err_out;
 		}
-		att->kexit_multi_link = multi_link;
+
+		tmp = realloc(att->kexit_multi_links,
+			      (att->kexit_multi_link_cnt + 1) * sizeof(*att->kexit_multi_links));
+		if (!tmp) {
+			err = -ENOMEM;
+			goto err_out;
+		}
+		att->kexit_multi_links = tmp;
+		att->kexit_multi_links[att->kexit_multi_link_cnt] = multi_link;
+		att->kexit_multi_link_cnt++;
+
+		multi_opts.retprobe = false;
+		multi_link = bpf_program__attach_kprobe_multi_opts(att->skel->progs.retsn_kentry,
+								   NULL, &multi_opts);
+		if (!multi_link) {
+			err = -errno;
+			elog("Failed to multi-attach KPROBE.MULTI prog to %d functions: %d\n",
+			     att->func_cnt, err);
+			goto err_out;
+		}
+
+		tmp = realloc(att->kentry_multi_links,
+			      (att->kentry_multi_link_cnt + 1) * sizeof(*att->kentry_multi_links));
+		if (!tmp) {
+			err = -ENOMEM;
+			goto err_out;
+		}
+		att->kentry_multi_links = tmp;
+		att->kentry_multi_links[att->kentry_multi_link_cnt] = multi_link;
+		att->kentry_multi_link_cnt++;
+
+		batch_off += batch_sz;
+		if (batch_sz != att->func_cnt) {
+			vlog("Batch of %d (total %d) kernel functions attached%s successfully!\n",
+			     batch_sz, batch_off, att->dry_run ? " (dry run)" : "");
+		}
+		if (batch_off != att->func_cnt) {
+			batch_sz = min(batch_sz, att->func_cnt - batch_off);
+			goto again;
+		}
 	}
 
 	vlog("Total %d kernel functions attached%s successfully!\n",
