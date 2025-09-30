@@ -95,7 +95,7 @@ jobs:
               grep -q 'not a dynamic executable'
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ format('retsnoop_{0}', matrix.arch) }}
           path: retsnoop/src/retsnoop
@@ -108,7 +108,7 @@ jobs:
       contents: write
     steps:
       - name: Download artifacts from build
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3.0.2
+        uses: actions/download-artifact@v4
 
       - name: Rename binaries and compress
         run: |
