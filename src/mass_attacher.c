@@ -822,6 +822,14 @@ static int prepare_func(struct mass_attacher *att, struct kprobe_info *kp,
 	for (i = 0; i < ksym_cnt; i++, finfo++, ksym_it++) {
 		const struct ksym *ksym = *ksym_it;
 
+		if (ksym->addr == 0) {
+			elog("Data reported by /proc/kallsyms is UNTRUSTWORTHY: '%s%s%s%s' address is reported as ZERO!\n",
+			     NAME_MOD(ksym->name, ksym->module));
+			elog("Make sure kernel.kptr_restrict sysctl is not set to 2.\n");
+			elog("Run `sudo sysctl -w kernel.kptr_restrict=0` and try again.\n");
+			return -EIO;
+		}
+
 		finfo->addr = ksym->addr;
 		finfo->size = ksym->size;
 		finfo->name = ksym->name;
