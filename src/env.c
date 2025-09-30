@@ -15,7 +15,7 @@
 #define DEFAULT_SESSIONS_SZ 4096
 #define DEFAULT_FNARGS_FMT_MAX_ARG_WIDTH 120
 
-const char *argp_program_version = "retsnoop v0.10.1";
+const char *argp_program_version = "retsnoop v0.11";
 const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
 "retsnoop tool shows kernel call stacks based on specified function filters.\n"
