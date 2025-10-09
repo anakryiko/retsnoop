@@ -9,17 +9,22 @@ concurrency:
 jobs:
   build:
     name: Build retsnoop binary
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
         include:
           - arch: amd64
             file_str: x86-64
             target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+
+          - arch: arm64
+            file_str: aarch64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
 
     steps:
-      - name: (amd64) Install dependencies
-        if: matrix.arch == 'amd64'
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cargo llvm libelf-dev
@@ -30,8 +35,7 @@ jobs:
           submodules: recursive
           path: 'retsnoop'
 
-      - name: (amd64) Build retsnoop
-        if: matrix.arch == 'amd64'
+      - name: Build retsnoop
         working-directory: 'retsnoop'
         run: |
           make -j -C src V=1
@@ -53,8 +57,7 @@ jobs:
         run: |
           make -C src clean
 
-      - name: (amd64) Build static retsnoop
-        if: matrix.arch == 'amd64'
+      - name: Build static retsnoop
         working-directory: 'retsnoop'
         run: |
           # LDFLAGS here would also apply to bpftool which fails to build with static
