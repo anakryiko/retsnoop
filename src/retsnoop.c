@@ -684,6 +684,9 @@ int main(int argc, char **argv, char **envp)
 	if (err)
 		goto cleanup;
 
+	if (env.dry_run)
+		goto skip_filtering_setup;
+
 	for (i = 0; i < env.allow_pid_cnt; i++) {
 		int tgid = env.allow_pids[i];
 		bool verdict = true; /* allowed */
@@ -741,6 +744,7 @@ int main(int argc, char **argv, char **envp)
 		}
 	}
 
+skip_filtering_setup:
 	ts1 = now_ns();
 	err = mass_attacher__attach(att);
 	if (err)
