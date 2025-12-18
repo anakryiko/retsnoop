@@ -127,14 +127,50 @@ struct fstack_item {
 	bool err_start;
 };
 
-static bool should_report_stack(struct ctx *ctx, const struct call_stack *s)
+static bool should_report_stack(struct ctx *ctx, bool is_err, const struct call_stack *s)
 {
 	int i, id, flags, res;
-	bool allowed = false;
 
+	if (!is_err && env.emit_success_stacks <= 0)
+		return true;
+
+	if (env.allow_retval_cnt > 0 || env.deny_retval_cnt > 0) {
+		/* we only check retval for outermost function in the stack */
+		id = s->func_ids[0];
+		flags = func_info(ctx, id)->flags;
+
+		if (flags & FUNC_RET_VOID) {
+			if (env.allow_retval_cnt > 0)
+				return false;
+			goto skip_retval_filter;
+		}
+
+		res = s->func_res[0];
+		if (flags & FUNC_NEEDS_SIGN_EXT)
+			res = (long)(int)res;
+
+		for (int j = 0; j < env.deny_retval_cnt; j++) {
+			if (env.deny_retvals[j] == (uint64_t)res)
+				return false;
+		}
+
+		for (int j = 0; j < env.allow_retval_cnt; j++) {
+			if (env.allow_retvals[j] == (uint64_t)res)
+				return true;
+		}
+		return false;
+	}
+
+skip_retval_filter:
+	/* success and success stacks are enabled */
+	if (!is_err)
+		return true;
+
+	/* error, but no extra error filtering */
 	if (!env.has_allow_error_filter && !env.has_deny_error_filter)
 		return true;
 
+	bool allowed = false;
 	for (i = 0; i < s->max_depth; i++) {
 		id = s->func_ids[i];
 		flags = func_info(ctx, id)->flags;
@@ -158,7 +194,6 @@ static bool should_report_stack(struct ctx *ctx, const struct call_stack *s)
 		if (is_err_in_mask(env.allow_error_mask, res))
 			allowed = true;
 	}
-
 	return allowed;
 }
 
@@ -1439,10 +1474,7 @@ static int handle_session_end(struct ctx *dctx, struct session *sess,
 	if (r->type == REC_SESSION_PROBE)
 		goto skip_ignore_filter;
 
-	if (!r->is_err && env.emit_success_stacks <= 0)
-		goto out_purge;
-
-	if (r->is_err && !should_report_stack(dctx, s))
+	if (!should_report_stack(dctx, r->is_err, s))
 		goto out_purge;
 
 skip_ignore_filter:

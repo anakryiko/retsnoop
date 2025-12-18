@@ -127,6 +127,11 @@ struct env {
 	uint64_t allow_error_mask[(MAX_ERRNO + 1) / 64];
 	uint64_t deny_error_mask[(MAX_ERRNO + 1) / 64];
 
+	int allow_retval_cnt;
+	int deny_retval_cnt;
+	uint64_t *allow_retvals;
+	uint64_t *deny_retvals;
+
 	struct ctx ctx;
 	int ringbuf_map_sz;
 	int sessions_map_sz;

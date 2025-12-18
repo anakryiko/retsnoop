@@ -68,6 +68,8 @@ static int cfg_enum(const struct cfg_spec *cfg, const char *arg, void *dst, void
 #define OPT_DEBUG_FEAT 1005
 #define OPT_RINGBUF_MAP_SIZE 1006
 #define OPT_CONFIG_HELP 1007
+#define OPT_ALLOW_RETVAL 1008
+#define OPT_DENY_RETVAL 1009
 
 static const struct argp_option opts[] = {
 	 /* Target functions specification */
@@ -123,6 +125,8 @@ static const struct argp_option opts[] = {
 	{ "allow-errors", 'x', "ERROR", 0,
 	  "Record stacks only with specified errors (e.g., EINVAL or EFAULT, also accepts special 'any' value)" },
 	{ "deny-errors", 'X', "ERROR", 0, "Ignore stacks that have specified errors" },
+	{ "allow-retval", OPT_ALLOW_RETVAL, "VALUE", 0, "Record stacks only with specified return value (implies -S so won't work work with -x/-X)" },
+	{ "deny-retval", OPT_DENY_RETVAL, "VALUE", 0, "Ignore stacks that have specified return value (implies -S so won't work work with -x/-X)" },
 
 	/* Misc more rarely used/advanced settings */
 	{ .flags = OPTION_DOC, "ADVANCED\n=========================" },
@@ -611,6 +615,26 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return -EINVAL;
 		}
 		env.emit_success_stacks = val;
+		break;
+	case OPT_ALLOW_RETVAL:
+		if (env.emit_success_stacks < 0) {
+			elog("--allow-retval implies -S/-Sy so cannot be used with -x/-X\n");
+			return -EINVAL;
+		}
+		env.emit_success_stacks = 1;
+		err = append_retval(&env.allow_retvals, &env.allow_retval_cnt, arg);
+		if (err)
+			return err;
+		break;
+	case OPT_DENY_RETVAL:
+		if (env.emit_success_stacks < 0) {
+			elog("--deny-retval implies -S/-Sy so cannot be used with -x/-X\n");
+			return -EINVAL;
+		}
+		env.emit_success_stacks = 1;
+		err = append_retval(&env.deny_retvals, &env.deny_retval_cnt, arg);
+		if (err)
+			return err;
 		break;
 	case 'I':
 		env.emit_interim_stacks = true;

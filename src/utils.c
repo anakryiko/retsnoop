@@ -285,6 +285,29 @@ int append_pid(int **pids, int *cnt, const char *arg)
 	return 0;
 }
 
+int append_retval(uint64_t **retvals, int *cnt, const char *arg)
+{
+	void *tmp;
+	uint64_t retval;
+
+	errno = 0;
+	retval = strtoull(arg, NULL, 0);
+	if (errno) {
+		fprintf(stderr, "Invalid value '%s': %d\n", arg, -errno);
+		return -EINVAL;
+	}
+
+	tmp = realloc(*retvals, (*cnt + 1) * sizeof(**retvals));
+	if (!tmp)
+		return -ENOMEM;
+	*retvals = tmp;
+
+	(*retvals)[*cnt] = retval;
+	*cnt = *cnt + 1;
+
+	return 0;
+}
+
 static bool is_valid_glob(const char *glob)
 {
 	int n;

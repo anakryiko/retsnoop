@@ -250,6 +250,7 @@ int append_glob_file(struct glob **globs, int *cnt, const char *file, bool manda
 int append_compile_unit(struct addr2line *a2l, struct glob **globs, int *cnt, const char *cu, bool mandatory);
 
 int append_pid(int **pids, int *cnt, const char *arg);
+int append_retval(uint64_t **retvals, int *cnt, const char *arg);
 
 enum glob_flags {
 	GLOB_ALLOW = 0x1,
