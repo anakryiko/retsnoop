@@ -127,7 +127,7 @@ static int ksym_by_name_order(const void *p1, const void *p2)
 
 struct ksyms *ksyms__load(void)
 {
-	char sym_type, sym_name[256], mod_buf[128], *mod_name;
+	char sym_type, sym_name[512], mod_buf[128], *mod_name;
 	struct ksyms *ksyms;
 	unsigned long sym_addr;
 	int i, ret;
